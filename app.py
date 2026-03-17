@@ -22,14 +22,18 @@ def score():
         "PageSize": 5
     }
 
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    try:
+        response = requests.get(url, params=params, timeout=30)
 
-    return jsonify({
-        "status": "ok",
-        "message": "live tender fetch works",
-        "api_type": str(type(data).__name__),
-        "preview_keys": list(data.keys()) if isinstance(data, dict) else [],
-        "preview": data
-    })
+        return jsonify({
+            "status": "ok",
+            "message": "live tender fetch works",
+            "status_code": response.status_code,
+            "content_type": response.headers.get("Content-Type"),
+            "text_preview": response.text[:1000]
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
