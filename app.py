@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 @app.get("/")
 def home():
-    return {"message": "TenderAI kitchen home v6"}
+    return {"message": "TenderAI kitchen home v7"}
 
 
 @app.get("/health")
@@ -65,33 +65,14 @@ def extract_pdf_text(file_storage):
 
 
 def extract_profile_text():
-    # Option 1: multipart form upload with a PDF
     if "profile_pdf" in request.files:
         uploaded_file = request.files["profile_pdf"]
         if uploaded_file and uploaded_file.filename.lower().endswith(".pdf"):
             return extract_pdf_text(uploaded_file), "pdf"
 
-    # Option 2: JSON body with profile_text
     body = request.get_json(silent=True) or {}
     profile_text = body.get("profile_text", "")
     return profile_text, "text"
-
-
-def score_tender(profile_keywords, tender_text):
-    tender_tokens = set(tokenize(tender_text))
-    profile_set = set(profile_keywords)
-
-    matched = sorted(profile_set.intersection(tender_tokens))
-    score = round((len(matched) / max(len(profile_set), 1)) * 100, 1)
-
-    if score >= 60:
-        fit_band = "High fit"
-    elif score >= 30:
-        fit_band = "Medium fit"
-    else:
-        fit_band = "Low fit"
-
-    return score, fit_band, matched
 
 
 def get_request_value(name, default_value):
@@ -100,6 +81,36 @@ def get_request_value(name, default_value):
 
     body = request.get_json(silent=True) or {}
     return body.get(name, default_value)
+
+
+def score_tender(profile_keywords, tender_text, category=""):
+    tender_tokens = set(tokenize(tender_text))
+    profile_set = set(profile_keywords)
+
+    matched = sorted(profile_set.intersection(tender_tokens))
+    base_score = (len(matched) / max(len(profile_set), 1)) * 100
+
+    bonus = 0
+
+    if category:
+        category = category.lower()
+        if category in ["works", "services"]:
+            bonus += 10
+
+    intent_keywords = ["installation", "maintenance", "repair", "construction"]
+    intent_hits = [k for k in intent_keywords if k in tender_tokens]
+    bonus += len(intent_hits) * 5
+
+    final_score = round(min(base_score + bonus, 100), 1)
+
+    if final_score >= 70:
+        fit_band = "High fit"
+    elif final_score >= 40:
+        fit_band = "Medium fit"
+    else:
+        fit_band = "Low fit"
+
+    return final_score, fit_band, matched
 
 
 @app.post("/score")
@@ -141,7 +152,11 @@ def score():
             category = tender.get("mainProcurementCategory", "")
 
             combined_text = f"{title} {description} {buyer_name} {category}"
-            fit_score, fit_band, matched_keywords = score_tender(profile_keywords, combined_text)
+            fit_score, fit_band, matched_keywords = score_tender(
+                profile_keywords,
+                combined_text,
+                category
+            )
 
             tenders.append({
                 "ocid": item.get("ocid") if isinstance(item, dict) else None,
