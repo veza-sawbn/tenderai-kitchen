@@ -16,20 +16,20 @@ HTML_PAGE = """
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {
-      --bg: #070b08;
-      --bg-2: #0b120d;
-      --panel: rgba(11, 18, 13, 0.82);
-      --panel-2: rgba(15, 24, 18, 0.9);
-      --border: rgba(127, 176, 105, 0.12);
-      --text: #eef5ee;
-      --muted: #9caf9d;
-      --green: #7fb069;
-      --green-2: #59d38a;
-      --green-3: #b4efbf;
-      --shadow: 0 25px 70px rgba(0, 0, 0, 0.38);
+      --bg: #07110b;
+      --bg-2: #0b1610;
+      --panel: rgba(10, 19, 14, 0.72);
+      --panel-solid: #0e1913;
+      --border: rgba(126, 211, 161, 0.11);
+      --text: #edf7f0;
+      --muted: #9fb5a8;
+      --accent: #73f0a6;
+      --accent-2: #43c97b;
+      --accent-3: #b7ffd2;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
       --radius: 24px;
-      --red: #d27d7d;
-      --amber: #d6b35f;
+      --red: #f08f8f;
+      --amber: #e8ca7d;
     }
 
     * {
@@ -43,17 +43,55 @@ HTML_PAGE = """
     body {
       margin: 0;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at 15% 15%, rgba(89, 211, 138, 0.08), transparent 22%),
-        radial-gradient(circle at 85% 10%, rgba(127, 176, 105, 0.08), transparent 20%),
-        radial-gradient(circle at 50% 100%, rgba(89, 211, 138, 0.05), transparent 30%),
-        linear-gradient(180deg, #060907 0%, #0a100c 100%);
       color: var(--text);
+      background:
+        linear-gradient(180deg, #06100a 0%, #09150f 50%, #08110d 100%);
       min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto;
+      width: 34rem;
+      height: 34rem;
+      border-radius: 50%;
+      filter: blur(110px);
+      opacity: 0.26;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    body::before {
+      top: -8rem;
+      left: -8rem;
+      background: radial-gradient(circle, rgba(67, 201, 123, 0.85) 0%, rgba(67, 201, 123, 0) 68%);
+      animation: driftA 18s ease-in-out infinite alternate;
+    }
+
+    body::after {
+      right: -10rem;
+      top: 10rem;
+      background: radial-gradient(circle, rgba(115, 240, 166, 0.6) 0%, rgba(115, 240, 166, 0) 70%);
+      animation: driftB 24s ease-in-out infinite alternate;
+    }
+
+    @keyframes driftA {
+      0% { transform: translate3d(0, 0, 0) scale(1); }
+      100% { transform: translate3d(5rem, 6rem, 0) scale(1.12); }
+    }
+
+    @keyframes driftB {
+      0% { transform: translate3d(0, 0, 0) scale(1); }
+      100% { transform: translate3d(-6rem, 8rem, 0) scale(1.08); }
     }
 
     .shell {
-      max-width: 1360px;
+      position: relative;
+      z-index: 1;
+      max-width: 1380px;
       margin: 0 auto;
       padding: 20px;
     }
@@ -68,10 +106,10 @@ HTML_PAGE = """
       gap: 16px;
       padding: 14px 18px;
       margin-bottom: 18px;
-      background: rgba(7, 11, 8, 0.68);
+      background: rgba(8, 16, 12, 0.72);
       backdrop-filter: blur(18px);
-      border: 1px solid rgba(127, 176, 105, 0.08);
-      border-radius: 22px;
+      border: 1px solid rgba(115, 240, 166, 0.08);
+      border-radius: 20px;
       box-shadow: var(--shadow);
     }
 
@@ -85,13 +123,13 @@ HTML_PAGE = """
       height: 42px;
       width: auto;
       display: block;
-      filter: drop-shadow(0 0 22px rgba(89, 211, 138, 0.16));
+      filter: drop-shadow(0 0 22px rgba(115, 240, 166, 0.2));
     }
 
     .brand-title {
       font-size: 20px;
       font-weight: 800;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.01em;
     }
 
     .brand-sub {
@@ -119,113 +157,184 @@ HTML_PAGE = """
     }
 
     .nav-link:hover {
-      color: var(--green-3);
-      border-color: rgba(127, 176, 105, 0.18);
+      color: var(--accent-3);
+      border-color: rgba(115, 240, 166, 0.16);
     }
 
     .hero {
-      display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 18px;
-      align-items: stretch;
-      margin-bottom: 18px;
-    }
-
-    .hero-panel,
-    .card,
-    .tender-card,
-    .message-bubble {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(16px);
-    }
-
-    .hero-panel {
-      padding: 32px;
       position: relative;
       overflow: hidden;
+      min-height: 74vh;
+      padding: 3.8rem 2rem 2.8rem 2rem;
+      border-radius: 32px;
+      background:
+        linear-gradient(180deg, rgba(10, 21, 15, 0.72) 0%, rgba(9, 16, 12, 0.82) 100%),
+        radial-gradient(circle at 20% 20%, rgba(115, 240, 166, 0.06), transparent 28%),
+        radial-gradient(circle at 80% 10%, rgba(67, 201, 123, 0.07), transparent 24%),
+        linear-gradient(135deg, #08120c 0%, #0b1711 55%, #08120c 100%);
+      border: 1px solid rgba(115, 240, 166, 0.08);
+      box-shadow: var(--shadow);
+      margin-bottom: 22px;
     }
 
-    .hero-panel::after {
+    .hero::before,
+    .hero::after {
       content: "";
       position: absolute;
-      right: -40px;
-      top: -40px;
-      width: 220px;
-      height: 220px;
+      inset: auto;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(89, 211, 138, 0.18), transparent 70%);
+      filter: blur(80px);
+      opacity: 0.22;
       pointer-events: none;
+    }
+
+    .hero::before {
+      width: 22rem;
+      height: 22rem;
+      left: 6%;
+      top: 5%;
+      background: radial-gradient(circle, rgba(115, 240, 166, 0.75) 0%, rgba(115, 240, 166, 0) 70%);
+      animation: heroGlowA 16s ease-in-out infinite alternate;
+    }
+
+    .hero::after {
+      width: 26rem;
+      height: 26rem;
+      right: 2%;
+      bottom: -5%;
+      background: radial-gradient(circle, rgba(67, 201, 123, 0.62) 0%, rgba(67, 201, 123, 0) 72%);
+      animation: heroGlowB 20s ease-in-out infinite alternate;
+    }
+
+    @keyframes heroGlowA {
+      0% { transform: translate3d(0, 0, 0) scale(1); }
+      100% { transform: translate3d(4rem, 4rem, 0) scale(1.15); }
+    }
+
+    @keyframes heroGlowB {
+      0% { transform: translate3d(0, 0, 0) scale(1); }
+      100% { transform: translate3d(-4rem, -3rem, 0) scale(1.1); }
+    }
+
+    .grid-lines {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(115, 240, 166, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(115, 240, 166, 0.035) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: linear-gradient(180deg, rgba(0,0,0,0.8), transparent 85%);
+      pointer-events: none;
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 2rem;
+      align-items: end;
+      height: 100%;
     }
 
     .eyebrow {
       display: inline-flex;
       align-items: center;
       gap: 10px;
-      color: var(--green-3);
+      color: var(--accent-3);
       font-size: 12px;
       font-weight: 800;
       letter-spacing: 0.16em;
       text-transform: uppercase;
-      margin-bottom: 14px;
-    }
-
-    .glow-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--green-2);
-      box-shadow: 0 0 14px rgba(89, 211, 138, 0.85);
+      margin-bottom: 16px;
     }
 
     .hero h1 {
-      margin: 0 0 12px 0;
-      font-size: 54px;
-      line-height: 0.98;
+      margin: 0 0 16px 0;
+      font-size: clamp(3rem, 6vw, 5.2rem);
+      line-height: 0.96;
+      letter-spacing: -0.045em;
       max-width: 760px;
-      letter-spacing: -0.03em;
     }
 
     .hero p {
       margin: 0;
+      max-width: 720px;
       color: var(--muted);
-      max-width: 760px;
-      line-height: 1.7;
-      font-size: 16px;
+      line-height: 1.75;
+      font-size: 17px;
     }
 
-    .hero-right {
-      padding: 24px;
-      display: grid;
-      gap: 14px;
-      align-content: start;
+    .hero-actions {
+      margin-top: 28px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
     }
 
-    .hero-mini {
-      padding: 18px;
-      border-radius: 18px;
+    .btn {
+      border: none;
+      cursor: pointer;
+      font-weight: 800;
+      border-radius: 16px;
+      padding: 14px 18px;
+      font-family: inherit;
+      transition: 0.2s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #041008;
+      box-shadow: 0 14px 32px rgba(67, 201, 123, 0.22);
+    }
+
+    .btn-secondary {
+      color: var(--text);
       background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(127, 176, 105, 0.08);
+      border: 1px solid rgba(115, 240, 166, 0.08);
     }
 
-    .hero-mini h4 {
-      margin: 0 0 8px 0;
-      font-size: 13px;
-      color: var(--green-3);
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+    .hero-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      align-self: center;
     }
 
-    .hero-mini div {
+    .hero-stat {
+      padding: 18px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(115, 240, 166, 0.08);
+      backdrop-filter: blur(12px);
+    }
+
+    .hero-stat-label {
       color: var(--muted);
-      line-height: 1.6;
-      font-size: 14px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 8px;
+    }
+
+    .hero-stat-value {
+      font-size: 30px;
+      font-weight: 900;
+      margin-bottom: 4px;
+    }
+
+    .hero-stat-sub {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
     }
 
     .section {
-      margin-bottom: 18px;
+      margin-bottom: 20px;
     }
 
     .section-head {
@@ -248,6 +357,78 @@ HTML_PAGE = """
       font-size: 14px;
     }
 
+    .features-strip {
+      position: relative;
+      overflow: hidden;
+      border-radius: 28px;
+      padding: 18px 0 10px 0;
+      margin-bottom: 22px;
+    }
+
+    .carousel-track {
+      display: flex;
+      gap: 18px;
+      width: max-content;
+      animation: scrollTrack 28s linear infinite;
+      padding: 0 6px;
+    }
+
+    .features-strip:hover .carousel-track {
+      animation-play-state: paused;
+    }
+
+    @keyframes scrollTrack {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+
+    .feature-card {
+      flex: 0 0 360px;
+      min-height: 260px;
+      border-radius: 26px;
+      overflow: hidden;
+      position: relative;
+      border: 1px solid rgba(115, 240, 166, 0.08);
+      background: #0d1712;
+      box-shadow: var(--shadow);
+    }
+
+    .feature-image {
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      transform: scale(1.02);
+      filter: saturate(1.08) brightness(0.72);
+    }
+
+    .feature-overlay {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(180deg, rgba(5, 10, 8, 0.12) 0%, rgba(7, 13, 10, 0.78) 72%, rgba(7, 13, 10, 0.96) 100%);
+    }
+
+    .feature-copy {
+      position: absolute;
+      inset: auto 0 0 0;
+      padding: 24px;
+      z-index: 1;
+    }
+
+    .feature-copy h3 {
+      margin: 0 0 8px 0;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+
+    .feature-copy p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
     .assistant-layout {
       display: grid;
       grid-template-columns: 0.92fr 1.08fr;
@@ -257,6 +438,11 @@ HTML_PAGE = """
 
     .card {
       padding: 20px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 26px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
     }
 
     .chat-thread {
@@ -275,32 +461,26 @@ HTML_PAGE = """
     }
 
     .avatar {
-      width: 40px;
-      height: 40px;
-      border-radius: 15px;
-      display: grid;
-      place-items: center;
-      font-size: 12px;
-      font-weight: 900;
-      flex: 0 0 40px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      flex: 0 0 16px;
+      margin-top: 14px;
+      background: rgba(115, 240, 166, 0.28);
+      box-shadow: 0 0 14px rgba(115, 240, 166, 0.28);
     }
 
-    .avatar.ai {
-      background: linear-gradient(135deg, var(--green), var(--green-2));
-      color: #061008;
-      box-shadow: 0 0 28px rgba(89, 211, 138, 0.24);
-    }
-
-    .avatar.user {
-      background: linear-gradient(135deg, #172117, #263026);
-      color: var(--green-3);
-      border: 1px solid rgba(127, 176, 105, 0.12);
+    .message.user .avatar {
+      background: rgba(255, 255, 255, 0.12);
+      box-shadow: none;
     }
 
     .message-bubble {
-      width: calc(100% - 52px);
+      width: calc(100% - 28px);
       padding: 18px;
-      background: var(--panel-2);
+      background: var(--panel-solid);
+      border: 1px solid rgba(115, 240, 166, 0.08);
+      border-radius: 22px;
     }
 
     .message-bubble h3,
@@ -310,7 +490,7 @@ HTML_PAGE = """
 
     .message-bubble p {
       margin: 0 0 10px 0;
-      line-height: 1.65;
+      line-height: 1.68;
       color: var(--text);
     }
 
@@ -322,7 +502,7 @@ HTML_PAGE = """
       display: block;
       margin-bottom: 8px;
       font-size: 13px;
-      color: var(--green-3);
+      color: var(--accent-3);
       font-weight: 700;
       letter-spacing: 0.02em;
     }
@@ -332,8 +512,8 @@ HTML_PAGE = """
     button,
     select {
       width: 100%;
-      border-radius: 18px;
-      border: 1px solid rgba(127, 176, 105, 0.10);
+      border-radius: 16px;
+      border: 1px solid rgba(115, 240, 166, 0.10);
       background: rgba(255,255,255,0.03);
       color: var(--text);
       padding: 13px 14px;
@@ -346,8 +526,8 @@ HTML_PAGE = """
     input:focus,
     textarea:focus,
     select:focus {
-      border-color: rgba(89, 211, 138, 0.34);
-      box-shadow: 0 0 0 4px rgba(89, 211, 138, 0.08);
+      border-color: rgba(115, 240, 166, 0.28);
+      box-shadow: 0 0 0 4px rgba(115, 240, 166, 0.08);
     }
 
     textarea {
@@ -365,10 +545,6 @@ HTML_PAGE = """
       margin-bottom: 14px;
     }
 
-    .field.full {
-      grid-column: 1 / -1;
-    }
-
     .hint {
       color: var(--muted);
       font-size: 12px;
@@ -382,29 +558,6 @@ HTML_PAGE = """
       flex-wrap: wrap;
     }
 
-    .btn {
-      border: none;
-      cursor: pointer;
-      font-weight: 800;
-      transition: 0.2s ease;
-    }
-
-    .btn:hover {
-      transform: translateY(-1px);
-    }
-
-    .btn-primary {
-      background: linear-gradient(135deg, var(--green), var(--green-2));
-      color: #061008;
-      box-shadow: 0 12px 30px rgba(89, 211, 138, 0.20);
-    }
-
-    .btn-secondary {
-      background: rgba(255,255,255,0.03);
-      color: var(--text);
-      border: 1px solid rgba(127, 176, 105, 0.08);
-    }
-
     .summary-grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -416,7 +569,7 @@ HTML_PAGE = """
       padding: 18px;
       border-radius: 20px;
       background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(127, 176, 105, 0.08);
+      border: 1px solid rgba(115, 240, 166, 0.08);
     }
 
     .metric-label {
@@ -438,52 +591,59 @@ HTML_PAGE = """
       font-size: 13px;
     }
 
-    .loading-wrap {
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
       display: none;
-      padding: 18px;
-      border-radius: 18px;
-      border: 1px solid rgba(127, 176, 105, 0.10);
-      background: rgba(255,255,255,0.02);
-      margin-bottom: 14px;
-    }
-
-    .loading-row {
-      display: flex;
       align-items: center;
-      gap: 16px;
+      justify-content: center;
+      background: rgba(4, 9, 7, 0.54);
+      backdrop-filter: blur(10px);
+      z-index: 60;
+      padding: 20px;
     }
 
-    .orb-loader {
-      width: 56px;
-      height: 56px;
+    .loading-modal {
+      width: min(420px, 100%);
+      padding: 28px;
+      border-radius: 28px;
+      background: rgba(10, 19, 14, 0.92);
+      border: 1px solid rgba(115, 240, 166, 0.12);
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+
+    .loading-orb {
+      width: 90px;
+      height: 90px;
+      margin: 0 auto 20px auto;
       border-radius: 50%;
       position: relative;
-      border: 1px solid rgba(89, 211, 138, 0.10);
-      background: radial-gradient(circle at center, rgba(89, 211, 138, 0.04), transparent 66%);
-      flex: 0 0 56px;
+      border: 1px solid rgba(115, 240, 166, 0.10);
+      background: radial-gradient(circle at center, rgba(115, 240, 166, 0.06), transparent 68%);
     }
 
-    .orb-loader::before {
+    .loading-orb::before {
       content: "";
       position: absolute;
-      inset: 6px;
+      inset: 10px;
       border-radius: 50%;
-      border: 1px dashed rgba(89, 211, 138, 0.14);
+      border: 1px dashed rgba(115, 240, 166, 0.18);
     }
 
-    .orb-loader::after {
+    .loading-orb::after {
       content: "";
       position: absolute;
-      top: 3px;
+      top: 6px;
       left: 50%;
-      width: 10px;
-      height: 10px;
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
-      background: linear-gradient(135deg, var(--green-3), var(--green-2));
+      background: linear-gradient(135deg, var(--accent-3), var(--accent-2));
       transform: translateX(-50%);
-      box-shadow: 0 0 20px rgba(89, 211, 138, 0.95);
-      animation: orbit 1.25s linear infinite;
-      transform-origin: 0 25px;
+      transform-origin: 0 39px;
+      box-shadow: 0 0 24px rgba(115, 240, 166, 0.95);
+      animation: orbit 1.1s linear infinite;
     }
 
     @keyframes orbit {
@@ -492,12 +652,14 @@ HTML_PAGE = """
     }
 
     .loading-title {
+      font-size: 20px;
       font-weight: 800;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
     }
 
     .loading-step {
       color: var(--muted);
+      line-height: 1.6;
       font-size: 14px;
     }
 
@@ -509,7 +671,11 @@ HTML_PAGE = """
 
     .tender-card {
       padding: 20px;
-      background: var(--panel-2);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
     }
 
     .tender-top {
@@ -543,21 +709,21 @@ HTML_PAGE = """
     }
 
     .band.high {
-      color: var(--green-3);
-      background: rgba(89, 211, 138, 0.10);
-      border: 1px solid rgba(89, 211, 138, 0.18);
+      color: var(--accent-3);
+      background: rgba(115, 240, 166, 0.10);
+      border: 1px solid rgba(115, 240, 166, 0.18);
     }
 
     .band.medium {
-      color: #f1d997;
-      background: rgba(214, 179, 95, 0.10);
-      border: 1px solid rgba(214, 179, 95, 0.18);
+      color: #f2d993;
+      background: rgba(232, 202, 125, 0.10);
+      border: 1px solid rgba(232, 202, 125, 0.18);
     }
 
     .band.low {
-      color: #f0b3b3;
-      background: rgba(210, 125, 125, 0.08);
-      border: 1px solid rgba(210, 125, 125, 0.16);
+      color: #efb4b4;
+      background: rgba(240, 143, 143, 0.08);
+      border: 1px solid rgba(240, 143, 143, 0.16);
     }
 
     .score-number {
@@ -583,7 +749,7 @@ HTML_PAGE = """
       padding: 16px;
       border-radius: 18px;
       background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(127, 176, 105, 0.08);
+      border: 1px solid rgba(115, 240, 166, 0.08);
     }
 
     .mini h4 {
@@ -591,7 +757,7 @@ HTML_PAGE = """
       font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: var(--green-3);
+      color: var(--accent-3);
     }
 
     .value-big {
@@ -619,11 +785,11 @@ HTML_PAGE = """
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: rgba(89, 211, 138, 0.10);
-      color: var(--green-3);
+      background: rgba(115, 240, 166, 0.10);
+      color: var(--accent-3);
       font-weight: 900;
       flex: 0 0 22px;
-      box-shadow: 0 0 18px rgba(89, 211, 138, 0.16);
+      box-shadow: 0 0 18px rgba(115, 240, 166, 0.12);
     }
 
     .keyword-list {
@@ -636,9 +802,9 @@ HTML_PAGE = """
     .chip {
       padding: 8px 12px;
       border-radius: 999px;
-      background: rgba(89, 211, 138, 0.08);
-      border: 1px solid rgba(89, 211, 138, 0.12);
-      color: var(--green-3);
+      background: rgba(115, 240, 166, 0.08);
+      border: 1px solid rgba(115, 240, 166, 0.12);
+      color: var(--accent-3);
       font-size: 12px;
       font-weight: 700;
     }
@@ -647,7 +813,7 @@ HTML_PAGE = """
       padding: 24px;
       text-align: center;
       color: var(--muted);
-      border: 1px dashed rgba(127, 176, 105, 0.10);
+      border: 1px dashed rgba(115, 240, 166, 0.10);
       border-radius: 20px;
       background: rgba(255,255,255,0.02);
     }
@@ -680,7 +846,7 @@ HTML_PAGE = """
     .list-item {
       padding: 16px;
       border-radius: 18px;
-      border: 1px solid rgba(127, 176, 105, 0.08);
+      border: 1px solid rgba(115, 240, 166, 0.08);
       background: rgba(255,255,255,0.03);
       margin-bottom: 10px;
       cursor: pointer;
@@ -689,8 +855,8 @@ HTML_PAGE = """
 
     .list-item:hover,
     .list-item.active {
-      border-color: rgba(89, 211, 138, 0.20);
-      box-shadow: 0 14px 30px rgba(89, 211, 138, 0.08);
+      border-color: rgba(115, 240, 166, 0.20);
+      box-shadow: 0 14px 30px rgba(115, 240, 166, 0.08);
       background: rgba(255,255,255,0.04);
     }
 
@@ -741,7 +907,7 @@ HTML_PAGE = """
     .service-box {
       padding: 16px;
       border-radius: 18px;
-      border: 1px solid rgba(127, 176, 105, 0.08);
+      border: 1px solid rgba(115, 240, 166, 0.08);
       background: rgba(255,255,255,0.03);
       margin-top: 12px;
     }
@@ -765,7 +931,7 @@ HTML_PAGE = """
     }
 
     @media (max-width: 1180px) {
-      .hero,
+      .hero-content,
       .assistant-layout,
       .explorer-layout,
       .summary-grid,
@@ -774,6 +940,14 @@ HTML_PAGE = """
       .detail-grid {
         grid-template-columns: 1fr;
       }
+
+      .features-strip {
+        overflow: auto;
+      }
+
+      .carousel-track {
+        animation: none;
+      }
     }
 
     @media (max-width: 760px) {
@@ -781,13 +955,18 @@ HTML_PAGE = """
         padding: 14px;
       }
 
-      .hero h1 {
-        font-size: 38px;
-      }
-
       .topbar {
         flex-direction: column;
         align-items: flex-start;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 2.6rem 1.2rem 2rem 1.2rem;
+      }
+
+      .hero-actions {
+        flex-direction: column;
       }
 
       .form-grid,
@@ -803,17 +982,29 @@ HTML_PAGE = """
       .score-caption {
         text-align: left;
       }
+
+      .feature-card {
+        flex-basis: 300px;
+      }
     }
   </style>
 </head>
 <body>
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-modal">
+      <div class="loading-orb"></div>
+      <div class="loading-title">TenderAI is analyzing</div>
+      <div class="loading-step" id="loadingStepText">Reading supplier profile and scanning tender releases...</div>
+    </div>
+  </div>
+
   <div class="shell">
     <div class="topbar">
       <div class="brand">
         <img src="https://static.wixstatic.com/media/7193cf_13ca777ff7cc4c79a68caa1b2024f707~mv2.png" alt="Logo">
         <div>
           <div class="brand-title">TenderAI</div>
-          <div class="brand-sub">AI tender intelligence and execution planning</div>
+          <div class="brand-sub">Procurement intelligence and execution planning</div>
         </div>
       </div>
 
@@ -824,53 +1015,126 @@ HTML_PAGE = """
       </div>
     </div>
 
-    <div class="hero">
-      <div class="hero-panel">
-        <div class="eyebrow"><span class="glow-dot"></span> Procurement intelligence</div>
-        <h1>Analyze tenders with an interface that feels like your own private AI strategist.</h1>
-        <p>
-          Upload a supplier profile, let TenderAI interpret your strengths, surface the best-fit tenders,
-          estimate likely contract value and expected execution investment, and guide you on how to position your bid better.
-        </p>
-      </div>
+    <section class="hero">
+      <div class="grid-lines"></div>
+      <div class="hero-content">
+        <div>
+          <div class="eyebrow">Procurement intelligence platform</div>
+          <h1>Discover, evaluate, and plan for the tenders your business is built to pursue.</h1>
+          <p>
+            TenderAI reads your supplier profile, compares your business signals against live public tenders,
+            estimates likely contract value and delivery investment, and helps you understand where to focus your effort.
+          </p>
+          <div class="hero-actions">
+            <button class="btn btn-primary" onclick="document.getElementById('assistant').scrollIntoView({behavior:'smooth'})">Start analysis</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('explorer').scrollIntoView({behavior:'smooth'})">Browse tenders</button>
+          </div>
+        </div>
 
-      <div class="hero-panel hero-right">
-        <div class="hero-mini">
-          <h4>Profile understanding</h4>
-          <div>Reads business profile PDFs and extracts capability signals for matching.</div>
-        </div>
-        <div class="hero-mini">
-          <h4>Opportunity ranking</h4>
-          <div>Scores live public tenders by fit, likely value, and delivery readiness requirements.</div>
-        </div>
-        <div class="hero-mini">
-          <h4>Execution support</h4>
-          <div>Lets users request advice and Sawbona logistics services directly from the tender view.</div>
+        <div class="hero-stats">
+          <div class="hero-stat">
+            <div class="hero-stat-label">Supplier profile understanding</div>
+            <div class="hero-stat-value">PDF + AI</div>
+            <div class="hero-stat-sub">Reads supplier profiles and extracts capability signals.</div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-label">Opportunity ranking</div>
+            <div class="hero-stat-value">Live</div>
+            <div class="hero-stat-sub">Scores public tenders using profile, category, and scope alignment.</div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-label">Execution planning</div>
+            <div class="hero-stat-value">Estimated</div>
+            <div class="hero-stat-sub">Forecasts project value and likely investment requirements.</div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-label">Support services</div>
+            <div class="hero-stat-value">On demand</div>
+            <div class="hero-stat-sub">Request logistics and tender support for selected opportunities.</div>
+          </div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <div id="assistant" class="section">
+    <section class="features-strip">
+      <div class="carousel-track">
+        <div class="feature-card">
+          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80');"></div>
+          <div class="feature-overlay"></div>
+          <div class="feature-copy">
+            <h3>Profile understanding</h3>
+            <p>Extract business signals, trade focus, and capability language from profile documents.</p>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80');"></div>
+          <div class="feature-overlay"></div>
+          <div class="feature-copy">
+            <h3>Opportunity ranking</h3>
+            <p>Surface the tenders that align most strongly with your business capabilities and delivery intent.</p>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1200&q=80');"></div>
+          <div class="feature-overlay"></div>
+          <div class="feature-copy">
+            <h3>Execution support</h3>
+            <p>Estimate delivery investment, request advice, and route logistics support into your operating process.</p>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80');"></div>
+          <div class="feature-overlay"></div>
+          <div class="feature-copy">
+            <h3>Profile understanding</h3>
+            <p>Extract business signals, trade focus, and capability language from profile documents.</p>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80');"></div>
+          <div class="feature-overlay"></div>
+          <div class="feature-copy">
+            <h3>Opportunity ranking</h3>
+            <p>Surface the tenders that align most strongly with your business capabilities and delivery intent.</p>
+          </div>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1200&q=80');"></div>
+          <div class="feature-overlay"></div>
+          <div class="feature-copy">
+            <h3>Execution support</h3>
+            <p>Estimate delivery investment, request advice, and route logistics support into your operating process.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="assistant" class="section">
       <div class="section-head">
         <div>
-          <h2>AI Assistant</h2>
-          <p>Interact with TenderAI through a guided assistant-style workflow.</p>
+          <h2>Assistant</h2>
+          <p>Run a profile-led tender analysis through a guided AI workflow.</p>
         </div>
       </div>
 
       <div class="assistant-layout">
         <div class="card">
           <div class="chat-thread">
-            <div class="message ai">
-              <div class="avatar ai">AI</div>
+            <div class="message">
+              <div class="avatar"></div>
               <div class="message-bubble">
-                <h3>Let’s start with your business profile.</h3>
-                <p>Upload a supplier profile PDF or paste business capability text. I’ll interpret your profile, scan public tenders, rank the best opportunities, and estimate what it may take to execute them.</p>
+                <h3>Start with your business profile.</h3>
+                <p>Upload a supplier profile PDF or paste business capability text. TenderAI will interpret your profile, scan public tenders, rank relevant opportunities, and estimate what delivery might require.</p>
               </div>
             </div>
 
             <div class="message user">
-              <div class="avatar user">YOU</div>
+              <div class="avatar"></div>
               <div class="message-bubble">
                 <div class="form-grid">
                   <div class="field">
@@ -912,22 +1176,10 @@ HTML_PAGE = """
               </div>
             </div>
 
-            <div class="message ai">
-              <div class="avatar ai">AI</div>
-              <div class="message-bubble">
-                <div class="loading-wrap" id="loadingWrap">
-                  <div class="loading-row">
-                    <div class="orb-loader"></div>
-                    <div>
-                      <div class="loading-title">TenderAI is working through your opportunity map.</div>
-                      <div class="loading-step" id="loadingStepText">Reading supplier profile and scanning tender releases...</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div id="assistantResponse">
-                  <p>Once the scan runs, I’ll return ranked opportunities and a concise interpretation of what I found.</p>
-                </div>
+            <div class="message">
+              <div class="avatar"></div>
+              <div class="message-bubble" id="assistantResponse">
+                <p>Once the scan completes, TenderAI will summarize what it understood from your profile and show your ranked opportunities below.</p>
               </div>
             </div>
           </div>
@@ -935,16 +1187,16 @@ HTML_PAGE = """
 
         <div class="card">
           <h3 style="margin-top:0;">What TenderAI understood</h3>
-          <div id="scanUnderstanding" class="empty">Run a scan to see extracted capability keywords and AI interpretation.</div>
+          <div id="scanUnderstanding" class="empty">Run a scan to see extracted keywords and a concise profile interpretation.</div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <div id="matches" class="section">
+    <section id="matches" class="section">
       <div class="section-head">
         <div>
           <h2>Best-fit matches</h2>
-          <p>Ranked tender opportunities based on your profile signals.</p>
+          <p>Ranked opportunities based on your profile and the tender scope.</p>
         </div>
       </div>
 
@@ -974,13 +1226,13 @@ HTML_PAGE = """
       <div id="resultsList" class="results-list">
         <div class="empty">Your ranked opportunity matches will appear here after an analysis.</div>
       </div>
-    </div>
+    </section>
 
-    <div id="explorer" class="section">
+    <section id="explorer" class="section">
       <div class="section-head">
         <div>
           <h2>Tender Explorer</h2>
-          <p>Browse all tenders manually, inspect details, request advice, and request support services.</p>
+          <p>Browse all tenders manually, inspect details, request advice, and request support.</p>
         </div>
       </div>
 
@@ -1009,16 +1261,6 @@ HTML_PAGE = """
             <button class="btn btn-primary" id="loadTendersBtn" type="button">Load tenders</button>
           </div>
 
-          <div class="loading-wrap" id="explorerLoading" style="margin-bottom: 12px;">
-            <div class="loading-row">
-              <div class="orb-loader"></div>
-              <div>
-                <div class="loading-title">Loading live tender market data.</div>
-                <div class="loading-step">Pulling current public opportunities for manual review.</div>
-              </div>
-            </div>
-          </div>
-
           <div id="explorerList" class="list-scroll">
             <div class="empty">Load tenders to browse the market manually.</div>
           </div>
@@ -1026,11 +1268,11 @@ HTML_PAGE = """
 
         <div class="card detail-card">
           <div id="detailPanel">
-            <div class="empty">Select a tender to view its overview, AI advice, value estimate, execution investment, and logistics support options.</div>
+            <div class="empty">Select a tender to view its overview, AI advice, value estimate, execution investment, and support options.</div>
           </div>
         </div>
       </div>
-    </div>
+    </section>
   </div>
 
   <script>
@@ -1074,19 +1316,15 @@ HTML_PAGE = """
       if (t.matched_keywords && t.matched_keywords.length) {
         items.push("Matched capability keywords: " + t.matched_keywords.join(", "));
       }
-
       if (t.category && ["works", "services"].includes(String(t.category).toLowerCase())) {
         items.push("Tender category aligns with operational delivery work.");
       }
-
       if (t.estimation_reason) {
         items.push("Tender value inference: " + t.estimation_reason);
       }
-
       if (t.execution_investment_reason) {
         items.push("Execution planning signal: " + t.execution_investment_reason);
       }
-
       if (!items.length) {
         items.push("TenderAI found limited direct fit signals in this opportunity.");
       }
@@ -1156,19 +1394,19 @@ HTML_PAGE = """
       const keywords = (data.profile_keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("");
 
       document.getElementById("scanUnderstanding").innerHTML = `
-        <div class="message ai" style="margin-bottom: 14px;">
-          <div class="avatar ai">AI</div>
+        <div class="message">
+          <div class="avatar"></div>
           <div class="message-bubble" style="width:100%;">
             <h4>Profile interpretation</h4>
-            <p>I used your submitted profile to extract capability signals and compare them to the tender descriptions, procurement categories, and delivery requirements.</p>
+            <p>I used your submitted profile to extract capability signals and compare them to tender descriptions, procurement categories, and likely delivery requirements.</p>
             <div class="keyword-list">${keywords || '<span class="chip">No keywords extracted</span>'}</div>
           </div>
         </div>
 
-        <div class="message ai">
-          <div class="avatar ai">AI</div>
+        <div class="message" style="margin-top: 14px;">
+          <div class="avatar"></div>
           <div class="message-bubble" style="width:100%;">
-            <h4>What I saw in your profile</h4>
+            <h4>Profile preview</h4>
             <p>${escapeHtml(data.profile_text_preview || "No preview available.")}</p>
           </div>
         </div>
@@ -1193,7 +1431,7 @@ HTML_PAGE = """
     }
 
     function setLoadingState(show) {
-      document.getElementById("loadingWrap").style.display = show ? "block" : "none";
+      document.getElementById("loadingOverlay").style.display = show ? "flex" : "none";
     }
 
     function startLoadingMessages() {
@@ -1256,7 +1494,7 @@ HTML_PAGE = """
         renderAssistantResults(data);
         document.getElementById("assistantResponse").innerHTML = `
           <p>I completed the analysis and ranked <strong>${escapeHtml(data.summary.returned_tenders)}</strong> tender opportunities.</p>
-          <p><strong>${escapeHtml(data.summary.high_fit)}</strong> were classified as high-fit matches based on the profile you submitted.</p>
+          <p><strong>${escapeHtml(data.summary.high_fit)}</strong> were classified as high-fit matches using the profile you submitted.</p>
         `;
       } catch (err) {
         document.getElementById("assistantResponse").innerHTML = `<div class="empty">Error: ${escapeHtml(err.message)}</div>`;
@@ -1274,9 +1512,10 @@ HTML_PAGE = """
     }
 
     async function loadExplorerTenders() {
-      const loading = document.getElementById("explorerLoading");
+      setLoadingState(true);
+      document.getElementById("loadingStepText").textContent = "Loading live tender market data...";
+
       const list = document.getElementById("explorerList");
-      loading.style.display = "block";
       list.innerHTML = "";
 
       try {
@@ -1327,7 +1566,7 @@ HTML_PAGE = """
       } catch (err) {
         list.innerHTML = `<div class="empty">Error: ${escapeHtml(err.message)}</div>`;
       } finally {
-        loading.style.display = "none";
+        setLoadingState(false);
       }
     }
 
@@ -1454,7 +1693,7 @@ HTML_PAGE = """
           <h3>Request logistics services</h3>
           <div class="service-box">
             <div class="tender-meta">
-              Request bid logistics support, supplier coordination, response preparation, project readiness planning, or execution support from your team.
+              Request bid logistics support, supplier coordination, response preparation, project readiness planning, or execution support.
             </div>
 
             <div class="service-form">
