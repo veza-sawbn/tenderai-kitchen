@@ -12,61 +12,67 @@ HTML_PAGE = """
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Sawbona | TenderAI</title>
+  <title>TenderAI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {
-      --bg: #f7f9fc;
-      --panel: #ffffff;
-      --panel-2: #fbfcfe;
-      --border: #e5ebf3;
-      --text: #0f172a;
-      --muted: #5f6b7a;
-      --brand: #1f6feb;
-      --brand-2: #0ea5e9;
-      --brand-3: #e8f2ff;
-      --green: #0f9d58;
-      --amber: #d97706;
-      --red: #dc2626;
-      --shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
-      --radius: 22px;
-      --chat-user: #eef6ff;
-      --chat-ai: #ffffff;
+      --bg: #070b08;
+      --bg-2: #0b120d;
+      --panel: rgba(11, 18, 13, 0.82);
+      --panel-2: rgba(15, 24, 18, 0.9);
+      --border: rgba(127, 176, 105, 0.12);
+      --text: #eef5ee;
+      --muted: #9caf9d;
+      --green: #7fb069;
+      --green-2: #59d38a;
+      --green-3: #b4efbf;
+      --shadow: 0 25px 70px rgba(0, 0, 0, 0.38);
+      --radius: 24px;
+      --red: #d27d7d;
+      --amber: #d6b35f;
     }
 
     * {
       box-sizing: border-box;
     }
 
+    html {
+      scroll-behavior: smooth;
+    }
+
     body {
       margin: 0;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(14, 165, 233, 0.10), transparent 24%),
-        radial-gradient(circle at top right, rgba(31, 111, 235, 0.08), transparent 22%),
-        linear-gradient(180deg, #f8fbff 0%, #f5f7fb 100%);
+        radial-gradient(circle at 15% 15%, rgba(89, 211, 138, 0.08), transparent 22%),
+        radial-gradient(circle at 85% 10%, rgba(127, 176, 105, 0.08), transparent 20%),
+        radial-gradient(circle at 50% 100%, rgba(89, 211, 138, 0.05), transparent 30%),
+        linear-gradient(180deg, #060907 0%, #0a100c 100%);
+      color: var(--text);
       min-height: 100vh;
     }
 
     .shell {
-      max-width: 1380px;
+      max-width: 1360px;
       margin: 0 auto;
       padding: 20px;
     }
 
     .topbar {
+      position: sticky;
+      top: 16px;
+      z-index: 20;
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 16px;
       padding: 14px 18px;
-      background: rgba(255, 255, 255, 0.88);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(14px);
       margin-bottom: 18px;
+      background: rgba(7, 11, 8, 0.68);
+      backdrop-filter: blur(18px);
+      border: 1px solid rgba(127, 176, 105, 0.08);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
     }
 
     .brand {
@@ -79,10 +85,11 @@ HTML_PAGE = """
       height: 42px;
       width: auto;
       display: block;
+      filter: drop-shadow(0 0 22px rgba(89, 211, 138, 0.16));
     }
 
     .brand-title {
-      font-size: 18px;
+      font-size: 20px;
       font-weight: 800;
       letter-spacing: 0.02em;
     }
@@ -93,118 +100,163 @@ HTML_PAGE = """
       margin-top: 2px;
     }
 
-    .hero {
-      padding: 28px;
-      border-radius: var(--radius);
-      background:
-        linear-gradient(135deg, rgba(31, 111, 235, 0.05) 0%, rgba(14, 165, 233, 0.07) 100%),
-        var(--panel);
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow);
-      margin-bottom: 18px;
-    }
-
-    .hero h1 {
-      margin: 0 0 10px 0;
-      font-size: 42px;
-      line-height: 1.05;
-    }
-
-    .hero p {
-      margin: 0;
-      max-width: 900px;
-      color: var(--muted);
-      line-height: 1.65;
-      font-size: 16px;
-    }
-
-    .tabs {
+    .nav-links {
       display: flex;
       gap: 10px;
-      margin-bottom: 18px;
       flex-wrap: wrap;
     }
 
-    .tab-btn {
-      border: 1px solid var(--border);
-      background: rgba(255, 255, 255, 0.85);
+    .nav-link {
       color: var(--muted);
+      text-decoration: none;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.04);
+      background: rgba(255,255,255,0.02);
+      font-size: 13px;
       font-weight: 700;
-      padding: 12px 16px;
-      border-radius: 14px;
-      cursor: pointer;
       transition: 0.2s ease;
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
     }
 
-    .tab-btn.active {
-      color: var(--brand);
-      background: var(--brand-3);
-      border-color: rgba(31, 111, 235, 0.18);
+    .nav-link:hover {
+      color: var(--green-3);
+      border-color: rgba(127, 176, 105, 0.18);
     }
 
-    .page {
-      display: none;
+    .hero {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
+      align-items: stretch;
+      margin-bottom: 18px;
     }
 
-    .page.active {
-      display: block;
-    }
-
-    .card {
+    .hero-panel,
+    .card,
+    .tender-card,
+    .message-bubble {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
     }
 
-    .page-layout {
+    .hero-panel {
+      padding: 32px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-panel::after {
+      content: "";
+      position: absolute;
+      right: -40px;
+      top: -40px;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(89, 211, 138, 0.18), transparent 70%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--green-3);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+
+    .glow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green-2);
+      box-shadow: 0 0 14px rgba(89, 211, 138, 0.85);
+    }
+
+    .hero h1 {
+      margin: 0 0 12px 0;
+      font-size: 54px;
+      line-height: 0.98;
+      max-width: 760px;
+      letter-spacing: -0.03em;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 760px;
+      line-height: 1.7;
+      font-size: 16px;
+    }
+
+    .hero-right {
+      padding: 24px;
       display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: 18px;
-      align-items: start;
+      gap: 14px;
+      align-content: start;
     }
 
-    .assistant-column {
-      display: grid;
-      gap: 18px;
-    }
-
-    .chat-panel {
+    .hero-mini {
       padding: 18px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(127, 176, 105, 0.08);
     }
 
-    .chat-header {
+    .hero-mini h4 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      color: var(--green-3);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .hero-mini div {
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .section {
+      margin-bottom: 18px;
+    }
+
+    .section-head {
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: end;
       gap: 12px;
       margin-bottom: 14px;
     }
 
-    .chat-title {
-      font-size: 20px;
-      font-weight: 800;
+    .section-head h2 {
       margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.02em;
     }
 
-    .chat-sub {
+    .section-head p {
+      margin: 6px 0 0 0;
       color: var(--muted);
-      font-size: 13px;
-      margin-top: 4px;
+      font-size: 14px;
     }
 
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: #fbfdff;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
+    .assistant-layout {
+      display: grid;
+      grid-template-columns: 0.92fr 1.08fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .card {
+      padding: 20px;
     }
 
     .chat-thread {
@@ -223,67 +275,56 @@ HTML_PAGE = """
     }
 
     .avatar {
-      width: 38px;
-      height: 38px;
-      border-radius: 14px;
+      width: 40px;
+      height: 40px;
+      border-radius: 15px;
       display: grid;
       place-items: center;
+      font-size: 12px;
       font-weight: 900;
-      flex: 0 0 38px;
-      color: white;
-      box-shadow: 0 10px 22px rgba(15, 23, 42, 0.10);
+      flex: 0 0 40px;
     }
 
     .avatar.ai {
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+      background: linear-gradient(135deg, var(--green), var(--green-2));
+      color: #061008;
+      box-shadow: 0 0 28px rgba(89, 211, 138, 0.24);
     }
 
     .avatar.user {
-      background: linear-gradient(135deg, #0f172a, #334155);
+      background: linear-gradient(135deg, #172117, #263026);
+      color: var(--green-3);
+      border: 1px solid rgba(127, 176, 105, 0.12);
     }
 
-    .bubble {
-      max-width: calc(100% - 60px);
-      padding: 16px 18px;
-      border-radius: 18px;
-      border: 1px solid var(--border);
-      line-height: 1.65;
-      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+    .message-bubble {
+      width: calc(100% - 52px);
+      padding: 18px;
+      background: var(--panel-2);
     }
 
-    .bubble.ai {
-      background: var(--chat-ai);
-    }
-
-    .bubble.user {
-      background: var(--chat-user);
-    }
-
-    .bubble h3,
-    .bubble h4 {
+    .message-bubble h3,
+    .message-bubble h4 {
       margin-top: 0;
     }
 
-    .bubble p {
+    .message-bubble p {
       margin: 0 0 10px 0;
+      line-height: 1.65;
+      color: var(--text);
     }
 
-    .bubble p:last-child {
+    .message-bubble p:last-child {
       margin-bottom: 0;
-    }
-
-    .form-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
     }
 
     label {
       display: block;
       margin-bottom: 8px;
       font-size: 13px;
+      color: var(--green-3);
       font-weight: 700;
-      color: #334155;
+      letter-spacing: 0.02em;
     }
 
     input,
@@ -291,26 +332,33 @@ HTML_PAGE = """
     button,
     select {
       width: 100%;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: #ffffff;
+      border-radius: 18px;
+      border: 1px solid rgba(127, 176, 105, 0.10);
+      background: rgba(255,255,255,0.03);
       color: var(--text);
-      padding: 12px 14px;
+      padding: 13px 14px;
       font-size: 14px;
       outline: none;
       transition: 0.2s ease;
+      font-family: inherit;
     }
 
     input:focus,
     textarea:focus,
     select:focus {
-      border-color: rgba(31, 111, 235, 0.28);
-      box-shadow: 0 0 0 4px rgba(31, 111, 235, 0.08);
+      border-color: rgba(89, 211, 138, 0.34);
+      box-shadow: 0 0 0 4px rgba(89, 211, 138, 0.08);
     }
 
     textarea {
       min-height: 120px;
       resize: vertical;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
     }
 
     .field {
@@ -324,6 +372,7 @@ HTML_PAGE = """
     .hint {
       color: var(--muted);
       font-size: 12px;
+      line-height: 1.5;
       margin-top: 8px;
     }
 
@@ -337,50 +386,51 @@ HTML_PAGE = """
       border: none;
       cursor: pointer;
       font-weight: 800;
-      border-radius: 16px;
-      padding: 13px 16px;
       transition: 0.2s ease;
-    }
-
-    .btn-primary {
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
-      color: white;
-      box-shadow: 0 14px 28px rgba(31, 111, 235, 0.22);
-    }
-
-    .btn-secondary {
-      background: #ffffff;
-      border: 1px solid var(--border);
-      color: var(--text);
     }
 
     .btn:hover {
       transform: translateY(-1px);
     }
 
+    .btn-primary {
+      background: linear-gradient(135deg, var(--green), var(--green-2));
+      color: #061008;
+      box-shadow: 0 12px 30px rgba(89, 211, 138, 0.20);
+    }
+
+    .btn-secondary {
+      background: rgba(255,255,255,0.03);
+      color: var(--text);
+      border: 1px solid rgba(127, 176, 105, 0.08);
+    }
+
     .summary-grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 14px;
-      margin-bottom: 18px;
+      margin-bottom: 16px;
     }
 
     .metric {
       padding: 18px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(127, 176, 105, 0.08);
     }
 
     .metric-label {
       color: var(--muted);
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.14em;
       margin-bottom: 8px;
     }
 
     .metric-value {
       font-size: 30px;
       font-weight: 900;
-      margin-bottom: 6px;
+      margin-bottom: 4px;
     }
 
     .metric-sub {
@@ -388,37 +438,13 @@ HTML_PAGE = """
       font-size: 13px;
     }
 
-    .results-panel {
-      padding: 18px;
-    }
-
-    .results-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-bottom: 14px;
-    }
-
-    .results-head h2 {
-      margin: 0;
-      font-size: 20px;
-    }
-
-    .results-sub {
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 4px;
-    }
-
     .loading-wrap {
       display: none;
-      padding: 20px;
-      border: 1px solid var(--border);
+      padding: 18px;
       border-radius: 18px;
-      background: #fbfdff;
-      margin-bottom: 16px;
+      border: 1px solid rgba(127, 176, 105, 0.10);
+      background: rgba(255,255,255,0.02);
+      margin-bottom: 14px;
     }
 
     .loading-row {
@@ -428,50 +454,45 @@ HTML_PAGE = """
     }
 
     .orb-loader {
-      width: 54px;
-      height: 54px;
+      width: 56px;
+      height: 56px;
       border-radius: 50%;
       position: relative;
-      background:
-        radial-gradient(circle at center, rgba(31, 111, 235, 0.05) 0%, transparent 62%);
-      border: 1px solid rgba(31, 111, 235, 0.12);
+      border: 1px solid rgba(89, 211, 138, 0.10);
+      background: radial-gradient(circle at center, rgba(89, 211, 138, 0.04), transparent 66%);
+      flex: 0 0 56px;
     }
 
     .orb-loader::before {
       content: "";
       position: absolute;
-      inset: 5px;
+      inset: 6px;
       border-radius: 50%;
-      border: 1px dashed rgba(31, 111, 235, 0.18);
+      border: 1px dashed rgba(89, 211, 138, 0.14);
     }
 
     .orb-loader::after {
       content: "";
       position: absolute;
-      top: 4px;
+      top: 3px;
       left: 50%;
       width: 10px;
       height: 10px;
       border-radius: 50%;
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+      background: linear-gradient(135deg, var(--green-3), var(--green-2));
       transform: translateX(-50%);
-      box-shadow: 0 0 18px rgba(31, 111, 235, 0.8);
+      box-shadow: 0 0 20px rgba(89, 211, 138, 0.95);
       animation: orbit 1.25s linear infinite;
-      transform-origin: 0 23px;
+      transform-origin: 0 25px;
     }
 
     @keyframes orbit {
-      from {
-        transform: rotate(0deg) translateX(-50%);
-      }
-      to {
-        transform: rotate(360deg) translateX(-50%);
-      }
+      from { transform: rotate(0deg) translateX(-50%); }
+      to { transform: rotate(360deg) translateX(-50%); }
     }
 
     .loading-title {
       font-weight: 800;
-      font-size: 16px;
       margin-bottom: 6px;
     }
 
@@ -480,13 +501,15 @@ HTML_PAGE = """
       font-size: 14px;
     }
 
+    .results-list,
     .tender-list {
       display: grid;
       gap: 14px;
     }
 
     .tender-card {
-      padding: 18px;
+      padding: 20px;
+      background: var(--panel-2);
     }
 
     .tender-top {
@@ -499,46 +522,46 @@ HTML_PAGE = """
 
     .tender-title {
       margin: 0 0 6px 0;
-      font-size: 21px;
+      font-size: 22px;
       line-height: 1.25;
     }
 
     .tender-meta {
       color: var(--muted);
       font-size: 13px;
-      line-height: 1.6;
+      line-height: 1.65;
     }
 
     .band {
       display: inline-flex;
       align-items: center;
-      padding: 8px 12px;
       border-radius: 999px;
+      padding: 8px 12px;
       font-size: 12px;
       font-weight: 800;
       margin-bottom: 10px;
     }
 
     .band.high {
-      background: rgba(15, 157, 88, 0.10);
-      color: var(--green);
-      border: 1px solid rgba(15, 157, 88, 0.18);
+      color: var(--green-3);
+      background: rgba(89, 211, 138, 0.10);
+      border: 1px solid rgba(89, 211, 138, 0.18);
     }
 
     .band.medium {
-      background: rgba(217, 119, 6, 0.10);
-      color: var(--amber);
-      border: 1px solid rgba(217, 119, 6, 0.18);
+      color: #f1d997;
+      background: rgba(214, 179, 95, 0.10);
+      border: 1px solid rgba(214, 179, 95, 0.18);
     }
 
     .band.low {
-      background: rgba(220, 38, 38, 0.08);
-      color: var(--red);
-      border: 1px solid rgba(220, 38, 38, 0.16);
+      color: #f0b3b3;
+      background: rgba(210, 125, 125, 0.08);
+      border: 1px solid rgba(210, 125, 125, 0.16);
     }
 
     .score-number {
-      font-size: 28px;
+      font-size: 30px;
       font-weight: 900;
       text-align: right;
     }
@@ -551,15 +574,16 @@ HTML_PAGE = """
 
     .two-col {
       display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
+      grid-template-columns: 1.05fr 0.95fr;
       gap: 14px;
+      margin-top: 14px;
     }
 
     .mini {
       padding: 16px;
-      background: var(--panel-2);
-      border: 1px solid var(--border);
       border-radius: 18px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(127, 176, 105, 0.08);
     }
 
     .mini h4 {
@@ -567,11 +591,11 @@ HTML_PAGE = """
       font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: #334155;
+      color: var(--green-3);
     }
 
     .value-big {
-      font-size: 28px;
+      font-size: 30px;
       font-weight: 900;
       margin-bottom: 6px;
     }
@@ -585,8 +609,7 @@ HTML_PAGE = """
       display: flex;
       gap: 10px;
       align-items: start;
-      color: var(--text);
-      line-height: 1.5;
+      line-height: 1.55;
       font-size: 14px;
     }
 
@@ -596,10 +619,11 @@ HTML_PAGE = """
       border-radius: 50%;
       display: grid;
       place-items: center;
+      background: rgba(89, 211, 138, 0.10);
+      color: var(--green-3);
       font-weight: 900;
-      color: var(--brand);
-      background: rgba(31, 111, 235, 0.10);
       flex: 0 0 22px;
+      box-shadow: 0 0 18px rgba(89, 211, 138, 0.16);
     }
 
     .keyword-list {
@@ -612,9 +636,9 @@ HTML_PAGE = """
     .chip {
       padding: 8px 12px;
       border-radius: 999px;
-      background: #f3f8ff;
-      border: 1px solid #dbeafe;
-      color: var(--brand);
+      background: rgba(89, 211, 138, 0.08);
+      border: 1px solid rgba(89, 211, 138, 0.12);
+      color: var(--green-3);
       font-size: 12px;
       font-weight: 700;
     }
@@ -623,9 +647,9 @@ HTML_PAGE = """
       padding: 24px;
       text-align: center;
       color: var(--muted);
-      border: 1px dashed var(--border);
-      border-radius: 18px;
-      background: #fbfdff;
+      border: 1px dashed rgba(127, 176, 105, 0.10);
+      border-radius: 20px;
+      background: rgba(255,255,255,0.02);
     }
 
     .explorer-layout {
@@ -637,8 +661,7 @@ HTML_PAGE = """
 
     .list-card,
     .detail-card {
-      padding: 18px;
-      min-height: 560px;
+      padding: 20px;
     }
 
     .toolbar {
@@ -651,14 +674,14 @@ HTML_PAGE = """
     .list-scroll {
       max-height: 760px;
       overflow: auto;
-      padding-right: 6px;
+      padding-right: 4px;
     }
 
     .list-item {
       padding: 16px;
       border-radius: 18px;
-      border: 1px solid var(--border);
-      background: #fbfdff;
+      border: 1px solid rgba(127, 176, 105, 0.08);
+      background: rgba(255,255,255,0.03);
       margin-bottom: 10px;
       cursor: pointer;
       transition: 0.2s ease;
@@ -666,9 +689,9 @@ HTML_PAGE = """
 
     .list-item:hover,
     .list-item.active {
-      border-color: rgba(31, 111, 235, 0.24);
-      box-shadow: 0 10px 24px rgba(31, 111, 235, 0.08);
-      background: #f8fbff;
+      border-color: rgba(89, 211, 138, 0.20);
+      box-shadow: 0 14px 30px rgba(89, 211, 138, 0.08);
+      background: rgba(255,255,255,0.04);
     }
 
     .list-item h4 {
@@ -688,14 +711,14 @@ HTML_PAGE = """
       justify-content: space-between;
       gap: 12px;
       align-items: start;
-      margin-bottom: 14px;
       flex-wrap: wrap;
+      margin-bottom: 14px;
     }
 
     .detail-head h2 {
       margin: 0 0 6px 0;
-      font-size: 24px;
-      line-height: 1.25;
+      font-size: 28px;
+      line-height: 1.2;
     }
 
     .detail-grid {
@@ -705,22 +728,22 @@ HTML_PAGE = """
       margin-top: 14px;
     }
 
-    .section {
-      margin-top: 16px;
+    .section-block {
+      margin-top: 18px;
     }
 
-    .section h3 {
+    .section-block h3 {
       margin: 0 0 10px 0;
-      font-size: 16px;
+      font-size: 18px;
     }
 
     .advice-box,
     .service-box {
       padding: 16px;
       border-radius: 18px;
-      border: 1px solid var(--border);
-      background: #fbfdff;
-      margin-top: 14px;
+      border: 1px solid rgba(127, 176, 105, 0.08);
+      background: rgba(255,255,255,0.03);
+      margin-top: 12px;
     }
 
     .service-form {
@@ -737,17 +760,18 @@ HTML_PAGE = """
     .notice {
       color: var(--muted);
       font-size: 12px;
+      line-height: 1.6;
       margin-top: 8px;
-      line-height: 1.5;
     }
 
     @media (max-width: 1180px) {
-      .page-layout,
+      .hero,
+      .assistant-layout,
       .explorer-layout,
-      .two-col,
-      .detail-grid,
+      .summary-grid,
       .toolbar,
-      .summary-grid {
+      .two-col,
+      .detail-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -758,10 +782,16 @@ HTML_PAGE = """
       }
 
       .hero h1 {
-        font-size: 32px;
+        font-size: 38px;
       }
 
-      .form-grid {
+      .topbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .form-grid,
+      .service-form {
         grid-template-columns: 1fr;
       }
 
@@ -773,10 +803,6 @@ HTML_PAGE = """
       .score-caption {
         text-align: left;
       }
-
-      .service-form {
-        grid-template-columns: 1fr;
-      }
     }
   </style>
 </head>
@@ -784,173 +810,182 @@ HTML_PAGE = """
   <div class="shell">
     <div class="topbar">
       <div class="brand">
-        <img src="https://static.wixstatic.com/media/7193cf_13ca777ff7cc4c79a68caa1b2024f707~mv2.png" alt="Sawbona logo">
+        <img src="https://static.wixstatic.com/media/7193cf_13ca777ff7cc4c79a68caa1b2024f707~mv2.png" alt="Logo">
         <div>
-          <div class="brand-title">Sawbona | TenderAI</div>
-          <div class="brand-sub">Procurement intelligence, tender guidance, and delivery support</div>
+          <div class="brand-title">TenderAI</div>
+          <div class="brand-sub">AI tender intelligence and execution planning</div>
         </div>
       </div>
-      <div class="status-pill">Live public tender analysis engine</div>
+
+      <div class="nav-links">
+        <a class="nav-link" href="#assistant">Assistant</a>
+        <a class="nav-link" href="#matches">Matches</a>
+        <a class="nav-link" href="#explorer">Explorer</a>
+      </div>
     </div>
 
-    <div class="hero card">
-      <h1>Your AI procurement co-pilot for public tenders.</h1>
-      <p>
-        Upload a supplier profile, have TenderAI interpret your capabilities, match them against live public opportunities,
-        estimate likely project size and execution investment, and guide you on how to improve your chances of winning.
-      </p>
-    </div>
+    <div class="hero">
+      <div class="hero-panel">
+        <div class="eyebrow"><span class="glow-dot"></span> Procurement intelligence</div>
+        <h1>Analyze tenders with an interface that feels like your own private AI strategist.</h1>
+        <p>
+          Upload a supplier profile, let TenderAI interpret your strengths, surface the best-fit tenders,
+          estimate likely contract value and expected execution investment, and guide you on how to position your bid better.
+        </p>
+      </div>
 
-    <div class="tabs">
-      <button class="tab-btn active" data-page="assistantPage">AI Assistant</button>
-      <button class="tab-btn" data-page="explorerPage">Tender Explorer</button>
-    </div>
-
-    <div id="assistantPage" class="page active">
-      <div class="page-layout">
-        <div class="assistant-column">
-          <div class="chat-panel card">
-            <div class="chat-header">
-              <div>
-                <div class="chat-title">TenderAI Assistant</div>
-                <div class="chat-sub">Interact with the engine as if you were briefing an AI analyst.</div>
-              </div>
-            </div>
-
-            <div class="chat-thread">
-              <div class="message ai">
-                <div class="avatar ai">AI</div>
-                <div class="bubble ai">
-                  <h3>Tell me about your business.</h3>
-                  <p>Upload a supplier profile PDF or paste business capability text. I will read your profile, scan public tenders, estimate opportunity size, and rank the best-fit contracts for you.</p>
-                </div>
-              </div>
-
-              <div class="message user">
-                <div class="avatar user">U</div>
-                <div class="bubble user">
-                  <div class="form-grid">
-                    <div class="field">
-                      <label for="profile_pdf">Supplier profile PDF</label>
-                      <input type="file" id="profile_pdf" name="profile_pdf" accept=".pdf">
-                      <div class="hint">Best inputs: CSD summary, capability statement, or company profile PDF.</div>
-                    </div>
-
-                    <div class="field">
-                      <label for="profile_text">Or paste company profile text</label>
-                      <textarea id="profile_text" name="profile_text" placeholder="Use this only if you are not uploading a PDF."></textarea>
-                    </div>
-
-                    <div class="field">
-                      <label for="date_from">From date</label>
-                      <input type="date" id="date_from" value="2026-01-01">
-                    </div>
-
-                    <div class="field">
-                      <label for="date_to">To date</label>
-                      <input type="date" id="date_to" value="2026-03-17">
-                    </div>
-
-                    <div class="field">
-                      <label for="page_number">Page number</label>
-                      <input type="number" id="page_number" value="1" min="1">
-                    </div>
-
-                    <div class="field">
-                      <label for="page_size">Page size</label>
-                      <input type="number" id="page_size" value="10" min="1" max="100">
-                    </div>
-                  </div>
-
-                  <div class="actions">
-                    <button class="btn btn-primary" id="runScanBtn" type="button">Analyze opportunities</button>
-                    <button class="btn btn-secondary" id="clearBtn" type="button">Clear</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="message ai">
-                <div class="avatar ai">AI</div>
-                <div class="bubble ai">
-                  <div class="loading-wrap" id="loadingWrap">
-                    <div class="loading-row">
-                      <div class="orb-loader"></div>
-                      <div>
-                        <div class="loading-title">TenderAI is analyzing your opportunity landscape.</div>
-                        <div class="loading-step" id="loadingStepText">Reading supplier profile and scanning public tenders...</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div id="assistantResponse">
-                    <p>Once you run a scan, I will show you ranked opportunities, investment estimates, and why each tender matches your business.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="card results-panel">
-            <div class="results-head">
-              <div>
-                <h2>Ranked opportunity matches</h2>
-                <div class="results-sub">Best-fit tenders based on your submitted profile.</div>
-              </div>
-            </div>
-
-            <div class="summary-grid" id="summaryGrid" style="display:none;">
-              <div class="card metric">
-                <div class="metric-label">Returned tenders</div>
-                <div class="metric-value" id="mTotal">0</div>
-                <div class="metric-sub">Scored opportunities</div>
-              </div>
-              <div class="card metric">
-                <div class="metric-label">High fit</div>
-                <div class="metric-value" id="mHigh">0</div>
-                <div class="metric-sub">Priority targets</div>
-              </div>
-              <div class="card metric">
-                <div class="metric-label">Medium fit</div>
-                <div class="metric-value" id="mMedium">0</div>
-                <div class="metric-sub">Worth pursuing</div>
-              </div>
-              <div class="card metric">
-                <div class="metric-label">Low fit</div>
-                <div class="metric-value" id="mLow">0</div>
-                <div class="metric-sub">Monitor only</div>
-              </div>
-            </div>
-
-            <div id="resultsList" class="tender-list">
-              <div class="empty">Your ranked matches will appear here after a scan.</div>
-            </div>
-          </div>
+      <div class="hero-panel hero-right">
+        <div class="hero-mini">
+          <h4>Profile understanding</h4>
+          <div>Reads business profile PDFs and extracts capability signals for matching.</div>
         </div>
-
-        <div class="card results-panel">
-          <div class="results-head">
-            <div>
-              <h2>AI interpretation</h2>
-              <div class="results-sub">A concise summary of what TenderAI understood from your profile.</div>
-            </div>
-          </div>
-          <div id="insightPanel">
-            <div class="empty">Run a scan to see profile understanding, extracted capability signals, and opportunity interpretation.</div>
-          </div>
+        <div class="hero-mini">
+          <h4>Opportunity ranking</h4>
+          <div>Scores live public tenders by fit, likely value, and delivery readiness requirements.</div>
+        </div>
+        <div class="hero-mini">
+          <h4>Execution support</h4>
+          <div>Lets users request advice and Sawbona logistics services directly from the tender view.</div>
         </div>
       </div>
     </div>
 
-    <div id="explorerPage" class="page">
+    <div id="assistant" class="section">
+      <div class="section-head">
+        <div>
+          <h2>AI Assistant</h2>
+          <p>Interact with TenderAI through a guided assistant-style workflow.</p>
+        </div>
+      </div>
+
+      <div class="assistant-layout">
+        <div class="card">
+          <div class="chat-thread">
+            <div class="message ai">
+              <div class="avatar ai">AI</div>
+              <div class="message-bubble">
+                <h3>Let’s start with your business profile.</h3>
+                <p>Upload a supplier profile PDF or paste business capability text. I’ll interpret your profile, scan public tenders, rank the best opportunities, and estimate what it may take to execute them.</p>
+              </div>
+            </div>
+
+            <div class="message user">
+              <div class="avatar user">YOU</div>
+              <div class="message-bubble">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="profile_pdf">Supplier profile PDF</label>
+                    <input type="file" id="profile_pdf" accept=".pdf">
+                    <div class="hint">CSD summaries, company profiles, and capability statements work best.</div>
+                  </div>
+
+                  <div class="field">
+                    <label for="profile_text">Or paste profile text</label>
+                    <textarea id="profile_text" placeholder="Use this only if you are not uploading a PDF."></textarea>
+                  </div>
+
+                  <div class="field">
+                    <label for="date_from">From date</label>
+                    <input type="date" id="date_from" value="2026-01-01">
+                  </div>
+
+                  <div class="field">
+                    <label for="date_to">To date</label>
+                    <input type="date" id="date_to" value="2026-03-17">
+                  </div>
+
+                  <div class="field">
+                    <label for="page_number">Page number</label>
+                    <input type="number" id="page_number" value="1" min="1">
+                  </div>
+
+                  <div class="field">
+                    <label for="page_size">Page size</label>
+                    <input type="number" id="page_size" value="10" min="1" max="100">
+                  </div>
+                </div>
+
+                <div class="actions">
+                  <button class="btn btn-primary" id="runScanBtn" type="button">Run TenderAI analysis</button>
+                  <button class="btn btn-secondary" id="clearBtn" type="button">Clear</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="message ai">
+              <div class="avatar ai">AI</div>
+              <div class="message-bubble">
+                <div class="loading-wrap" id="loadingWrap">
+                  <div class="loading-row">
+                    <div class="orb-loader"></div>
+                    <div>
+                      <div class="loading-title">TenderAI is working through your opportunity map.</div>
+                      <div class="loading-step" id="loadingStepText">Reading supplier profile and scanning tender releases...</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="assistantResponse">
+                  <p>Once the scan runs, I’ll return ranked opportunities and a concise interpretation of what I found.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-top:0;">What TenderAI understood</h3>
+          <div id="scanUnderstanding" class="empty">Run a scan to see extracted capability keywords and AI interpretation.</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="matches" class="section">
+      <div class="section-head">
+        <div>
+          <h2>Best-fit matches</h2>
+          <p>Ranked tender opportunities based on your profile signals.</p>
+        </div>
+      </div>
+
+      <div class="summary-grid" id="summaryGrid" style="display:none;">
+        <div class="metric">
+          <div class="metric-label">Returned tenders</div>
+          <div class="metric-value" id="mTotal">0</div>
+          <div class="metric-sub">Scored opportunities</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">High fit</div>
+          <div class="metric-value" id="mHigh">0</div>
+          <div class="metric-sub">Best opportunities</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Medium fit</div>
+          <div class="metric-value" id="mMedium">0</div>
+          <div class="metric-sub">Worth reviewing</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Low fit</div>
+          <div class="metric-value" id="mLow">0</div>
+          <div class="metric-sub">Lower priority</div>
+        </div>
+      </div>
+
+      <div id="resultsList" class="results-list">
+        <div class="empty">Your ranked opportunity matches will appear here after an analysis.</div>
+      </div>
+    </div>
+
+    <div id="explorer" class="section">
+      <div class="section-head">
+        <div>
+          <h2>Tender Explorer</h2>
+          <p>Browse all tenders manually, inspect details, request advice, and request support services.</p>
+        </div>
+      </div>
+
       <div class="explorer-layout">
         <div class="card list-card">
-          <div class="results-head">
-            <div>
-              <h2>All tenders</h2>
-              <div class="results-sub">Browse live tenders manually and inspect each opportunity in detail.</div>
-            </div>
-          </div>
-
           <div class="toolbar">
             <div>
               <label for="explorer_date_from">From date</label>
@@ -974,12 +1009,12 @@ HTML_PAGE = """
             <button class="btn btn-primary" id="loadTendersBtn" type="button">Load tenders</button>
           </div>
 
-          <div id="explorerLoading" class="loading-wrap" style="margin-bottom: 12px;">
+          <div class="loading-wrap" id="explorerLoading" style="margin-bottom: 12px;">
             <div class="loading-row">
               <div class="orb-loader"></div>
               <div>
-                <div class="loading-title">Fetching live tenders...</div>
-                <div class="loading-step">Retrieving open procurement opportunities for manual review.</div>
+                <div class="loading-title">Loading live tender market data.</div>
+                <div class="loading-step">Pulling current public opportunities for manual review.</div>
               </div>
             </div>
           </div>
@@ -991,7 +1026,7 @@ HTML_PAGE = """
 
         <div class="card detail-card">
           <div id="detailPanel">
-            <div class="empty">Select a tender from the list to view its overview, get AI advice, and request Sawbona logistics support.</div>
+            <div class="empty">Select a tender to view its overview, AI advice, value estimate, execution investment, and logistics support options.</div>
           </div>
         </div>
       </div>
@@ -1004,10 +1039,10 @@ HTML_PAGE = """
     let selectedTender = null;
 
     const loadingMessages = [
-      "Reading supplier profile and extracting capability signals...",
-      "Scanning live tender releases from the public procurement source...",
-      "Scoring opportunity fit and estimating project size...",
-      "Preparing advice and delivery insights..."
+      "Reading supplier profile and extracting business signals...",
+      "Scanning public tender releases and filtering opportunities...",
+      "Scoring tender relevance and estimating contract value...",
+      "Calculating likely execution investment and readiness needs..."
     ];
 
     function escapeHtml(value) {
@@ -1033,25 +1068,34 @@ HTML_PAGE = """
       return "band low";
     }
 
-    function whyItemsForTender(t) {
+    function buildWhyMatched(t) {
       const items = [];
+
       if (t.matched_keywords && t.matched_keywords.length) {
         items.push("Matched capability keywords: " + t.matched_keywords.join(", "));
       }
+
       if (t.category && ["works", "services"].includes(String(t.category).toLowerCase())) {
         items.push("Tender category aligns with operational delivery work.");
       }
+
       if (t.estimation_reason) {
-        items.push("Investment signal: " + t.estimation_reason);
+        items.push("Tender value inference: " + t.estimation_reason);
       }
+
+      if (t.execution_investment_reason) {
+        items.push("Execution planning signal: " + t.execution_investment_reason);
+      }
+
       if (!items.length) {
-        items.push("TenderAI found limited fit signals for this opportunity.");
+        items.push("TenderAI found limited direct fit signals in this opportunity.");
       }
+
       return items;
     }
 
     function renderTenderCard(t) {
-      const whyItems = whyItemsForTender(t).map(item => `
+      const whyHtml = buildWhyMatched(t).map(item => `
         <div class="why-item">
           <div class="check">✓</div>
           <div>${escapeHtml(item)}</div>
@@ -1059,7 +1103,7 @@ HTML_PAGE = """
       `).join("");
 
       return `
-        <div class="card tender-card">
+        <div class="tender-card">
           <div class="tender-top">
             <div>
               <h3 class="tender-title">${escapeHtml(safeText(t.title, "Untitled tender"))}</h3>
@@ -1084,25 +1128,48 @@ HTML_PAGE = """
           <div class="two-col">
             <div class="mini">
               <h4>Why this matches</h4>
-              <div class="why-list">${whyItems}</div>
+              <div class="why-list">${whyHtml}</div>
               <div class="keyword-list">
                 ${(t.matched_keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("")}
               </div>
             </div>
 
             <div class="mini">
-              <h4>Project value and delivery investment</h4>
+              <h4>Value and investment outlook</h4>
               <div class="value-big">${escapeHtml(safeText(t.value_display))}</div>
               <div class="tender-meta">
                 Source: ${escapeHtml(safeText(t.value_source))} •
                 Confidence: ${escapeHtml(safeText(t.estimation_confidence))}
               </div>
               <div style="margin-top: 10px;">${escapeHtml(safeText(t.estimation_reason))}</div>
-              <div style="margin-top: 14px; font-weight: 700;">
-                Estimated delivery investment: ${escapeHtml(safeText(t.execution_investment_display))}
+              <div style="margin-top: 14px; font-weight: 800;">
+                Expected execution investment: ${escapeHtml(safeText(t.execution_investment_display))}
               </div>
               <div class="tender-meta">${escapeHtml(safeText(t.execution_investment_reason))}</div>
             </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderScanUnderstanding(data) {
+      const keywords = (data.profile_keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("");
+
+      document.getElementById("scanUnderstanding").innerHTML = `
+        <div class="message ai" style="margin-bottom: 14px;">
+          <div class="avatar ai">AI</div>
+          <div class="message-bubble" style="width:100%;">
+            <h4>Profile interpretation</h4>
+            <p>I used your submitted profile to extract capability signals and compare them to the tender descriptions, procurement categories, and delivery requirements.</p>
+            <div class="keyword-list">${keywords || '<span class="chip">No keywords extracted</span>'}</div>
+          </div>
+        </div>
+
+        <div class="message ai">
+          <div class="avatar ai">AI</div>
+          <div class="message-bubble" style="width:100%;">
+            <h4>What I saw in your profile</h4>
+            <p>${escapeHtml(data.profile_text_preview || "No preview available.")}</p>
           </div>
         </div>
       `;
@@ -1117,35 +1184,12 @@ HTML_PAGE = """
 
       const list = document.getElementById("resultsList");
       if (!data.tenders || !data.tenders.length) {
-        list.innerHTML = '<div class="empty">No tenders found for this scan.</div>';
+        list.innerHTML = '<div class="empty">No tenders were found for this request.</div>';
       } else {
         list.innerHTML = data.tenders.map(renderTenderCard).join("");
       }
 
-      const insightPanel = document.getElementById("insightPanel");
-      insightPanel.innerHTML = `
-        <div class="message ai" style="margin-bottom: 14px;">
-          <div class="avatar ai">AI</div>
-          <div class="bubble ai" style="max-width: 100%;">
-            <h3>Here is what I understood about your business.</h3>
-            <p>I extracted profile signals and used them to rank the most relevant tenders from the selected date range.</p>
-            <div class="keyword-list">
-              ${(data.profile_keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("")}
-            </div>
-          </div>
-        </div>
-
-        <div class="message ai">
-          <div class="avatar ai">AI</div>
-          <div class="bubble ai" style="max-width: 100%;">
-            <h4>Profile preview</h4>
-            <p>${escapeHtml(data.profile_text_preview || "No preview available.")}</p>
-            <h4 style="margin-top: 16px;">Request scope</h4>
-            <p>Date range: ${escapeHtml(data.request_used.dateFrom)} to ${escapeHtml(data.request_used.dateTo)}</p>
-            <p>Scan size: page ${escapeHtml(data.request_used.PageNumber)} / ${escapeHtml(data.request_used.PageSize)} tenders requested</p>
-          </div>
-        </div>
-      `;
+      renderScanUnderstanding(data);
     }
 
     function setLoadingState(show) {
@@ -1153,11 +1197,11 @@ HTML_PAGE = """
     }
 
     function startLoadingMessages() {
-      let i = 0;
+      let idx = 0;
       document.getElementById("loadingStepText").textContent = loadingMessages[0];
       window.loadingTicker = setInterval(() => {
-        i = (i + 1) % loadingMessages.length;
-        document.getElementById("loadingStepText").textContent = loadingMessages[i];
+        idx = (idx + 1) % loadingMessages.length;
+        document.getElementById("loadingStepText").textContent = loadingMessages[idx];
       }, 1300);
     }
 
@@ -1202,18 +1246,17 @@ HTML_PAGE = """
         }
 
         const data = await response.json();
+
         if (data.status !== "ok") {
           document.getElementById("assistantResponse").innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || "Unknown error")}</div>`;
-          document.getElementById("resultsList").innerHTML = `<div class="empty">No results available.</div>`;
           return;
         }
 
         latestScan = data;
         renderAssistantResults(data);
         document.getElementById("assistantResponse").innerHTML = `
-          <p>I completed the scan. I found <strong>${escapeHtml(data.summary.returned_tenders)}</strong> ranked opportunities and classified
-          <strong>${escapeHtml(data.summary.high_fit)}</strong> as high-fit matches.</p>
-          <p>You can also open the <strong>Tender Explorer</strong> tab to inspect the broader market manually.</p>
+          <p>I completed the analysis and ranked <strong>${escapeHtml(data.summary.returned_tenders)}</strong> tender opportunities.</p>
+          <p><strong>${escapeHtml(data.summary.high_fit)}</strong> were classified as high-fit matches based on the profile you submitted.</p>
         `;
       } catch (err) {
         document.getElementById("assistantResponse").innerHTML = `<div class="empty">Error: ${escapeHtml(err.message)}</div>`;
@@ -1255,7 +1298,7 @@ HTML_PAGE = """
         explorerTenders = data.tenders || [];
 
         if (!explorerTenders.length) {
-          list.innerHTML = `<div class="empty">No tenders found for this range.</div>`;
+          list.innerHTML = `<div class="empty">No tenders found for this date range.</div>`;
           return;
         }
 
@@ -1316,7 +1359,7 @@ HTML_PAGE = """
 
       box.innerHTML = `
         <div class="advice-box">
-          <h3 style="margin-top:0;">AI advice to improve your score</h3>
+          <h3 style="margin-top:0;">How to improve your score</h3>
           <div class="why-list">
             ${data.advice.map(item => `
               <div class="why-item">
@@ -1326,104 +1369,13 @@ HTML_PAGE = """
             `).join("")}
           </div>
           <div style="margin-top: 14px;">
-            <strong>Recommended supporting material</strong>
+            <strong>Recommended supporting documents</strong>
             <div class="keyword-list">
               ${data.recommended_documents.map(item => `<span class="chip">${escapeHtml(item)}</span>`).join("")}
             </div>
           </div>
         </div>
       `;
-    }
-
-    function renderTenderDetail(t) {
-      document.getElementById("detailPanel").innerHTML = `
-        <div class="detail-head">
-          <div>
-            <h2>${escapeHtml(safeText(t.title, "Untitled tender"))}</h2>
-            <div class="tender-meta">
-              ${escapeHtml(safeText(t.buyer))} •
-              ${escapeHtml(safeText(t.category))} •
-              closes ${escapeHtml(safeText(t.close_date))}
-            </div>
-          </div>
-          <div>
-            <div class="${bandClass(t.fit_band || "Low fit")}">${escapeHtml(safeText(t.fit_band || "Unscored"))}</div>
-          </div>
-        </div>
-
-        <div class="section">
-          <h3>Tender overview</h3>
-          <div class="mini">${escapeHtml(safeText(t.description, "No description supplied."))}</div>
-        </div>
-
-        <div class="detail-grid">
-          <div class="mini">
-            <h4>Estimated tender value</h4>
-            <div class="value-big">${escapeHtml(safeText(t.value_display))}</div>
-            <div class="tender-meta">
-              Source: ${escapeHtml(safeText(t.value_source))} •
-              Confidence: ${escapeHtml(safeText(t.estimation_confidence))}
-            </div>
-            <div style="margin-top: 10px;">${escapeHtml(safeText(t.estimation_reason))}</div>
-          </div>
-
-          <div class="mini">
-            <h4>Expected delivery investment</h4>
-            <div class="value-big">${escapeHtml(safeText(t.execution_investment_display))}</div>
-            <div class="tender-meta">${escapeHtml(safeText(t.execution_investment_reason))}</div>
-          </div>
-        </div>
-
-        <div class="section">
-          <h3>AI guidance</h3>
-          <div class="actions">
-            <button class="btn btn-primary" id="adviceBtn" type="button">Get AI advice on how to score better</button>
-          </div>
-          <div id="adviceResult" style="margin-top: 12px;">
-            <div class="empty">Ask TenderAI for tailored advice for this selected tender.</div>
-          </div>
-        </div>
-
-        <div class="section">
-          <h3>Request Sawbona logistics services</h3>
-          <div class="service-box">
-            <div class="tender-meta">
-              Use this to request bid logistics support, document preparation coordination, supplier mobilisation, project readiness planning, and tender response support.
-            </div>
-
-            <div class="service-form">
-              <div>
-                <label for="service_name">Your name</label>
-                <input id="service_name" type="text" placeholder="Full name">
-              </div>
-              <div>
-                <label for="service_email">Email</label>
-                <input id="service_email" type="email" placeholder="you@example.com">
-              </div>
-              <div>
-                <label for="service_company">Company</label>
-                <input id="service_company" type="text" placeholder="Company name">
-              </div>
-              <div>
-                <label for="service_phone">Phone</label>
-                <input id="service_phone" type="text" placeholder="+27 ...">
-              </div>
-              <div class="full">
-                <label for="service_notes">Support required</label>
-                <textarea id="service_notes" placeholder="Describe the support you want from Sawbona for this tender."></textarea>
-              </div>
-            </div>
-
-            <div class="actions">
-              <button class="btn btn-primary" id="requestServiceBtn" type="button">Request logistics support</button>
-            </div>
-            <div id="serviceResult" class="notice"></div>
-          </div>
-        </div>
-      `;
-
-      document.getElementById("adviceBtn").addEventListener("click", getTenderAdvice);
-      document.getElementById("requestServiceBtn").addEventListener("click", submitServiceRequest);
     }
 
     async function submitServiceRequest() {
@@ -1445,25 +1397,100 @@ HTML_PAGE = """
       });
 
       const data = await response.json();
-      const result = document.getElementById("serviceResult");
-
-      if (data.status !== "ok") {
-        result.textContent = "Unable to submit request.";
-        return;
-      }
-
-      result.textContent = "Request captured. Reference: " + data.reference + ". We can later route this to your CRM or support inbox.";
+      document.getElementById("serviceResult").textContent =
+        data.status === "ok"
+          ? "Request captured. Reference: " + data.reference
+          : "Unable to submit request.";
     }
 
-    document.querySelectorAll(".tab-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-        document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+    function renderTenderDetail(t) {
+      document.getElementById("detailPanel").innerHTML = `
+        <div class="detail-head">
+          <div>
+            <h2>${escapeHtml(safeText(t.title, "Untitled tender"))}</h2>
+            <div class="tender-meta">
+              ${escapeHtml(safeText(t.buyer))} •
+              ${escapeHtml(safeText(t.category))} •
+              closes ${escapeHtml(safeText(t.close_date))}
+            </div>
+          </div>
+          <div class="${bandClass(t.fit_band || "Low fit")}">${escapeHtml(safeText(t.fit_band || "Unscored"))}</div>
+        </div>
 
-        btn.classList.add("active");
-        document.getElementById(btn.getAttribute("data-page")).classList.add("active");
-      });
-    });
+        <div class="mini">
+          <h4>Tender overview</h4>
+          <div>${escapeHtml(safeText(t.description, "No description supplied."))}</div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="mini">
+            <h4>Estimated tender value</h4>
+            <div class="value-big">${escapeHtml(safeText(t.value_display))}</div>
+            <div class="tender-meta">
+              Source: ${escapeHtml(safeText(t.value_source))} •
+              Confidence: ${escapeHtml(safeText(t.estimation_confidence))}
+            </div>
+            <div style="margin-top:10px;">${escapeHtml(safeText(t.estimation_reason))}</div>
+          </div>
+
+          <div class="mini">
+            <h4>Expected execution investment</h4>
+            <div class="value-big">${escapeHtml(safeText(t.execution_investment_display))}</div>
+            <div class="tender-meta">${escapeHtml(safeText(t.execution_investment_reason))}</div>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <h3>Ask TenderAI for advice</h3>
+          <div class="actions">
+            <button class="btn btn-primary" id="adviceBtn" type="button">How can I score better for this tender?</button>
+          </div>
+          <div id="adviceResult" style="margin-top:12px;">
+            <div class="empty">Request tailored bid advice for this tender.</div>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <h3>Request logistics services</h3>
+          <div class="service-box">
+            <div class="tender-meta">
+              Request bid logistics support, supplier coordination, response preparation, project readiness planning, or execution support from your team.
+            </div>
+
+            <div class="service-form">
+              <div>
+                <label for="service_name">Your name</label>
+                <input id="service_name" type="text" placeholder="Full name">
+              </div>
+              <div>
+                <label for="service_email">Email</label>
+                <input id="service_email" type="email" placeholder="you@example.com">
+              </div>
+              <div>
+                <label for="service_company">Company</label>
+                <input id="service_company" type="text" placeholder="Company name">
+              </div>
+              <div>
+                <label for="service_phone">Phone</label>
+                <input id="service_phone" type="text" placeholder="+27 ...">
+              </div>
+              <div class="full">
+                <label for="service_notes">Support required</label>
+                <textarea id="service_notes" placeholder="Describe the support you want for this tender."></textarea>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button class="btn btn-primary" id="requestServiceBtn" type="button">Request support</button>
+            </div>
+            <div id="serviceResult" class="notice"></div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById("adviceBtn").addEventListener("click", getTenderAdvice);
+      document.getElementById("requestServiceBtn").addEventListener("click", submitServiceRequest);
+    }
 
     document.getElementById("runScanBtn").addEventListener("click", runScan);
     document.getElementById("clearBtn").addEventListener("click", clearScanForm);
@@ -1669,11 +1696,11 @@ def estimate_execution_investment(title, description, category, estimated_low, e
     mid = round((low + high) / 2, 0)
 
     return {
-      "execution_investment_low": low,
-      "execution_investment_high": high,
-      "execution_investment_mid": mid,
-      "execution_investment_display": f"R{low:,.0f} - R{high:,.0f}",
-      "execution_investment_reason": reason
+        "execution_investment_low": low,
+        "execution_investment_high": high,
+        "execution_investment_mid": mid,
+        "execution_investment_display": f"R{low:,.0f} - R{high:,.0f}",
+        "execution_investment_reason": reason
     }
 
 
@@ -1800,7 +1827,6 @@ def score():
             },
             "tenders": tenders
         })
-
     except Exception as e:
         return jsonify({
             "status": "error",
@@ -1851,40 +1877,40 @@ def advise():
         recommended_documents = []
 
         if not matched_keywords:
-            advice.append("Strengthen your bid with a sharper capability statement that mirrors the tender language more directly.")
+            advice.append("Sharpen your capability statement so it mirrors the exact tender language more directly.")
         else:
-            advice.append("Mirror the strongest matched keywords in your executive summary, methodology, and pricing narrative.")
+            advice.append("Reflect the strongest matched keywords in your executive summary, methodology, and pricing narrative.")
 
         if "generator" in f"{title} {description}".lower():
-            advice.append("Show specific generator installation references, electrical compliance credentials, and technical maintenance capability.")
+            advice.append("Include generator-specific references, electrical compliance evidence, and technical delivery capability.")
             recommended_documents.extend([
                 "Electrical compliance certificate",
                 "Generator installation references",
-                "Project methodology"
+                "Technical methodology"
             ])
 
         if category.lower() == "works":
-            advice.append("Include site execution methodology, safety planning, project supervision structure, and proof of delivery capacity.")
+            advice.append("Show site methodology, supervision structure, safety planning, and mobilisation readiness.")
             recommended_documents.extend([
-                "Construction methodology",
                 "Health and safety file",
+                "Construction methodology",
                 "Site mobilisation plan"
             ])
 
         if category.lower() == "services":
-            advice.append("Demonstrate staffing capacity, turnaround times, service levels, and geographic reach.")
+            advice.append("Show turnaround times, staffing depth, response processes, and geographic operating capacity.")
             recommended_documents.extend([
-                "Service level plan",
+                "Service delivery plan",
                 "Team CVs",
                 "Operational response plan"
             ])
 
         if not profile_text:
-            advice.append("Upload a richer supplier profile or capability statement so the AI can compare more precise business signals.")
+            advice.append("Submit a richer supplier profile or capability statement so TenderAI can compare more precise signals.")
         else:
-            advice.append("Use your profile strengths in a tailored cover letter that explains exactly why your business is fit for this tender.")
+            advice.append("Tailor your cover letter so it directly links your business strengths to the tender scope and delivery risk.")
 
-        advice.append("Validate delivery funding early, because your estimated execution investment suggests material upfront spend before payment is received.")
+        advice.append("Validate working capital early, because the estimated execution investment suggests meaningful upfront spend before payment is received.")
 
         if not recommended_documents:
             recommended_documents = [
@@ -1915,7 +1941,7 @@ def service_request():
     company = body.get("company", "Unknown")
     tender = body.get("tender", {}) or {}
 
-    reference = f"SAW-{abs(hash((name, company, tender.get('ocid', 'NA')))) % 1000000:06d}"
+    reference = f"TAI-{abs(hash((name, company, tender.get('ocid', 'NA')))) % 1000000:06d}"
 
     return jsonify({
         "status": "ok",
