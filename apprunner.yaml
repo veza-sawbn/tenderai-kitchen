@@ -1,10 +1,16 @@
 version: 1.0
-runtime: python3
+runtime: python311
+
 build:
   commands:
     build:
-      - pip install -r requirements.txt
+      - echo "build step"
+
 run:
-  command: python app.py
+  runtime-version: 3.11
+  pre-run:
+    - pip3 install -r requirements.txt
+  command: gunicorn --bind 0.0.0.0:8080 app:app
   network:
     port: 8080
+    
