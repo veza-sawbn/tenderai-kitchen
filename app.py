@@ -5,7 +5,7 @@ app = Flask(__name__)
 
 @app.route("/health")
 def health():
-    return {"status": "TenderAI kitchen is running"}
+    return {"status": "ok"}
 
 @app.route("/")
 def home():
