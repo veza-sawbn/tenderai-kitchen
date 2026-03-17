@@ -1,13 +1,15 @@
 from flask import Flask, jsonify, request
 import requests
 import re
+import io
+from pypdf import PdfReader
 
 app = Flask(__name__)
 
 
 @app.get("/")
 def home():
-    return {"message": "TenderAI kitchen home v5"}
+    return {"message": "TenderAI kitchen home v6"}
 
 
 @app.get("/health")
@@ -36,15 +38,43 @@ def extract_releases(payload):
 def tokenize(text):
     if not text:
         return []
+
     words = re.findall(r"[a-zA-Z0-9]+", text.lower())
     stopwords = {
         "the", "and", "for", "with", "from", "that", "this", "are", "was",
         "your", "you", "our", "have", "has", "will", "not", "all", "can",
         "services", "service", "company", "business", "profile", "south",
         "africa", "of", "to", "in", "on", "by", "at", "is", "as", "or",
-        "an", "be", "we", "it", "their", "its"
+        "an", "be", "we", "it", "their", "its", "pty", "ltd", "cc",
+        "supplier", "summary", "report", "registration", "database",
+        "government"
     }
     return [w for w in words if len(w) > 2 and w not in stopwords]
+
+
+def extract_pdf_text(file_storage):
+    pdf_bytes = file_storage.read()
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    pages = []
+
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        pages.append(text)
+
+    return "\n".join(pages)
+
+
+def extract_profile_text():
+    # Option 1: multipart form upload with a PDF
+    if "profile_pdf" in request.files:
+        uploaded_file = request.files["profile_pdf"]
+        if uploaded_file and uploaded_file.filename.lower().endswith(".pdf"):
+            return extract_pdf_text(uploaded_file), "pdf"
+
+    # Option 2: JSON body with profile_text
+    body = request.get_json(silent=True) or {}
+    profile_text = body.get("profile_text", "")
+    return profile_text, "text"
 
 
 def score_tender(profile_keywords, tender_text):
@@ -64,17 +94,24 @@ def score_tender(profile_keywords, tender_text):
     return score, fit_band, matched
 
 
+def get_request_value(name, default_value):
+    if request.content_type and "multipart/form-data" in request.content_type:
+        return request.form.get(name, default_value)
+
+    body = request.get_json(silent=True) or {}
+    return body.get(name, default_value)
+
+
 @app.post("/score")
 def score():
-    body = request.get_json(silent=True) or {}
+    profile_text, profile_source = extract_profile_text()
 
-    profile_text = body.get("profile_text", "")
-    date_from = body.get("date_from", "2026-01-01")
-    date_to = body.get("date_to", "2026-03-17")
-    page_number = int(body.get("page_number", 1))
-    page_size = int(body.get("page_size", 10))
+    date_from = get_request_value("date_from", "2026-01-01")
+    date_to = get_request_value("date_to", "2026-03-17")
+    page_number = int(get_request_value("page_number", 1))
+    page_size = int(get_request_value("page_size", 10))
 
-    profile_keywords = tokenize(profile_text)[:20]
+    profile_keywords = tokenize(profile_text)[:25]
 
     url = "https://ocds-api.etenders.gov.za/api/OCDSReleases"
     params = {
@@ -125,7 +162,8 @@ def score():
 
         return jsonify({
             "status": "ok",
-            "profile_text": profile_text,
+            "profile_source": profile_source,
+            "profile_text_preview": profile_text[:500],
             "profile_keywords": profile_keywords,
             "request_used": params,
             "summary": {
