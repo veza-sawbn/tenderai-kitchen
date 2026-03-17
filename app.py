@@ -5,33 +5,42 @@ app = Flask(__name__)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+import requests
 
 @app.post("/score")
 def score():
     payload = request.get_json(silent=True) or {}
 
     profile_text = payload.get("profile_text", "")
-    date_from = payload.get("date_from", "")
-    date_to = payload.get("date_to", "")
-    pages = payload.get("pages", 1)
-    page_size = payload.get("page_size", 50)
 
-    words = [w.strip().lower() for w in profile_text.split() if len(w.strip()) > 3]
-    keywords = words[:10]
+    url = "https://ocds-api.etenders.gov.za/api/OCDSReleases"
+    params = {
+        "PageNumber": 1,
+        "PageSize": 20
+    }
 
-    return jsonify({
+    try:
+        res = requests.get(url, params=params)
+        data = res.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+    tenders = []
+
+    if isinstance(data, dict):
+        possible = data.get("releases") or data.get("data") or data.get("value") or []
+    else:
+        possible = []
+
+    for item in possible[:10]:
+        tenders.append({
+            "title": item.get("tender", {}).get("title"),
+            "buyer": item.get("buyer", {}).get("name"),
+            "description": item.get("tender", {}).get("description")
+        })
+
+    return {
         "status": "ok",
-        "profile_summary": {
-            "keywords": keywords
-        },
-        "request_received": {
-            "date_from": date_from,
-            "date_to": date_to,
-            "pages": pages,
-            "page_size": page_size
-        },
-        "summary": {
-            "total_tenders": 0
-        },
-        "tenders": []
-    })
+        "profile_text": profile_text,
+        "tenders": tenders
+    }
