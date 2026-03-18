@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TenderAI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-modal">
+      <div class="loading-orb"></div>
+      <div class="loading-title">TenderAI is analyzing</div>
+      <div class="loading-step" id="loadingStepText">Reading supplier profile and scanning tender releases...</div>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="brand" onclick="window.location='/'">TenderAI</div>
+    <nav class="main-nav">
+      <a href="/">Home</a>
+      <a href="/tenders">Insights</a>
+      <a href="/tenders">Tenders</a>
+      <a href="/profiles">Profiles</a>
+    </nav>
+    <div class="profile-icon" title="Profile">◯</div>
+  </header>
+
+  {% block content %}{% endblock %}
+
+  <script>
+    function setLoading(show, message) {
+      const overlay = document.getElementById("loadingOverlay");
+      const text = document.getElementById("loadingStepText");
+      overlay.style.display = show ? "flex" : "none";
+      if (message) text.textContent = message;
+    }
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
