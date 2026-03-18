@@ -12,7 +12,9 @@ app = Flask(__name__)
 
 PROFILE_STORE = {}
 TENDER_CACHE = {}
-
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 # -----------------------------
 # Helpers
