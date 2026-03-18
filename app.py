@@ -280,77 +280,170 @@ def infer_province(text):
 
 
 def parse_profile_metadata(text):
-    provinces = [
-        "gauteng", "western cape", "eastern cape", "kwazulu-natal",
-        "free state", "limpopo", "mpumalanga", "north west", "northern cape"
-    ]
-
     bbbee = parse_bbbee_information(text)
     industry = parse_industry_classes(text)
     accreditations = parse_accreditations(text)
 
     return {
-        "company_name": extract_company_name(text),
-        "supplier_active_status": extract_yes_no(
-            text,
-            [r"Supplier Active Status\s*:?\s*(Yes|No)"]
-        ),
-        "supplier_sub_type": extract_field(
-            text,
-            [r"Supplier Sub-?Type\s*:?\s*(.+)"]
-        ),
-        "country_of_origin": extract_field(
-            text,
-            [r"Country of Origin\s*:?\s*(.+)"]
-        ),
-        "government_employee": extract_yes_no(
-            text,
-            [r"Government Employee\s*:?\s*(Yes|No)"]
-        ),
-        "overall_tax_status": extract_field(
-            text,
-            [r"Overall Tax Status\s*:?\s*(.+)"]
-        ),
-        "sars_registration_status": extract_field(
-            text,
-            [r"SARS Registration Status\s*:?\s*(.+)"]
-        ),
-        "industry_classification": extract_field(
-            text,
-            [
-                r"Industry Classification\s*:?\s*(.+)",
-                r"Industry Classifications?\s*:?\s*(.+)"
-            ]
-        ),
-        "industry_main_groups": industry["main_groups"],
-        "industry_divisions": industry["divisions"],
-        "address_information": extract_field(
-            text,
-            [
-                r"Address\s*:?\s*(.+)",
-                r"Physical Address\s*:?\s*(.+)"
-            ]
-        ),
-        "bbbee_information": bbbee["level"],
-        "bbbee_details": bbbee["details"],
-        "ownership_information": extract_field(
-            text,
-            [r"Ownership\s*:?\s*(.+)"]
-        ),
-        "directors_members_owners": extract_list_by_keywords(
-            text,
-            ["director", "member", "owner"]
-        ),
-        "accreditations": accreditations,
-        "associations": extract_list_by_keywords(
-            text,
-            ["association", "member of", "affiliation"]
-        ),
-        "commodities": extract_list_by_keywords(
-            text,
-            ["commodity", "commodities", "service", "supply", "construction"]
-        ),
-        "provinces": [p.title() for p in provinces if p in text.lower()],
+        "metadata": {
+            "source": "CSD",
+            "document_type": "CSD Registration Report",
+            "report_date": datetime.now().isoformat(),
+            "generated_by": "Unknown",
+            "pages": max(1, text.count("\f") + 1)
+        },
+        "supplier_identification": {
+            "supplier_number": extract_field(text, [r"Supplier Number\s*:?\s*(.+)"]),
+            "legal_name": extract_field(
+                text,
+                [r"Legal Name\s*:?\s*(.+)", r"Company Name\s*:?\s*(.+)"],
+                extract_company_name(text)
+            ),
+            "trading_name": extract_field(text, [r"Trading Name\s*:?\s*(.+)"]),
+            "registration_number": extract_field(text, [r"Registration Number\s*:?\s*(.+)"]),
+            "supplier_type": extract_field(text, [r"Supplier Type\s*:?\s*(.+)"]),
+            "supplier_sub_type": extract_field(text, [r"Supplier Sub-?Type\s*:?\s*(.+)"]),
+            "registration_date": extract_field(text, [r"Registration Date\s*:?\s*(.+)"]),
+            "financial_year_start": extract_field(text, [r"Financial Year Start\s*:?\s*(.+)"]),
+            "is_active": extract_yes_no(text, [r"Supplier Active Status\s*:?\s*(Yes|No)"]) == "Yes",
+            "has_bank_account": "bank" in text.lower(),
+            "restricted_supplier": extract_yes_no(text, [r"Restricted Supplier\s*:?\s*(Yes|No)"]) == "Yes",
+            "business_status": extract_field(text, [r"Business Status\s*:?\s*(.+)"]),
+            "country_of_origin": extract_field(text, [r"Country of Origin\s*:?\s*(.+)"]),
+            "government_employee": extract_yes_no(text, [r"Government Employee\s*:?\s*(Yes|No)"]) == "Yes",
+            "allow_associates": extract_yes_no(text, [r"Allow Associates\s*:?\s*(Yes|No)"]) == "Yes",
+            "annual_turnover_band": extract_field(text, [r"Annual Turnover Band\s*:?\s*(.+)"])
+        },
+        "industry_classification": [
+            {
+                "main_group": item,
+                "division": "",
+                "core_industry": None,
+                "turnover_percentage": None
+            }
+            for item in industry["main_groups"]
+        ] + [
+            {
+                "main_group": "",
+                "division": item,
+                "core_industry": None,
+                "turnover_percentage": None
+            }
+            for item in industry["divisions"]
+        ],
+        "contact_information": [
+            {
+                "contact_type": "Primary",
+                "is_preferred": True,
+                "name": extract_field(text, [r"Contact Person\s*:?\s*(.+)", r"Name\s*:?\s*(.+)"]),
+                "surname": "",
+                "phone": extract_field(text, [r"Telephone\s*:?\s*(.+)", r"Phone\s*:?\s*(.+)"]),
+                "email": extract_field(text, [r"Email\s*:?\s*(.+)"]),
+                "website": extract_field(text, [r"Website\s*:?\s*(.+)"]),
+                "communication_preference": "email",
+                "is_csd_user": True
+            }
+        ],
+        "address_information": [
+            {
+                "is_preferred": True,
+                "address_line_1": extract_field(
+                    text,
+                    [r"Address Line 1\s*:?\s*(.+)", r"Physical Address\s*:?\s*(.+)"]
+                ),
+                "address_line_2": extract_field(text, [r"Address Line 2\s*:?\s*(.+)"], ""),
+                "suburb": extract_field(text, [r"Suburb\s*:?\s*(.+)"], ""),
+                "city": extract_field(text, [r"City\s*:?\s*(.+)", r"Locality\s*:?\s*(.+)"], ""),
+                "municipality": extract_field(text, [r"Municipality\s*:?\s*(.+)"], ""),
+                "province": extract_field(text, [r"Province\s*:?\s*(.+)"], ""),
+                "country": extract_field(text, [r"Country\s*:?\s*(.+)"], "South Africa"),
+                "postal_code": extract_field(text, [r"Postal Code\s*:?\s*(.+)"], ""),
+                "ward_number": extract_field(text, [r"Ward Number\s*:?\s*(.+)"], "")
+            }
+        ],
+        "bank_information": [
+            {
+                "is_preferred": True,
+                "verification_status": extract_field(text, [r"Bank Verification Status\s*:?\s*(.+)"]),
+                "verification_response": extract_field(text, [r"Bank Verification Response\s*:?\s*(.+)"]),
+                "is_foreign_account": False,
+                "is_shared_account": False,
+                "identifier_linked": True,
+                "last_updated_days": None
+            }
+        ],
+        "tax_information": {
+            "income_tax_number": extract_field(text, [r"Income Tax Number\s*:?\s*(.+)"]),
+            "is_vat_vendor": extract_yes_no(text, [r"VAT Vendor\s*:?\s*(Yes|No)"]) == "Yes",
+            "is_registered_with_sars": extract_yes_no(
+                text,
+                [r"SARS Registration Status\s*:?\s*(Yes|No)", r"Registered with SARS\s*:?\s*(Yes|No)"]
+            ) == "Yes",
+            "tax_compliance_status": extract_field(
+                text,
+                [r"Overall Tax Status\s*:?\s*(.+)", r"Tax Compliance Status\s*:?\s*(.+)"]
+            ),
+            "compliance_pin_provided": "pin" in text.lower(),
+            "last_validation_date": extract_field(text, [r"Last Validation Date\s*:?\s*(.+)"])
+        },
+        "bbbbee_information": {
+            "certificate_number": extract_field(text, [r"Certificate Number\s*:?\s*(.+)"]),
+            "issue_date": extract_field(text, [r"Issue Date\s*:?\s*(.+)"]),
+            "expiry_date": extract_field(text, [r"Expiry Date\s*:?\s*(.+)", r"Expiration Date\s*:?\s*(.+)"]),
+            "verification_status": extract_field(text, [r"Verification Status\s*:?\s*(.+)"]),
+            "ownership": {
+                "black_owned_percentage": None,
+                "black_women_owned_percentage": None,
+                "black_youth_owned_percentage": None,
+                "black_disabled_owned_percentage": None,
+                "black_unemployed_owned_percentage": None,
+                "black_rural_owned_percentage": None,
+                "military_veteran_owned_percentage": None
+            }
+        },
+        "accreditations": [
+            {
+                "body": item.get("description", ""),
+                "description": item.get("description", ""),
+                "accreditation_number": "",
+                "issue_date": "",
+                "expiry_date": item.get("expiration_date", ""),
+                "status": item.get("status", "Unknown"),
+                "verification_status": "Manual verification required"
+            }
+            for item in accreditations
+        ],
+        "directors": [
+            {
+                "name": item,
+                "id_number": "",
+                "country": "South Africa",
+                "is_active": True,
+                "is_owner": True,
+                "ownership_percentage": None,
+                "is_youth": False,
+                "is_disabled": False,
+                "is_military_veteran": False,
+                "is_government_employee": False,
+                "verification_status": "Unknown"
+            }
+            for item in extract_list_by_keywords(text, ["director", "member", "owner"], 10)
+        ],
+        "ownership_summary": {
+            "total_ownership_percentage": None,
+            "black_owned": "100" in " ".join(bbbee["details"]),
+            "youth_owned": "youth" in text.lower(),
+            "township_based": "township" in text.lower(),
+            "rural_based": "rural" in text.lower()
+        },
+        "ai_enrichment": {
+            "risk_flags": [],
+            "compliance_score": 0,
+            "bbbbee_strength_score": 0,
+            "operational_readiness_score": 0,
+            "tender_competitiveness_score": 0,
+            "recommended_actions": []
+        },
         "keywords": tokenize(text)[:30]
     }
 
@@ -387,6 +480,126 @@ def fetch_tenders(date_from, date_to, page_number, page_size):
     payload = response.json()
     releases = extract_releases(payload)
     return releases, params
+
+
+def pick_best_tender_document(documents):
+    if not documents:
+        return None
+
+    preferred_types = [
+        "tenderNotice",
+        "biddingDocuments",
+        "technicalSpecifications",
+        "evaluationCriteria",
+        "billOfQuantity"
+    ]
+
+    scored = []
+    for doc in documents:
+        score = 0
+        doc_type = (doc.get("documentType") or "").lower()
+        title = (doc.get("title") or "").lower()
+        url = (doc.get("url") or "").lower()
+        fmt = (doc.get("format") or "").lower()
+
+        if "pdf" in fmt or url.endswith(".pdf"):
+            score += 10
+
+        for idx, value in enumerate(preferred_types[::-1]):
+            if value.lower() in doc_type:
+                score += (idx + 1) * 10
+
+        if any(k in title for k in [
+            "bid document", "tender document", "specification",
+            "terms of reference", "scope of work", "rfq", "rfp"
+        ]):
+            score += 20
+
+        scored.append((score, doc))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[0][1]
+
+
+def download_pdf_text_from_url(url):
+    if not url:
+        return ""
+
+    response = requests.get(url, timeout=40)
+    response.raise_for_status()
+
+    content_type = response.headers.get("Content-Type", "").lower()
+    if "pdf" not in content_type and not url.lower().endswith(".pdf"):
+        return ""
+
+    reader = PdfReader(io.BytesIO(response.content))
+    pages = []
+    for page in reader.pages:
+        pages.append(page.extract_text() or "")
+
+    return "\n".join(pages)
+
+
+def parse_tender_document_text(text):
+    lower = text.lower()
+
+    scoring_criteria = []
+    specifications = []
+    requirements = []
+    special_conditions = []
+    briefing = {
+        "compulsory": False,
+        "date": "",
+        "venue": ""
+    }
+
+    for line in [x.strip() for x in text.splitlines() if x.strip()]:
+        ll = line.lower()
+
+        if any(k in ll for k in [
+            "80/20", "90/10", "preference point", "specific goals",
+            "evaluation criteria", "functionality", "price and specific goals"
+        ]):
+            scoring_criteria.append(line[:240])
+
+        if any(k in ll for k in [
+            "scope of work", "specification", "technical requirement",
+            "minimum requirement", "deliverables", "works required"
+        ]):
+            specifications.append(line[:240])
+
+        if any(k in ll for k in [
+            "csd", "tax", "bbbee", "cidb", "ecsa", "sacpcmp",
+            "local content", "compulsory briefing", "mandatory"
+        ]):
+            requirements.append(line[:240])
+
+        if any(k in ll for k in [
+            "special condition", "special conditions"
+        ]):
+            special_conditions.append(line[:240])
+
+        if "briefing" in ll or "site meeting" in ll:
+            if "compulsory" in ll:
+                briefing["compulsory"] = True
+            if not briefing["date"]:
+                date_match = re.search(
+                    r"((?:\d{4}[-/]\d{2}[-/]\d{2})|(?:\d{2}[-/]\d{2}[-/]\d{4}))",
+                    line
+                )
+                if date_match:
+                    briefing["date"] = date_match.group(1)
+            if not briefing["venue"]:
+                if ":" in line:
+                    briefing["venue"] = line.split(":", 1)[1].strip()[:180]
+
+    return {
+        "scoring_criteria": dedupe_keep_order(scoring_criteria)[:20],
+        "specifications": dedupe_keep_order(specifications)[:20],
+        "requirements": dedupe_keep_order(requirements)[:25],
+        "special_conditions_parsed": dedupe_keep_order(special_conditions)[:12],
+        "briefing_parsed": briefing
+    }
 
 
 def estimate_tender_value(title, description, category):
@@ -520,7 +733,7 @@ def infer_preference_model(value_mid, profile_text):
     return model, comment
 
 
-def calculate_fit(profile_keywords, prompt_keywords, tender_text, category, requirement_checks):
+def calculate_fit(profile_keywords, prompt_keywords, tender_text, category, requirement_checks, document_parse=None):
     tokens = set(tokenize(tender_text))
     combined = list(dict.fromkeys((profile_keywords or []) + (prompt_keywords or [])))
     matched = sorted(set(combined).intersection(tokens))
@@ -539,6 +752,14 @@ def calculate_fit(profile_keywords, prompt_keywords, tender_text, category, requ
 
     if len(requirement_checks) >= 3:
         bonus += 4
+
+    document_parse = document_parse or {}
+    if document_parse.get("scoring_criteria"):
+        bonus += 6
+    if document_parse.get("specifications"):
+        bonus += 6
+    if document_parse.get("requirements"):
+        bonus += 6
 
     score = round(min(base_score + bonus, 100), 1)
 
@@ -630,22 +851,45 @@ def enrich_tender(item, profile=None, prompt=""):
     province = infer_province(f"{buyer_name} {description}")
     combined_text = f"{title} {description} {buyer_name} {category}"
 
+    documents = tender.get("documents", []) or []
+    best_document = pick_best_tender_document(documents)
+    best_document_url = best_document.get("url", "") if best_document else ""
+    best_document_title = best_document.get("title", "") if best_document else ""
+
+    document_text = ""
+    document_parse = {
+        "scoring_criteria": [],
+        "specifications": [],
+        "requirements": [],
+        "special_conditions_parsed": [],
+        "briefing_parsed": {"compulsory": False, "date": "", "venue": ""}
+    }
+
+    try:
+        if best_document_url:
+            document_text = download_pdf_text_from_url(best_document_url)
+            if document_text:
+                document_parse = parse_tender_document_text(document_text)
+    except Exception:
+        pass
+
     profile_text = profile["text"] if profile else ""
     profile_keywords = profile["meta"]["keywords"] if profile else []
     prompt_keywords = tokenize(prompt)[:10]
-    requirement_checks = infer_requirements(combined_text, profile_text)
+    requirement_checks = infer_requirements(combined_text + " " + document_text, profile_text)
 
     fit_score, fit_band, matched_keywords = calculate_fit(
         profile_keywords=profile_keywords,
         prompt_keywords=prompt_keywords,
-        tender_text=combined_text,
+        tender_text=combined_text + " " + document_text,
         category=category,
-        requirement_checks=requirement_checks
+        requirement_checks=requirement_checks,
+        document_parse=document_parse
     )
 
     published_value = value.get("amount")
     published_currency = value.get("currency")
-    estimation = estimate_tender_value(title, description, category)
+    estimation = estimate_tender_value(title, description + " " + document_text[:1500], category)
 
     if published_value and published_value > 0:
         value_display = f"R{published_value:,.0f}"
@@ -666,15 +910,15 @@ def enrich_tender(item, profile=None, prompt=""):
 
     execution = estimate_execution_investment(
         title=title,
-        description=description,
+        description=description + " " + document_text[:1500],
         category=category,
         estimated_low=estimated_value_low,
         estimated_high=estimated_value_high
     )
 
-    ai_summary = build_ai_summary(title, description, buyer_name, category)
+    ai_summary = build_ai_summary(title, description or document_text[:350], buyer_name, category)
     risk_level, risk_reason, difficulty_level, difficulty_reason = infer_risk_and_difficulty(
-        description,
+        description + " " + document_text[:1500],
         requirement_checks
     )
     preferential_model, preference_comment = infer_preference_model(
@@ -738,16 +982,28 @@ def enrich_tender(item, profile=None, prompt=""):
         "preference_comment": preference_comment,
         "bid_readiness": bid_readiness,
         "bid_readiness_comment": bid_readiness_comment,
-        "tender_number": title,
+        "tender_number": tender.get("id") or title,
         "organ_of_state": buyer_name,
         "tender_type": category or "Unspecified",
-        "location_of_service_delivery": province,
-        "special_conditions": "Review full tender documents for mandatory conditions and returnable schedules.",
-        "contact_person": "Not provided in current API notice",
-        "contact_email": "Not provided in current API notice",
-        "contact_phone": "Not provided in current API notice",
-        "briefing_session_details": "Check full tender documents / notice attachments for briefing details.",
-        "tender_document_url": ""
+        "location_of_service_delivery": tender.get("deliveryLocation") or province,
+        "special_conditions": " | ".join(document_parse["special_conditions_parsed"][:4]) or "Review full tender documents for mandatory conditions and returnable schedules.",
+        "contact_person": (tender.get("contactPerson") or {}).get("name", "Not provided in current API notice"),
+        "contact_email": (tender.get("contactPerson") or {}).get("email", "Not provided in current API notice"),
+        "contact_phone": (tender.get("contactPerson") or {}).get("telephoneNumber", "Not provided in current API notice"),
+        "briefing_session_details": (
+            f'Compulsory: {"Yes" if document_parse["briefing_parsed"]["compulsory"] else "Unknown"}; '
+            f'Date: {document_parse["briefing_parsed"]["date"] or "Not detected"}; '
+            f'Venue: {document_parse["briefing_parsed"]["venue"] or "Not detected"}'
+        ),
+        "tender_document_url": best_document_url,
+        "documents": documents,
+        "best_document_url": best_document_url,
+        "best_document_title": best_document_title,
+        "parsed_scoring_criteria": document_parse["scoring_criteria"],
+        "parsed_specifications": document_parse["specifications"],
+        "parsed_requirements": document_parse["requirements"],
+        "parsed_special_conditions": document_parse["special_conditions_parsed"],
+        "parsed_briefing": document_parse["briefing_parsed"],
     }
 
     TENDER_CACHE[tender_id] = enriched
@@ -834,25 +1090,37 @@ def api_profiles():
             {
                 "id": p["id"],
                 "name": p["name"],
-                "company_name": p["meta"]["company_name"],
-                "supplier_active_status": p["meta"]["supplier_active_status"],
-                "supplier_sub_type": p["meta"]["supplier_sub_type"],
-                "country_of_origin": p["meta"]["country_of_origin"],
-                "government_employee": p["meta"]["government_employee"],
-                "overall_tax_status": p["meta"]["overall_tax_status"],
-                "sars_registration_status": p["meta"]["sars_registration_status"],
-                "industry_classification": p["meta"]["industry_classification"],
-                "industry_main_groups": p["meta"]["industry_main_groups"],
-                "industry_divisions": p["meta"]["industry_divisions"],
-                "address_information": p["meta"]["address_information"],
-                "bbbee_information": p["meta"]["bbbee_information"],
-                "bbbee_details": p["meta"]["bbbee_details"],
-                "ownership_information": p["meta"]["ownership_information"],
-                "directors_members_owners": p["meta"]["directors_members_owners"],
-                "accreditations": p["meta"]["accreditations"],
-                "associations": p["meta"]["associations"],
-                "commodities": p["meta"]["commodities"],
-                "provinces": p["meta"]["provinces"],
+                "company_name": p["meta"]["supplier_identification"]["legal_name"],
+                "supplier_active_status": "Yes" if p["meta"]["supplier_identification"]["is_active"] else "No",
+                "supplier_sub_type": p["meta"]["supplier_identification"]["supplier_sub_type"],
+                "country_of_origin": p["meta"]["supplier_identification"]["country_of_origin"],
+                "government_employee": "Yes" if p["meta"]["supplier_identification"]["government_employee"] else "No",
+                "overall_tax_status": p["meta"]["tax_information"]["tax_compliance_status"],
+                "sars_registration_status": "Yes" if p["meta"]["tax_information"]["is_registered_with_sars"] else "No",
+                "industry_classification": ", ".join(
+                    [x["main_group"] for x in p["meta"]["industry_classification"] if x["main_group"]][:3]
+                ) or "Unknown",
+                "industry_main_groups": [x["main_group"] for x in p["meta"]["industry_classification"] if x["main_group"]],
+                "industry_divisions": [x["division"] for x in p["meta"]["industry_classification"] if x["division"]],
+                "address_information": p["meta"]["address_information"][0]["address_line_1"] if p["meta"]["address_information"] else "Unknown",
+                "bbbee_information": p["meta"]["bbbbee_information"]["verification_status"],
+                "bbbee_details": [
+                    f'Certificate: {p["meta"]["bbbbee_information"]["certificate_number"]}',
+                    f'Expiry: {p["meta"]["bbbbee_information"]["expiry_date"]}'
+                ],
+                "ownership_information": str(p["meta"]["ownership_summary"]),
+                "directors_members_owners": [x["name"] for x in p["meta"]["directors"]],
+                "accreditations": [
+                    {
+                        "status": x["status"],
+                        "description": x["description"],
+                        "expiration_date": x["expiry_date"]
+                    }
+                    for x in p["meta"]["accreditations"]
+                ],
+                "associations": [],
+                "commodities": p["meta"]["keywords"][:8],
+                "provinces": [x["province"] for x in p["meta"]["address_information"] if x.get("province")],
                 "keywords": p["meta"]["keywords"][:12],
                 "uploaded_at": p["uploaded_at"]
             }
