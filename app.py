@@ -284,6 +284,100 @@ def parse_profile_metadata(text):
     industry = parse_industry_classes(text)
     accreditations = parse_accreditations(text)
 
+    supplier_number = extract_field(text, [r"Supplier Number\s*:?\s*(.+)", r"MAAA\d+"], "")
+    if not supplier_number:
+        match = re.search(r"\bMAAA\d+\b", text)
+        supplier_number = match.group(0) if match else "Unknown"
+
+    legal_name = extract_field(
+        text,
+        [r"Legal Name\s*:?\s*(.+)", r"Company Name\s*:?\s*(.+)"],
+        extract_company_name(text)
+    )
+
+    trading_name = extract_field(text, [r"Trading Name\s*:?\s*(.+)"], "")
+    registration_number = extract_field(text, [r"Registration Number\s*:?\s*(.+)"], "")
+    supplier_type = extract_field(text, [r"Supplier Type\s*:?\s*(.+)"], "")
+    supplier_sub_type = extract_field(text, [r"Supplier Sub-?Type\s*:?\s*(.+)"], "")
+    registration_date = extract_field(text, [r"Registration Date\s*:?\s*(.+)"], "")
+    financial_year_start = extract_field(text, [r"Financial Year Start\s*:?\s*(.+)"], "")
+    business_status = extract_field(text, [r"Business Status\s*:?\s*(.+)"], "")
+    country_of_origin = extract_field(text, [r"Country of Origin\s*:?\s*(.+)"], "South Africa")
+    annual_turnover_band = extract_field(text, [r"Annual Turnover Band\s*:?\s*(.+)"], "")
+
+    is_active = extract_yes_no(text, [r"Supplier Active Status\s*:?\s*(Yes|No)"]) == "Yes"
+    government_employee = extract_yes_no(text, [r"Government Employee\s*:?\s*(Yes|No)"]) == "Yes"
+    allow_associates = extract_yes_no(text, [r"Allow Associates\s*:?\s*(Yes|No)"]) == "Yes"
+
+    email = extract_field(text, [r"Email\s*:?\s*(.+)"], "")
+    phone = extract_field(text, [r"Telephone\s*:?\s*(.+)", r"Phone\s*:?\s*(.+)"], "")
+    website = extract_field(text, [r"Website\s*:?\s*(.+)"], "")
+    contact_name = extract_field(text, [r"Contact Person\s*:?\s*(.+)", r"Name\s*:?\s*(.+)"], "")
+
+    address_line_1 = extract_field(
+        text,
+        [r"Address Line 1\s*:?\s*(.+)", r"Physical Address\s*:?\s*(.+)"],
+        ""
+    )
+    address_line_2 = extract_field(text, [r"Address Line 2\s*:?\s*(.+)"], "")
+    suburb = extract_field(text, [r"Suburb\s*:?\s*(.+)"], "")
+    city = extract_field(text, [r"City\s*:?\s*(.+)", r"Locality\s*:?\s*(.+)"], "")
+    municipality = extract_field(text, [r"Municipality\s*:?\s*(.+)"], "")
+    province = extract_field(text, [r"Province\s*:?\s*(.+)"], infer_province(text))
+    postal_code = extract_field(text, [r"Postal Code\s*:?\s*(.+)"], "")
+    ward_number = extract_field(text, [r"Ward Number\s*:?\s*(.+)"], "")
+
+    bank_verification_status = extract_field(text, [r"Bank Verification Status\s*:?\s*(.+)"], "")
+    bank_verification_response = extract_field(text, [r"Bank Verification Response\s*:?\s*(.+)"], "")
+
+    income_tax_number = extract_field(text, [r"Income Tax Number\s*:?\s*(.+)"], "")
+    is_vat_vendor = extract_yes_no(text, [r"VAT Vendor\s*:?\s*(Yes|No)"]) == "Yes"
+    is_registered_with_sars = (
+        extract_yes_no(
+            text,
+            [r"SARS Registration Status\s*:?\s*(Yes|No)", r"Registered with SARS\s*:?\s*(Yes|No)"]
+        ) == "Yes"
+    )
+    tax_compliance_status = extract_field(
+        text,
+        [r"Overall Tax Status\s*:?\s*(.+)", r"Tax Compliance Status\s*:?\s*(.+)"],
+        "Unknown"
+    )
+    last_validation_date = extract_field(text, [r"Last Validation Date\s*:?\s*(.+)"], "")
+
+    bbbee_certificate_number = extract_field(text, [r"Certificate Number\s*:?\s*(.+)"], "")
+    bbbee_issue_date = extract_field(text, [r"Issue Date\s*:?\s*(.+)"], "")
+    bbbee_expiry_date = extract_field(text, [r"Expiry Date\s*:?\s*(.+)", r"Expiration Date\s*:?\s*(.+)"], "")
+    bbbee_verification_status = extract_field(text, [r"Verification Status\s*:?\s*(.+)"], bbbee["level"])
+
+    accreditation_records = []
+    for item in accreditations:
+        accreditation_records.append({
+            "body": item.get("description", ""),
+            "description": item.get("description", ""),
+            "accreditation_number": "",
+            "issue_date": "",
+            "expiry_date": item.get("expiration_date", ""),
+            "status": item.get("status", "Unknown"),
+            "verification_status": "Manual verification required"
+        })
+
+    industry_rows = []
+    for mg in industry["main_groups"]:
+        industry_rows.append({
+            "main_group": mg,
+            "division": "",
+            "core_industry": None,
+            "turnover_percentage": None
+        })
+    for div in industry["divisions"]:
+        industry_rows.append({
+            "main_group": "",
+            "division": div,
+            "core_industry": None,
+            "turnover_percentage": None
+        })
+
     return {
         "metadata": {
             "source": "CSD",
@@ -293,53 +387,33 @@ def parse_profile_metadata(text):
             "pages": max(1, text.count("\f") + 1)
         },
         "supplier_identification": {
-            "supplier_number": extract_field(text, [r"Supplier Number\s*:?\s*(.+)"]),
-            "legal_name": extract_field(
-                text,
-                [r"Legal Name\s*:?\s*(.+)", r"Company Name\s*:?\s*(.+)"],
-                extract_company_name(text)
-            ),
-            "trading_name": extract_field(text, [r"Trading Name\s*:?\s*(.+)"]),
-            "registration_number": extract_field(text, [r"Registration Number\s*:?\s*(.+)"]),
-            "supplier_type": extract_field(text, [r"Supplier Type\s*:?\s*(.+)"]),
-            "supplier_sub_type": extract_field(text, [r"Supplier Sub-?Type\s*:?\s*(.+)"]),
-            "registration_date": extract_field(text, [r"Registration Date\s*:?\s*(.+)"]),
-            "financial_year_start": extract_field(text, [r"Financial Year Start\s*:?\s*(.+)"]),
-            "is_active": extract_yes_no(text, [r"Supplier Active Status\s*:?\s*(Yes|No)"]) == "Yes",
+            "supplier_number": supplier_number,
+            "legal_name": legal_name,
+            "trading_name": trading_name,
+            "registration_number": registration_number,
+            "supplier_type": supplier_type,
+            "supplier_sub_type": supplier_sub_type,
+            "registration_date": registration_date,
+            "financial_year_start": financial_year_start,
+            "is_active": is_active,
             "has_bank_account": "bank" in text.lower(),
             "restricted_supplier": extract_yes_no(text, [r"Restricted Supplier\s*:?\s*(Yes|No)"]) == "Yes",
-            "business_status": extract_field(text, [r"Business Status\s*:?\s*(.+)"]),
-            "country_of_origin": extract_field(text, [r"Country of Origin\s*:?\s*(.+)"]),
-            "government_employee": extract_yes_no(text, [r"Government Employee\s*:?\s*(Yes|No)"]) == "Yes",
-            "allow_associates": extract_yes_no(text, [r"Allow Associates\s*:?\s*(Yes|No)"]) == "Yes",
-            "annual_turnover_band": extract_field(text, [r"Annual Turnover Band\s*:?\s*(.+)"])
+            "business_status": business_status,
+            "country_of_origin": country_of_origin,
+            "government_employee": government_employee,
+            "allow_associates": allow_associates,
+            "annual_turnover_band": annual_turnover_band
         },
-        "industry_classification": [
-            {
-                "main_group": item,
-                "division": "",
-                "core_industry": None,
-                "turnover_percentage": None
-            }
-            for item in industry["main_groups"]
-        ] + [
-            {
-                "main_group": "",
-                "division": item,
-                "core_industry": None,
-                "turnover_percentage": None
-            }
-            for item in industry["divisions"]
-        ],
+        "industry_classification": industry_rows,
         "contact_information": [
             {
                 "contact_type": "Primary",
                 "is_preferred": True,
-                "name": extract_field(text, [r"Contact Person\s*:?\s*(.+)", r"Name\s*:?\s*(.+)"]),
+                "name": contact_name,
                 "surname": "",
-                "phone": extract_field(text, [r"Telephone\s*:?\s*(.+)", r"Phone\s*:?\s*(.+)"]),
-                "email": extract_field(text, [r"Email\s*:?\s*(.+)"]),
-                "website": extract_field(text, [r"Website\s*:?\s*(.+)"]),
+                "phone": phone,
+                "email": email,
+                "website": website,
                 "communication_preference": "email",
                 "is_csd_user": True
             }
@@ -347,25 +421,22 @@ def parse_profile_metadata(text):
         "address_information": [
             {
                 "is_preferred": True,
-                "address_line_1": extract_field(
-                    text,
-                    [r"Address Line 1\s*:?\s*(.+)", r"Physical Address\s*:?\s*(.+)"]
-                ),
-                "address_line_2": extract_field(text, [r"Address Line 2\s*:?\s*(.+)"], ""),
-                "suburb": extract_field(text, [r"Suburb\s*:?\s*(.+)"], ""),
-                "city": extract_field(text, [r"City\s*:?\s*(.+)", r"Locality\s*:?\s*(.+)"], ""),
-                "municipality": extract_field(text, [r"Municipality\s*:?\s*(.+)"], ""),
-                "province": extract_field(text, [r"Province\s*:?\s*(.+)"], ""),
-                "country": extract_field(text, [r"Country\s*:?\s*(.+)"], "South Africa"),
-                "postal_code": extract_field(text, [r"Postal Code\s*:?\s*(.+)"], ""),
-                "ward_number": extract_field(text, [r"Ward Number\s*:?\s*(.+)"], "")
+                "address_line_1": address_line_1,
+                "address_line_2": address_line_2,
+                "suburb": suburb,
+                "city": city,
+                "municipality": municipality,
+                "province": province,
+                "country": country_of_origin or "South Africa",
+                "postal_code": postal_code,
+                "ward_number": ward_number
             }
         ],
         "bank_information": [
             {
                 "is_preferred": True,
-                "verification_status": extract_field(text, [r"Bank Verification Status\s*:?\s*(.+)"]),
-                "verification_response": extract_field(text, [r"Bank Verification Response\s*:?\s*(.+)"]),
+                "verification_status": bank_verification_status,
+                "verification_response": bank_verification_response,
                 "is_foreign_account": False,
                 "is_shared_account": False,
                 "identifier_linked": True,
@@ -373,24 +444,18 @@ def parse_profile_metadata(text):
             }
         ],
         "tax_information": {
-            "income_tax_number": extract_field(text, [r"Income Tax Number\s*:?\s*(.+)"]),
-            "is_vat_vendor": extract_yes_no(text, [r"VAT Vendor\s*:?\s*(Yes|No)"]) == "Yes",
-            "is_registered_with_sars": extract_yes_no(
-                text,
-                [r"SARS Registration Status\s*:?\s*(Yes|No)", r"Registered with SARS\s*:?\s*(Yes|No)"]
-            ) == "Yes",
-            "tax_compliance_status": extract_field(
-                text,
-                [r"Overall Tax Status\s*:?\s*(.+)", r"Tax Compliance Status\s*:?\s*(.+)"]
-            ),
+            "income_tax_number": income_tax_number,
+            "is_vat_vendor": is_vat_vendor,
+            "is_registered_with_sars": is_registered_with_sars,
+            "tax_compliance_status": tax_compliance_status,
             "compliance_pin_provided": "pin" in text.lower(),
-            "last_validation_date": extract_field(text, [r"Last Validation Date\s*:?\s*(.+)"])
+            "last_validation_date": last_validation_date
         },
         "bbbbee_information": {
-            "certificate_number": extract_field(text, [r"Certificate Number\s*:?\s*(.+)"]),
-            "issue_date": extract_field(text, [r"Issue Date\s*:?\s*(.+)"]),
-            "expiry_date": extract_field(text, [r"Expiry Date\s*:?\s*(.+)", r"Expiration Date\s*:?\s*(.+)"]),
-            "verification_status": extract_field(text, [r"Verification Status\s*:?\s*(.+)"]),
+            "certificate_number": bbbee_certificate_number,
+            "issue_date": bbbee_issue_date,
+            "expiry_date": bbbee_expiry_date,
+            "verification_status": bbbee_verification_status,
             "ownership": {
                 "black_owned_percentage": None,
                 "black_women_owned_percentage": None,
@@ -401,18 +466,7 @@ def parse_profile_metadata(text):
                 "military_veteran_owned_percentage": None
             }
         },
-        "accreditations": [
-            {
-                "body": item.get("description", ""),
-                "description": item.get("description", ""),
-                "accreditation_number": "",
-                "issue_date": "",
-                "expiry_date": item.get("expiration_date", ""),
-                "status": item.get("status", "Unknown"),
-                "verification_status": "Manual verification required"
-            }
-            for item in accreditations
-        ],
+        "accreditations": accreditation_records,
         "directors": [
             {
                 "name": item,
@@ -446,40 +500,6 @@ def parse_profile_metadata(text):
         },
         "keywords": tokenize(text)[:30]
     }
-
-
-def extract_releases(payload):
-    if isinstance(payload, list):
-        return payload
-
-    if not isinstance(payload, dict):
-        return []
-
-    for key in ["releases", "data", "value", "results", "items"]:
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-
-    if "ocid" in payload or "tender" in payload or "buyer" in payload:
-        return [payload]
-
-    return []
-
-
-def fetch_tenders(date_from, date_to, page_number, page_size):
-    url = "https://ocds-api.etenders.gov.za/api/OCDSReleases"
-    params = {
-        "PageNumber": page_number,
-        "PageSize": page_size,
-        "dateFrom": date_from,
-        "dateTo": date_to
-    }
-
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    payload = response.json()
-    releases = extract_releases(payload)
-    return releases, params
 
 
 def pick_best_tender_document(documents):
@@ -541,8 +561,6 @@ def download_pdf_text_from_url(url):
 
 
 def parse_tender_document_text(text):
-    lower = text.lower()
-
     scoring_criteria = []
     specifications = []
     requirements = []
@@ -589,9 +607,8 @@ def parse_tender_document_text(text):
                 )
                 if date_match:
                     briefing["date"] = date_match.group(1)
-            if not briefing["venue"]:
-                if ":" in line:
-                    briefing["venue"] = line.split(":", 1)[1].strip()[:180]
+            if not briefing["venue"] and ":" in line:
+                briefing["venue"] = line.split(":", 1)[1].strip()[:180]
 
     return {
         "scoring_criteria": dedupe_keep_order(scoring_criteria)[:20],
@@ -1084,44 +1101,69 @@ def tender_detail_page(tender_id):
 @app.get("/api/profiles")
 def api_profiles():
     profiles = list(PROFILE_STORE.values())
+
+    def get_main_groups(meta):
+        return [
+            x.get("main_group", "")
+            for x in meta.get("industry_classification", [])
+            if x.get("main_group")
+        ]
+
+    def get_divisions(meta):
+        return [
+            x.get("division", "")
+            for x in meta.get("industry_classification", [])
+            if x.get("division")
+        ]
+
     return jsonify({
         "status": "ok",
         "profiles": [
             {
                 "id": p["id"],
                 "name": p["name"],
-                "company_name": p["meta"]["supplier_identification"]["legal_name"],
-                "supplier_active_status": "Yes" if p["meta"]["supplier_identification"]["is_active"] else "No",
-                "supplier_sub_type": p["meta"]["supplier_identification"]["supplier_sub_type"],
-                "country_of_origin": p["meta"]["supplier_identification"]["country_of_origin"],
-                "government_employee": "Yes" if p["meta"]["supplier_identification"]["government_employee"] else "No",
-                "overall_tax_status": p["meta"]["tax_information"]["tax_compliance_status"],
-                "sars_registration_status": "Yes" if p["meta"]["tax_information"]["is_registered_with_sars"] else "No",
-                "industry_classification": ", ".join(
-                    [x["main_group"] for x in p["meta"]["industry_classification"] if x["main_group"]][:3]
-                ) or "Unknown",
-                "industry_main_groups": [x["main_group"] for x in p["meta"]["industry_classification"] if x["main_group"]],
-                "industry_divisions": [x["division"] for x in p["meta"]["industry_classification"] if x["division"]],
-                "address_information": p["meta"]["address_information"][0]["address_line_1"] if p["meta"]["address_information"] else "Unknown",
-                "bbbee_information": p["meta"]["bbbbee_information"]["verification_status"],
+                "company_name": p["meta"]["supplier_identification"].get("legal_name", "Unknown"),
+                "supplier_active_status": "Yes" if p["meta"]["supplier_identification"].get("is_active") else "No",
+                "supplier_sub_type": p["meta"]["supplier_identification"].get("supplier_sub_type", "Unknown"),
+                "country_of_origin": p["meta"]["supplier_identification"].get("country_of_origin", "Unknown"),
+                "government_employee": "Yes" if p["meta"]["supplier_identification"].get("government_employee") else "No",
+                "overall_tax_status": p["meta"]["tax_information"].get("tax_compliance_status", "Unknown"),
+                "sars_registration_status": "Yes" if p["meta"]["tax_information"].get("is_registered_with_sars") else "No",
+                "industry_classification": ", ".join(get_main_groups(p["meta"])[:3]) or "Unknown",
+                "industry_main_groups": get_main_groups(p["meta"]),
+                "industry_divisions": get_divisions(p["meta"]),
+                "address_information": (
+                    p["meta"]["address_information"][0].get("address_line_1", "Unknown")
+                    if p["meta"].get("address_information") else "Unknown"
+                ),
+                "bbbee_information": (
+                    p["meta"]["bbbbee_information"].get("verification_status")
+                    or p["meta"]["bbbbee_information"].get("certificate_number")
+                    or "Unknown"
+                ),
                 "bbbee_details": [
-                    f'Certificate: {p["meta"]["bbbbee_information"]["certificate_number"]}',
-                    f'Expiry: {p["meta"]["bbbbee_information"]["expiry_date"]}'
+                    f'Certificate: {p["meta"]["bbbbee_information"].get("certificate_number", "Unknown")}',
+                    f'Issue: {p["meta"]["bbbbee_information"].get("issue_date", "Unknown")}',
+                    f'Expiry: {p["meta"]["bbbbee_information"].get("expiry_date", "Unknown")}'
                 ],
-                "ownership_information": str(p["meta"]["ownership_summary"]),
-                "directors_members_owners": [x["name"] for x in p["meta"]["directors"]],
+                "ownership_information": str(p["meta"].get("ownership_summary", {})),
+                "directors_members_owners": [x.get("name", "") for x in p["meta"].get("directors", []) if x.get("name")],
                 "accreditations": [
                     {
-                        "status": x["status"],
-                        "description": x["description"],
-                        "expiration_date": x["expiry_date"]
+                        "status": x.get("status", "Unknown"),
+                        "description": x.get("description", "Unknown"),
+                        "expiration_date": x.get("expiry_date", "Unknown")
                     }
-                    for x in p["meta"]["accreditations"]
+                    for x in p["meta"].get("accreditations", [])
                 ],
                 "associations": [],
-                "commodities": p["meta"]["keywords"][:8],
-                "provinces": [x["province"] for x in p["meta"]["address_information"] if x.get("province")],
-                "keywords": p["meta"]["keywords"][:12],
+                "commodities": p["meta"].get("keywords", [])[:8],
+                "provinces": [
+                    x.get("province", "")
+                    for x in p["meta"].get("address_information", [])
+                    if x.get("province")
+                ],
+                "keywords": p["meta"].get("keywords", [])[:12],
                 "uploaded_at": p["uploaded_at"]
             }
             for p in profiles
