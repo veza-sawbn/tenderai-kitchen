@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-section">
+  <div class="detail-page">
+    <div class="detail-head">
+      <div>
+        <h1>{{ tender.title }}</h1>
+        <div class="detail-meta">{{ tender.organ_of_state }} · {{ tender.province }}</div>
+      </div>
+      <div class="detail-badge">{{ tender.fit_band }}</div>
+    </div>
+
+    <div class="detail-grid-main">
+      <div class="detail-block">
+        <h3>Tender number</h3>
+        <p>{{ tender.tender_number }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Organ of state</h3>
+        <p>{{ tender.organ_of_state }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Tender type</h3>
+        <p>{{ tender.tender_type }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Province</h3>
+        <p>{{ tender.province }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Date published</h3>
+        <p>{{ tender.date_published or "Not provided" }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Closing date</h3>
+        <p>{{ tender.close_date or "Not provided" }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Location of service delivery</h3>
+        <p>{{ tender.location_of_service_delivery }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Special conditions</h3>
+        <p>{{ tender.special_conditions }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Contact person</h3>
+        <p>{{ tender.contact_person }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Email</h3>
+        <p>{{ tender.contact_email }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Telephone number</h3>
+        <p>{{ tender.contact_phone }}</p>
+      </div>
+      <div class="detail-block">
+        <h3>Briefing session details</h3>
+        <p>{{ tender.briefing_session_details }}</p>
+      </div>
+    </div>
+
+    <div class="detail-block">
+      <h3>AI summary</h3>
+      <p>{{ tender.ai_summary }}</p>
+    </div>
+
+    <div class="detail-grid-main">
+      <div class="detail-block">
+        <h3>Estimated tender value</h3>
+        <div class="big-value">{{ tender.value_display }}</div>
+      </div>
+      <div class="detail-block">
+        <h3>Expected execution investment</h3>
+        <div class="big-value">{{ tender.execution_investment_display }}</div>
+      </div>
+    </div>
+
+    <div class="detail-actions">
+      {% if tender.tender_document_url %}
+      <a class="primary-btn" href="{{ tender.tender_document_url }}" target="_blank">Download Tender Document</a>
+      {% else %}
+      <button class="secondary-btn" disabled>Download Tender Document Unavailable</button>
+      {% endif %}
+      <a class="secondary-btn" href="/tenders">Back to Insights</a>
+    </div>
+  </div>
+</section>
+{% endblock %}
