@@ -12,13 +12,13 @@ app = Flask(__name__)
 
 PROFILE_STORE = {}
 TENDER_CACHE = {}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# -----------------------------
-# Helpers
-# -----------------------------
+
 def tokenize(text):
     if not text:
         return []
@@ -42,8 +42,7 @@ def extract_pdf_text(file_storage):
     pages = []
 
     for page in reader.pages:
-        text = page.extract_text() or ""
-        pages.append(text)
+        pages.append(page.extract_text() or "")
 
     return "\n".join(pages)
 
@@ -72,8 +71,8 @@ def extract_company_name(text):
     return "Unknown company"
 
 
-def extract_yes_no(text, label_patterns):
-    for pattern in label_patterns:
+def extract_yes_no(text, patterns):
+    for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             value = match.group(1).strip().lower()
@@ -86,8 +85,165 @@ def extract_field(text, patterns, default_value="Unknown"):
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            return match.group(1).split("\n")[0].strip()[:160]
+            return match.group(1).split("\n")[0].strip()[:180]
     return default_value
+
+
+def dedupe_keep_order(items):
+    seen = set()
+    output = []
+    for item in items:
+        key = str(item).lower()
+        if key not in seen:
+            output.append(item)
+            seen.add(key)
+    return output
+
+
+def parse_bbbee_information(text):
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    collected = []
+
+    bbbee_keywords = [
+        "b-bbee", "bbbee", "bbee", "status level", "eme", "qse",
+        "black ownership", "black woman ownership", "procurement recognition"
+    ]
+
+    for line in lines:
+        lower = line.lower()
+        if any(k in lower for k in bbbee_keywords):
+            collected.append(line[:180])
+
+    level = extract_field(
+        text,
+        [
+            r"B-?B?BEE(?: Status Level)?\s*:?\s*(.+)",
+            r"B-BBEE(?: Status Level)?\s*:?\s*(.+)"
+        ]
+    )
+
+    return {
+        "level": level,
+        "details": dedupe_keep_order(collected)[:12]
+    }
+
+
+def parse_industry_classes(text):
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    main_groups = []
+    divisions = []
+
+    for line in lines:
+        lower = line.lower()
+
+        if "main group" in lower:
+            main_groups.append(line[:180])
+
+        if "division" in lower:
+            divisions.append(line[:180])
+
+        if re.search(r"\bmain\s+group\b", lower):
+            main_groups.append(line[:180])
+
+        if re.search(r"\bdivisions?\b", lower):
+            divisions.append(line[:180])
+
+    if not main_groups:
+        main_group_field = extract_field(
+            text,
+            [
+                r"Main Group\s*:?\s*(.+)",
+                r"Industry Classification Main Group\s*:?\s*(.+)"
+            ],
+            default_value=""
+        )
+        if main_group_field:
+            main_groups.append(main_group_field)
+
+    if not divisions:
+        division_field = extract_field(
+            text,
+            [
+                r"Division\s*:?\s*(.+)",
+                r"Industry Classification Division\s*:?\s*(.+)"
+            ],
+            default_value=""
+        )
+        if division_field:
+            divisions.append(division_field)
+
+    return {
+        "main_groups": dedupe_keep_order([x for x in main_groups if x])[:10],
+        "divisions": dedupe_keep_order([x for x in divisions if x])[:14]
+    }
+
+
+def parse_accreditations(text):
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    records = []
+    current = None
+
+    for line in lines:
+        lower = line.lower()
+
+        if "accreditation" in lower and current is None:
+            current = {
+                "status": "Unknown",
+                "description": line[:180],
+                "expiration_date": "Unknown"
+            }
+
+        if current is not None:
+            if "status" in lower and current["status"] == "Unknown":
+                status_match = re.search(r"status\s*:?\s*(.+)", line, re.IGNORECASE)
+                if status_match:
+                    current["status"] = status_match.group(1).strip()[:120]
+
+            if any(k in lower for k in ["description", "accreditation", "certificate", "registration"]):
+                if len(line) > len(current["description"]):
+                    current["description"] = line[:180]
+
+            date_match = re.search(
+                r"((?:\d{4}[-/]\d{2}[-/]\d{2})|(?:\d{2}[-/]\d{2}[-/]\d{4}))",
+                line
+            )
+            if date_match:
+                current["expiration_date"] = date_match.group(1)
+
+            if any(k in lower for k in ["expires", "expiry", "expiration"]):
+                exp_match = re.search(r"(expires|expiry|expiration)\s*:?\s*(.+)", line, re.IGNORECASE)
+                if exp_match:
+                    current["expiration_date"] = exp_match.group(2).strip()[:120]
+
+            if current and (
+                "expiration" in lower
+                or "expiry" in lower
+                or "expires" in lower
+                or "status" in lower
+            ):
+                records.append(current)
+                current = None
+
+    fallback = []
+    for line in lines:
+        lower = line.lower()
+        if any(k in lower for k in ["accreditation", "certificate", "iso", "cidb", "registered with"]):
+            fallback.append({
+                "status": "Unknown",
+                "description": line[:180],
+                "expiration_date": "Unknown"
+            })
+
+    records = records if records else fallback
+    unique = []
+    seen = set()
+    for record in records:
+        key = f'{record["status"]}|{record["description"]}|{record["expiration_date"]}'.lower()
+        if key not in seen:
+            unique.append(record)
+            seen.add(key)
+
+    return unique[:12]
 
 
 def extract_list_by_keywords(text, keywords, max_items=12):
@@ -97,17 +253,9 @@ def extract_list_by_keywords(text, keywords, max_items=12):
     for line in lines:
         lower = line.lower()
         if any(keyword in lower for keyword in keywords):
-            found.append(line[:160])
+            found.append(line[:180])
 
-    deduped = []
-    seen = set()
-    for item in found:
-        key = item.lower()
-        if key not in seen:
-            deduped.append(item)
-            seen.add(key)
-
-    return deduped[:max_items]
+    return dedupe_keep_order(found)[:max_items]
 
 
 def infer_province(text):
@@ -137,7 +285,11 @@ def parse_profile_metadata(text):
         "free state", "limpopo", "mpumalanga", "north west", "northern cape"
     ]
 
-    meta = {
+    bbbee = parse_bbbee_information(text)
+    industry = parse_industry_classes(text)
+    accreditations = parse_accreditations(text)
+
+    return {
         "company_name": extract_company_name(text),
         "supplier_active_status": extract_yes_no(
             text,
@@ -170,6 +322,8 @@ def parse_profile_metadata(text):
                 r"Industry Classifications?\s*:?\s*(.+)"
             ]
         ),
+        "industry_main_groups": industry["main_groups"],
+        "industry_divisions": industry["divisions"],
         "address_information": extract_field(
             text,
             [
@@ -177,13 +331,8 @@ def parse_profile_metadata(text):
                 r"Physical Address\s*:?\s*(.+)"
             ]
         ),
-        "bbbee_information": extract_field(
-            text,
-            [
-                r"B-?B?BEE(?: Status Level)?\s*:?\s*(.+)",
-                r"B-BBEE(?: Status Level)?\s*:?\s*(.+)"
-            ]
-        ),
+        "bbbee_information": bbbee["level"],
+        "bbbee_details": bbbee["details"],
         "ownership_information": extract_field(
             text,
             [r"Ownership\s*:?\s*(.+)"]
@@ -192,10 +341,7 @@ def parse_profile_metadata(text):
             text,
             ["director", "member", "owner"]
         ),
-        "accreditations": extract_list_by_keywords(
-            text,
-            ["accreditation", "certificate", "iso", "cidb", "registered with"]
-        ),
+        "accreditations": accreditations,
         "associations": extract_list_by_keywords(
             text,
             ["association", "member of", "affiliation"]
@@ -207,8 +353,6 @@ def parse_profile_metadata(text):
         "provinces": [p.title() for p in provinces if p in text.lower()],
         "keywords": tokenize(text)[:30]
     }
-
-    return meta
 
 
 def extract_releases(payload):
@@ -594,8 +738,6 @@ def enrich_tender(item, profile=None, prompt=""):
         "preference_comment": preference_comment,
         "bid_readiness": bid_readiness,
         "bid_readiness_comment": bid_readiness_comment,
-
-        # detail-style fields
         "tender_number": title,
         "organ_of_state": buyer_name,
         "tender_type": category or "Unspecified",
@@ -649,7 +791,6 @@ def count_closing_soon(tenders):
         close_date = t.get("close_date")
         if not close_date:
             continue
-
         try:
             dt = datetime.fromisoformat(close_date.replace("Z", "+00:00"))
             delta_days = (dt - now).days
@@ -661,9 +802,6 @@ def count_closing_soon(tenders):
     return count
 
 
-# -----------------------------
-# HTML routes
-# -----------------------------
 @app.get("/")
 def home():
     return render_template("home.html")
@@ -687,9 +825,6 @@ def tender_detail_page(tender_id):
     return render_template("tender_detail.html", tender=tender)
 
 
-# -----------------------------
-# API routes
-# -----------------------------
 @app.get("/api/profiles")
 def api_profiles():
     profiles = list(PROFILE_STORE.values())
@@ -707,8 +842,11 @@ def api_profiles():
                 "overall_tax_status": p["meta"]["overall_tax_status"],
                 "sars_registration_status": p["meta"]["sars_registration_status"],
                 "industry_classification": p["meta"]["industry_classification"],
+                "industry_main_groups": p["meta"]["industry_main_groups"],
+                "industry_divisions": p["meta"]["industry_divisions"],
                 "address_information": p["meta"]["address_information"],
                 "bbbee_information": p["meta"]["bbbee_information"],
+                "bbbee_details": p["meta"]["bbbee_details"],
                 "ownership_information": p["meta"]["ownership_information"],
                 "directors_members_owners": p["meta"]["directors_members_owners"],
                 "accreditations": p["meta"]["accreditations"],
@@ -814,13 +952,13 @@ def api_tenders():
         tenders = [enrich_tender(item, profile=None, prompt="") for item in releases]
 
         if province_filter:
-            tenders = [t for t in tenders if province_filter in (t.get("province", "").lower())]
+            tenders = [t for t in tenders if province_filter in t.get("province", "").lower()]
 
         if industry_filter:
             tenders = [
                 t for t in tenders
-                if industry_filter in (t.get("category", "").lower())
-                or industry_filter in (t.get("description", "").lower())
+                if industry_filter in t.get("category", "").lower()
+                or industry_filter in t.get("description", "").lower()
             ]
 
         return jsonify({
@@ -898,7 +1036,7 @@ def api_advise():
     risk_comment = f"Current risk view: {tender.get('risk_level', 'Unknown')} risk. {tender.get('risk_reason', '')}"
     competitor_assumption = "Expect competition from suppliers with stronger reference portfolios, complete compliance packs, and closer scope alignment."
 
-    required_capabilities = list(dict.fromkeys(required_capabilities))[:10]
+    required_capabilities = dedupe_keep_order(required_capabilities)[:10]
 
     return jsonify({
         "status": "ok",
