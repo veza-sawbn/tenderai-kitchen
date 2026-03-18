@@ -12,7 +12,7 @@
     <div class="profile-upload-panel">
       <label for="profile_upload">Upload company profile PDF</label>
       <input type="file" id="profile_upload" accept=".pdf">
-      <button id="uploadProfileBtn" class="primary-btn">Upload profile</button>
+      <button id="uploadProfileBtn" class="primary-btn" type="button">Upload profile</button>
     </div>
 
     <div id="profilesList" class="profiles-grid">
@@ -25,6 +25,20 @@
 {% block scripts %}
 <script>
   let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
+
+  function renderAccreditations(accreditations) {
+    if (!accreditations || !accreditations.length) {
+      return '<div class="muted-block">No accreditation information detected.</div>';
+    }
+
+    return accreditations.map(item => `
+      <div class="mini-info-row">
+        <div><strong>Status</strong><br>${item.status || "Unknown"}</div>
+        <div><strong>Description</strong><br>${item.description || "Unknown"}</div>
+        <div><strong>Expiration</strong><br>${item.expiration_date || "Unknown"}</div>
+      </div>
+    `).join("");
+  }
 
   async function loadProfiles() {
     const res = await fetch("/api/profiles");
@@ -58,13 +72,35 @@
           <div><strong>B-BBEE</strong><br>${profile.bbbee_information}</div>
         </div>
 
-        <div class="chip-list">
-          ${(profile.commodities || []).slice(0, 8).map(item => `<span class="chip">${item}</span>`).join("")}
+        <div class="profile-section">
+          <h4>Main groups</h4>
+          <div class="chip-list">
+            ${(profile.industry_main_groups || []).map(item => `<span class="chip">${item}</span>`).join("") || '<span class="chip">None detected</span>'}
+          </div>
+        </div>
+
+        <div class="profile-section">
+          <h4>Divisions</h4>
+          <div class="chip-list">
+            ${(profile.industry_divisions || []).map(item => `<span class="chip">${item}</span>`).join("") || '<span class="chip">None detected</span>'}
+          </div>
+        </div>
+
+        <div class="profile-section">
+          <h4>B-BBEE details</h4>
+          <div class="chip-list">
+            ${(profile.bbbee_details || []).map(item => `<span class="chip">${item}</span>`).join("") || '<span class="chip">None detected</span>'}
+          </div>
+        </div>
+
+        <div class="profile-section">
+          <h4>Accreditations</h4>
+          ${renderAccreditations(profile.accreditations || [])}
         </div>
 
         <div class="profile-actions">
-          <button class="primary-btn" onclick="setActiveProfile('${profile.id}')">Use this profile</button>
-          <button class="secondary-btn" onclick="deleteProfile('${profile.id}')">Delete</button>
+          <button class="primary-btn" type="button" onclick="setActiveProfile('${profile.id}')">Use this profile</button>
+          <button class="secondary-btn" type="button" onclick="deleteProfile('${profile.id}')">Delete</button>
         </div>
       </div>
     `).join("");
@@ -89,6 +125,8 @@
       if (data.status === "ok") {
         document.getElementById("profile_upload").value = "";
         await loadProfiles();
+      } else {
+        alert(data.error || "Upload failed");
       }
     } finally {
       setLoading(false);
