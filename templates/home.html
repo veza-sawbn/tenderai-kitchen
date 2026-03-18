@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-grid"></div>
+  <div class="hero-inner">
+    <div class="hero-center">
+      <div class="prompt-shell">
+        <textarea id="home_prompt" class="hero-prompt" placeholder="Ask TenderAI…"></textarea>
+
+        <div class="hero-controls">
+          <select id="home_profile_select"></select>
+          <input type="date" id="home_date_from" value="2026-01-01">
+          <input type="date" id="home_date_to" value="2026-03-17">
+          <button id="runPromptBtn" class="primary-btn">Analyze</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="live-insights">
+  <div class="section-head full-width">
+    <div>
+      <h2>Live tender insights</h2>
+    </div>
+  </div>
+
+  <div class="filters-row">
+    <select id="province_filter">
+      <option value="">All provinces</option>
+      <option>Gauteng</option>
+      <option>Western Cape</option>
+      <option>Eastern Cape</option>
+      <option>KwaZulu-Natal</option>
+      <option>Free State</option>
+      <option>Limpopo</option>
+      <option>Mpumalanga</option>
+      <option>North West</option>
+      <option>Northern Cape</option>
+    </select>
+
+    <select id="industry_filter">
+      <option value="">All industries</option>
+      <option value="works">Works</option>
+      <option value="services">Services</option>
+      <option value="goods">Goods</option>
+      <option value="construction">Construction</option>
+      <option value="electrical">Electrical</option>
+      <option value="maintenance">Maintenance</option>
+    </select>
+
+    <button id="loadInsightsBtn" class="secondary-btn">Refresh</button>
+  </div>
+
+  <div id="liveTenderList" class="tender-table">
+    <div class="empty-state">Loading live tenders…</div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
+
+  async function loadProfilesForHome() {
+    const res = await fetch("/api/profiles");
+    const data = await res.json();
+    const select = document.getElementById("home_profile_select");
+    const profiles = data.profiles || [];
+
+    if (!profiles.length) {
+      select.innerHTML = '<option value="">No profile uploaded</option>';
+      return;
+    }
+
+    if (!profiles.find(p => p.id === activeProfileId)) {
+      activeProfileId = profiles[0].id;
+      localStorage.setItem("tenderai_active_profile", activeProfileId);
+    }
+
+    select.innerHTML = profiles.map(profile => `
+      <option value="${profile.id}" ${profile.id === activeProfileId ? "selected" : ""}>
+        ${profile.name}
+      </option>
+    `).join("");
+
+    select.addEventListener("change", (e) => {
+      activeProfileId = e.target.value;
+      localStorage.setItem("tenderai_active_profile", activeProfileId);
+    });
+  }
+
+  function renderLiveTenderRow(t) {
+    return `
+      <div class="tender-row">
+        <div class="tender-main">
+          <div class="tender-title">${t.title || "Untitled tender"}</div>
+          <div class="tender-meta">
+            ${t.organ_of_state || "Unknown organ of state"} · ${t.province || "Unspecified"} · closes ${t.close_date || "N/A"}
+          </div>
+        </div>
+        <div class="tender-side">
+          <div class="tender-number">${t.tender_number || "N/A"}</div>
+          <button class="text-btn" onclick="window.location='/tender/${t.id}'">Open Tender Detail</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadLiveTenders() {
+    setLoading(true, "Loading live tender insights...");
+
+    try {
+      const province = document.getElementById("province_filter").value;
+      const industry = document.getElementById("industry_filter").value;
+
+      const qs = new URLSearchParams({
+        date_from: "2026-01-01",
+        date_to: "2026-03-17",
+        page_number: "1",
+        page_size: "20",
+        province: province,
+        industry: industry
+      });
+
+      const res = await fetch(`/api/tenders?${qs.toString()}`);
+      const data = await res.json();
+
+      const list = document.getElementById("liveTenderList");
+      if (data.status !== "ok" || !(data.tenders || []).length) {
+        list.innerHTML = '<div class="empty-state">No tenders found for the current filters.</div>';
+        return;
+      }
+
+      list.innerHTML = data.tenders.map(renderLiveTenderRow).join("");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runAnalysis() {
+    const prompt = document.getElementById("home_prompt").value.trim();
+    const profileId = document.getElementById("home_profile_select").value;
+
+    if (!profileId) {
+      window.location = "/profiles";
+      return;
+    }
+
+    setLoading(true, "TenderAI is analyzing your prompt...");
+
+    try {
+      const res = await fetch("/api/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile_id: profileId,
+          prompt: prompt,
+          date_from: document.getElementById("home_date_from").value,
+          date_to: document.getElementById("home_date_to").value,
+          page_number: 1,
+          page_size: 10
+        })
+      });
+
+      const data = await res.json();
+      if (data.status === "ok") {
+        sessionStorage.setItem("tenderai_latest_scan", JSON.stringify(data));
+        window.location = "/tenders";
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  document.getElementById("runPromptBtn").addEventListener("click", runAnalysis);
+  document.getElementById("loadInsightsBtn").addEventListener("click", loadLiveTenders);
+
+  loadProfilesForHome();
+  loadLiveTenders();
+</script>
+{% endblock %}
