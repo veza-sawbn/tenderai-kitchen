@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-section">
+  <div class="section-head full-width">
+    <div>
+      <h2>Business profiles</h2>
+    </div>
+  </div>
+
+  <div class="profiles-layout">
+    <div class="profile-upload-panel">
+      <label for="profile_upload">Upload company profile PDF</label>
+      <input type="file" id="profile_upload" accept=".pdf">
+      <button id="uploadProfileBtn" class="primary-btn">Upload profile</button>
+    </div>
+
+    <div id="profilesList" class="profiles-grid">
+      <div class="empty-state">No profiles uploaded yet.</div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
+
+  async function loadProfiles() {
+    const res = await fetch("/api/profiles");
+    const data = await res.json();
+    const profiles = data.profiles || [];
+    const wrap = document.getElementById("profilesList");
+
+    if (!profiles.length) {
+      wrap.innerHTML = '<div class="empty-state">No profiles uploaded yet.</div>';
+      return;
+    }
+
+    wrap.innerHTML = profiles.map(profile => `
+      <div class="profile-card ${profile.id === activeProfileId ? "active" : ""}">
+        <div class="profile-card-header">
+          <div>
+            <div class="profile-name">${profile.name}</div>
+            <div class="profile-company">${profile.company_name || "Unknown company"}</div>
+          </div>
+          <div class="mini-badge">${profile.id === activeProfileId ? "Active" : "Available"}</div>
+        </div>
+
+        <div class="profile-grid">
+          <div><strong>Supplier active status</strong><br>${profile.supplier_active_status}</div>
+          <div><strong>Supplier sub-type</strong><br>${profile.supplier_sub_type}</div>
+          <div><strong>Country of origin</strong><br>${profile.country_of_origin}</div>
+          <div><strong>Government employee</strong><br>${profile.government_employee}</div>
+          <div><strong>Overall tax status</strong><br>${profile.overall_tax_status}</div>
+          <div><strong>SARS registration</strong><br>${profile.sars_registration_status}</div>
+          <div><strong>Industry classification</strong><br>${profile.industry_classification}</div>
+          <div><strong>B-BBEE</strong><br>${profile.bbbee_information}</div>
+        </div>
+
+        <div class="chip-list">
+          ${(profile.commodities || []).slice(0, 8).map(item => `<span class="chip">${item}</span>`).join("")}
+        </div>
+
+        <div class="profile-actions">
+          <button class="primary-btn" onclick="setActiveProfile('${profile.id}')">Use this profile</button>
+          <button class="secondary-btn" onclick="deleteProfile('${profile.id}')">Delete</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  async function uploadProfile() {
+    const file = document.getElementById("profile_upload").files[0];
+    if (!file) return;
+
+    setLoading(true, "Parsing supplier profile...");
+
+    try {
+      const formData = new FormData();
+      formData.append("profile_pdf", file);
+
+      const res = await fetch("/api/profiles", {
+        method: "POST",
+        body: formData
+      });
+
+      const data = await res.json();
+      if (data.status === "ok") {
+        document.getElementById("profile_upload").value = "";
+        await loadProfiles();
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function setActiveProfile(profileId) {
+    activeProfileId = profileId;
+    localStorage.setItem("tenderai_active_profile", profileId);
+    loadProfiles();
+  }
+
+  async function deleteProfile(profileId) {
+    await fetch(`/api/profiles/${profileId}`, { method: "DELETE" });
+    if (activeProfileId === profileId) {
+      activeProfileId = "";
+      localStorage.removeItem("tenderai_active_profile");
+    }
+    loadProfiles();
+  }
+
+  document.getElementById("uploadProfileBtn").addEventListener("click", uploadProfile);
+  loadProfiles();
+</script>
+{% endblock %}
