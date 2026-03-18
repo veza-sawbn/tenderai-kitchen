@@ -2,9 +2,14 @@ from flask import Flask, jsonify, request, render_template_string
 import requests
 import re
 import io
+import uuid
+from datetime import datetime, timezone
+from collections import Counter
 from pypdf import PdfReader
 
 app = Flask(__name__)
+
+PROFILE_STORE = {}
 
 
 HTML_PAGE = """
@@ -20,7 +25,7 @@ HTML_PAGE = """
       --bg-2: #0a120e;
       --panel: rgba(12, 18, 14, 0.72);
       --panel-solid: rgba(11, 17, 13, 0.92);
-      --panel-soft: rgba(255, 255, 255, 0.03);
+      --panel-soft: rgba(255,255,255,0.03);
       --border: rgba(132, 233, 167, 0.10);
       --text: #edf6ef;
       --muted: #9caf9f;
@@ -96,11 +101,6 @@ HTML_PAGE = """
       z-index: 1;
     }
 
-    .container {
-      width: min(var(--maxw), calc(100% - 32px));
-      margin: 0 auto;
-    }
-
     .topbar {
       position: sticky;
       top: 16px;
@@ -135,19 +135,20 @@ HTML_PAGE = """
       flex-wrap: wrap;
     }
 
-    .nav a {
+    .nav button {
       color: var(--muted);
-      text-decoration: none;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.04);
       font-size: 13px;
       font-weight: 700;
       padding: 10px 14px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.04);
-      background: rgba(255,255,255,0.02);
+      cursor: pointer;
       transition: 0.2s ease;
     }
 
-    .nav a:hover {
+    .nav button:hover,
+    .nav button.active {
       color: var(--accent-3);
       border-color: rgba(126, 240, 171, 0.18);
     }
@@ -330,28 +331,14 @@ HTML_PAGE = """
       line-height: 1.6;
     }
 
-    .section {
-      margin-bottom: 26px;
+    .view {
+      display: none;
+      width: min(var(--maxw), calc(100% - 32px));
+      margin: 0 auto 26px auto;
     }
 
-    .section-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: end;
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-
-    .section-head h2 {
-      margin: 0;
-      font-size: 28px;
-      letter-spacing: -0.02em;
-    }
-
-    .section-head p {
-      margin: 6px 0 0 0;
-      color: var(--muted);
-      font-size: 14px;
+    .view.active {
+      display: block;
     }
 
     .features-wrap {
@@ -424,11 +411,24 @@ HTML_PAGE = """
       line-height: 1.6;
     }
 
-    .assistant-layout {
-      display: grid;
-      grid-template-columns: 0.92fr 1.08fr;
-      gap: 18px;
-      align-items: start;
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .section-head h2 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+    }
+
+    .section-head p {
+      margin: 6px 0 0 0;
+      color: var(--muted);
+      font-size: 14px;
     }
 
     .card {
@@ -440,34 +440,16 @@ HTML_PAGE = """
       backdrop-filter: blur(16px);
     }
 
-    .chat-thread {
-      display: grid;
-      gap: 14px;
+    .prompt-card {
+      max-width: 980px;
     }
 
-    .message {
-      display: block;
-    }
-
-    .message-bubble {
+    .prompt-box {
+      margin-top: 18px;
       padding: 18px;
-      background: var(--panel-solid);
-      border: 1px solid rgba(126, 240, 171, 0.08);
       border-radius: 22px;
-    }
-
-    .message-bubble h3,
-    .message-bubble h4 {
-      margin-top: 0;
-    }
-
-    .message-bubble p {
-      margin: 0 0 10px 0;
-      line-height: 1.68;
-    }
-
-    .message-bubble p:last-child {
-      margin-bottom: 0;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(126, 240, 171, 0.08);
     }
 
     label {
@@ -503,18 +485,15 @@ HTML_PAGE = """
     }
 
     textarea {
-      min-height: 120px;
+      min-height: 140px;
       resize: vertical;
     }
 
-    .form-grid {
+    .compact-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
       gap: 14px;
-    }
-
-    .field {
-      margin-bottom: 14px;
+      margin-top: 14px;
     }
 
     .hint {
@@ -528,6 +507,64 @@ HTML_PAGE = """
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .profiles-grid {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .upload-box {
+      padding: 18px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(126, 240, 171, 0.08);
+    }
+
+    .profiles-list {
+      display: grid;
+      gap: 12px;
+    }
+
+    .profile-card {
+      padding: 18px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(126, 240, 171, 0.08);
+    }
+
+    .profile-card.active {
+      border-color: rgba(126, 240, 171, 0.24);
+      box-shadow: 0 0 0 1px rgba(126, 240, 171, 0.08) inset;
+    }
+
+    .profile-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .profile-title {
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .profile-meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .profile-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
     }
 
     .summary-grid {
@@ -563,76 +600,65 @@ HTML_PAGE = """
       font-size: 13px;
     }
 
-    .loading-overlay {
-      position: fixed;
-      inset: 0;
-      display: none;
+    .feed-layout {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .insight-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .insight-card {
+      padding: 18px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(126, 240, 171, 0.08);
+    }
+
+    .insight-card h3 {
+      margin-top: 0;
+      margin-bottom: 10px;
+      font-size: 18px;
+    }
+
+    .bar-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 120px 1fr 52px;
+      gap: 10px;
       align-items: center;
-      justify-content: center;
-      background: rgba(4, 9, 7, 0.54);
-      backdrop-filter: blur(10px);
-      z-index: 60;
-      padding: 20px;
     }
 
-    .loading-modal {
-      width: min(420px, 100%);
-      padding: 28px;
-      border-radius: 28px;
-      background: rgba(10, 19, 14, 0.94);
-      border: 1px solid rgba(126, 240, 171, 0.12);
-      box-shadow: var(--shadow);
-      text-align: center;
-    }
-
-    .loading-orb {
-      width: 90px;
-      height: 90px;
-      margin: 0 auto 20px auto;
-      border-radius: 50%;
-      position: relative;
-      border: 1px solid rgba(126, 240, 171, 0.10);
-      background: radial-gradient(circle at center, rgba(126, 240, 171, 0.06), transparent 68%);
-    }
-
-    .loading-orb::before {
-      content: "";
-      position: absolute;
-      inset: 10px;
-      border-radius: 50%;
-      border: 1px dashed rgba(126, 240, 171, 0.18);
-    }
-
-    .loading-orb::after {
-      content: "";
-      position: absolute;
-      top: 6px;
-      left: 50%;
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, var(--accent-3), var(--accent-2));
-      transform: translateX(-50%);
-      transform-origin: 0 39px;
-      box-shadow: 0 0 24px rgba(126, 240, 171, 0.95);
-      animation: orbit 1.1s linear infinite;
-    }
-
-    @keyframes orbit {
-      from { transform: rotate(0deg) translateX(-50%); }
-      to { transform: rotate(360deg) translateX(-50%); }
-    }
-
-    .loading-title {
-      font-size: 20px;
-      font-weight: 800;
-      margin-bottom: 8px;
-    }
-
-    .loading-step {
+    .bar-label {
       color: var(--muted);
-      line-height: 1.6;
-      font-size: 14px;
+      font-size: 13px;
+    }
+
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent-2), var(--accent));
+    }
+
+    .bar-value {
+      text-align: right;
+      font-size: 13px;
+      color: var(--text);
     }
 
     .results-list {
@@ -779,13 +805,11 @@ HTML_PAGE = """
       font-weight: 700;
     }
 
-    .empty {
-      padding: 24px;
-      text-align: center;
-      color: var(--muted);
-      border: 1px dashed rgba(126, 240, 171, 0.10);
-      border-radius: 20px;
-      background: rgba(255,255,255,0.02);
+    .feed-toolbar {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 14px;
     }
 
     .explorer-layout {
@@ -793,18 +817,6 @@ HTML_PAGE = """
       grid-template-columns: 0.88fr 1.12fr;
       gap: 18px;
       align-items: start;
-    }
-
-    .list-card,
-    .detail-card {
-      padding: 20px;
-    }
-
-    .toolbar {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 12px;
-      margin-bottom: 14px;
     }
 
     .list-scroll {
@@ -900,14 +912,99 @@ HTML_PAGE = """
       margin-top: 8px;
     }
 
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(4, 9, 7, 0.54);
+      backdrop-filter: blur(10px);
+      z-index: 60;
+      padding: 20px;
+    }
+
+    .loading-modal {
+      width: min(420px, 100%);
+      padding: 28px;
+      border-radius: 28px;
+      background: rgba(10, 19, 14, 0.94);
+      border: 1px solid rgba(126, 240, 171, 0.12);
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+
+    .loading-orb {
+      width: 90px;
+      height: 90px;
+      margin: 0 auto 20px auto;
+      border-radius: 50%;
+      position: relative;
+      border: 1px solid rgba(126, 240, 171, 0.10);
+      background: radial-gradient(circle at center, rgba(126, 240, 171, 0.06), transparent 68%);
+    }
+
+    .loading-orb::before {
+      content: "";
+      position: absolute;
+      inset: 10px;
+      border-radius: 50%;
+      border: 1px dashed rgba(126, 240, 171, 0.18);
+    }
+
+    .loading-orb::after {
+      content: "";
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-3), var(--accent-2));
+      transform: translateX(-50%);
+      transform-origin: 0 39px;
+      box-shadow: 0 0 24px rgba(126, 240, 171, 0.95);
+      animation: orbit 1.1s linear infinite;
+    }
+
+    @keyframes orbit {
+      from { transform: rotate(0deg) translateX(-50%); }
+      to { transform: rotate(360deg) translateX(-50%); }
+    }
+
+    .loading-title {
+      font-size: 20px;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .loading-step {
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .empty {
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed rgba(126, 240, 171, 0.10);
+      border-radius: 20px;
+      background: rgba(255,255,255,0.02);
+    }
+
     @media (max-width: 1180px) {
       .hero-inner,
+      .profiles-grid,
       .assistant-layout,
+      .feed-layout,
       .explorer-layout,
       .summary-grid,
-      .toolbar,
+      .feed-toolbar,
+      .compact-grid,
       .two-col,
-      .detail-grid {
+      .detail-grid,
+      .service-form {
         grid-template-columns: 1fr;
       }
 
@@ -941,20 +1038,6 @@ HTML_PAGE = """
         flex-direction: column;
       }
 
-      .form-grid,
-      .service-form {
-        grid-template-columns: 1fr;
-      }
-
-      .tender-top {
-        flex-direction: column;
-      }
-
-      .score-number,
-      .score-caption {
-        text-align: left;
-      }
-
       .feature-card {
         flex-basis: 300px;
       }
@@ -974,49 +1057,76 @@ HTML_PAGE = """
     <div class="topbar">
       <div class="brand">Tender<span>AI</span></div>
       <div class="nav">
-        <a href="#assistant">Assistant</a>
-        <a href="#matches">Matches</a>
-        <a href="#explorer">Explorer</a>
+        <button class="nav-btn active" data-view="homeView">Home</button>
+        <button class="nav-btn" data-view="profilesView">Profiles</button>
+        <button class="nav-btn" data-view="feedView">Feed</button>
       </div>
     </div>
 
-    <section class="hero">
-      <div class="hero-grid"></div>
-      <div class="hero-inner">
-        <div class="hero-copy">
-          <div class="eyebrow">Procurement intelligence platform</div>
-          <h1>The strategic layer for public procurement opportunity discovery.</h1>
-          <p>
-            TenderAI helps businesses understand where to bid, why a tender matters, what it may take to execute,
-            and how to position more intelligently. Upload your profile, analyze live public tenders, and act with more confidence.
-          </p>
-          <div class="hero-actions">
-            <button class="btn btn-primary" onclick="document.getElementById('assistant').scrollIntoView({behavior:'smooth'})">Start analysis</button>
-            <button class="btn btn-secondary" onclick="document.getElementById('explorer').scrollIntoView({behavior:'smooth'})">Explore tenders</button>
+    <section id="homeView" class="view active">
+      <section class="hero">
+        <div class="hero-grid"></div>
+        <div class="hero-inner">
+          <div class="hero-copy">
+            <div class="eyebrow">Procurement intelligence platform</div>
+            <h1>The strategic layer for public procurement opportunity discovery.</h1>
+            <p>
+              TenderAI helps businesses understand where to bid, why a tender matters, what it may take to execute,
+              and how to position more intelligently. Select a company profile, ask a procurement question,
+              and get tailored tender intelligence.
+            </p>
+
+            <div class="prompt-box">
+              <label for="home_prompt">Ask TenderAI</label>
+              <textarea id="home_prompt" placeholder="What tenders should I pursue this week for my construction business in Gauteng?"></textarea>
+
+              <div class="compact-grid">
+                <div>
+                  <label for="home_profile_select">Business profile</label>
+                  <select id="home_profile_select"></select>
+                </div>
+                <div>
+                  <label for="home_date_from">From date</label>
+                  <input type="date" id="home_date_from" value="2026-01-01">
+                </div>
+                <div>
+                  <label for="home_date_to">To date</label>
+                  <input type="date" id="home_date_to" value="2026-03-17">
+                </div>
+                <div>
+                  <label for="home_page_size">Scan size</label>
+                  <input type="number" id="home_page_size" value="10" min="1" max="100">
+                </div>
+              </div>
+
+              <div class="actions">
+                <button class="btn btn-primary" id="runPromptBtn" type="button">Run analysis</button>
+                <button class="btn btn-secondary" id="goProfilesBtn" type="button">Manage profiles</button>
+              </div>
+              <div class="hint">The homepage stays minimal. Detailed analysis, tender feed, and profile management live on separate pages.</div>
+            </div>
+          </div>
+
+          <div class="hero-panel-stack">
+            <div class="hero-panel">
+              <div class="hero-panel-label">Product positioning</div>
+              <div class="hero-panel-value">Procurement intelligence</div>
+              <div class="hero-panel-copy">A strategic system for understanding opportunities, not just listing them.</div>
+            </div>
+            <div class="hero-panel">
+              <div class="hero-panel-label">Intelligence layer</div>
+              <div class="hero-panel-value">Profile-led</div>
+              <div class="hero-panel-copy">Scores live tenders against company profile evidence and likely bid-readiness.</div>
+            </div>
+            <div class="hero-panel">
+              <div class="hero-panel-label">Operational insight</div>
+              <div class="hero-panel-value">Decision-ready</div>
+              <div class="hero-panel-copy">Estimate value, effort, risk, and what it may cost to deliver the contract.</div>
+            </div>
           </div>
         </div>
+      </section>
 
-        <div class="hero-panel-stack">
-          <div class="hero-panel">
-            <div class="hero-panel-label">Positioning</div>
-            <div class="hero-panel-value">Tender intelligence</div>
-            <div class="hero-panel-copy">More than listings: profile understanding, opportunity ranking, and execution planning.</div>
-          </div>
-          <div class="hero-panel">
-            <div class="hero-panel-label">Analysis depth</div>
-            <div class="hero-panel-value">AI-assisted</div>
-            <div class="hero-panel-copy">Estimate value, score fit, surface strategic advice, and assess delivery investment.</div>
-          </div>
-          <div class="hero-panel">
-            <div class="hero-panel-label">Operational outcome</div>
-            <div class="hero-panel-value">Decision-ready</div>
-            <div class="hero-panel-copy">Know which tenders to pursue, what to prepare, and what support you may need.</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <div class="container">
       <section class="features-wrap">
         <div class="carousel-track">
           <div class="feature-card">
@@ -1069,169 +1179,141 @@ HTML_PAGE = """
           </div>
         </div>
       </section>
+    </section>
 
-      <section id="assistant" class="section">
+    <section id="profilesView" class="view">
+      <div class="container">
         <div class="section-head">
           <div>
-            <h2>Assistant</h2>
-            <p>Run a profile-led tender analysis through a guided AI workflow.</p>
+            <h2>Business profiles</h2>
+            <p>Upload and manage company profiles. Select one as active for analysis.</p>
           </div>
         </div>
 
-        <div class="assistant-layout">
+        <div class="profiles-grid">
           <div class="card">
-            <div class="chat-thread">
-              <div class="message">
-                <div class="message-bubble">
-                  <h3>Start with your business profile.</h3>
-                  <p>Upload a supplier profile PDF or paste business capability text. TenderAI will interpret your profile, scan public tenders, rank relevant opportunities, and estimate what delivery may require.</p>
-                </div>
-              </div>
-
-              <div class="message">
-                <div class="message-bubble">
-                  <div class="form-grid">
-                    <div class="field">
-                      <label for="profile_pdf">Supplier profile PDF</label>
-                      <input type="file" id="profile_pdf" accept=".pdf">
-                      <div class="hint">CSD summaries, company profiles, and capability statements work best.</div>
-                    </div>
-
-                    <div class="field">
-                      <label for="profile_text">Or paste profile text</label>
-                      <textarea id="profile_text" placeholder="Use this only if you are not uploading a PDF."></textarea>
-                    </div>
-
-                    <div class="field">
-                      <label for="date_from">From date</label>
-                      <input type="date" id="date_from" value="2026-01-01">
-                    </div>
-
-                    <div class="field">
-                      <label for="date_to">To date</label>
-                      <input type="date" id="date_to" value="2026-03-17">
-                    </div>
-
-                    <div class="field">
-                      <label for="page_number">Page number</label>
-                      <input type="number" id="page_number" value="1" min="1">
-                    </div>
-
-                    <div class="field">
-                      <label for="page_size">Page size</label>
-                      <input type="number" id="page_size" value="10" min="1" max="100">
-                    </div>
-                  </div>
-
-                  <div class="actions">
-                    <button class="btn btn-primary" id="runScanBtn" type="button">Run TenderAI analysis</button>
-                    <button class="btn btn-secondary" id="clearBtn" type="button">Clear</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="message">
-                <div class="message-bubble" id="assistantResponse">
-                  <p>Once the scan completes, TenderAI will summarize what it understood from your profile and show your ranked opportunities below.</p>
-                </div>
+            <div class="upload-box">
+              <label for="profile_upload">Upload company profile PDF</label>
+              <input type="file" id="profile_upload" accept=".pdf">
+              <div class="hint">Profiles are stored in memory in this single-file version. After a restart or redeploy, upload them again.</div>
+              <div class="actions">
+                <button class="btn btn-primary" id="uploadProfileBtn" type="button">Upload profile</button>
               </div>
             </div>
           </div>
 
           <div class="card">
-            <h3 style="margin-top:0;">What TenderAI understood</h3>
-            <div id="scanUnderstanding" class="empty">Run a scan to see extracted keywords and a concise profile interpretation.</div>
+            <div class="section-head" style="margin-bottom:12px;">
+              <div>
+                <h2 style="font-size:22px;">Saved profiles</h2>
+                <p style="margin-top:4px;">Use one active profile when prompting TenderAI.</p>
+              </div>
+            </div>
+            <div id="profilesList" class="profiles-list">
+              <div class="empty">No profiles uploaded yet.</div>
+            </div>
           </div>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section id="matches" class="section">
+    <section id="feedView" class="view">
+      <div class="container">
         <div class="section-head">
           <div>
-            <h2>Best-fit matches</h2>
-            <p>Ranked opportunities based on your profile and the tender scope.</p>
+            <h2>Procurement feed</h2>
+            <p>Recommendation engine, market analytics, and detailed tender intelligence.</p>
           </div>
         </div>
 
         <div class="summary-grid" id="summaryGrid" style="display:none;">
           <div class="metric">
-            <div class="metric-label">Returned tenders</div>
+            <div class="metric-label">Available tenders</div>
             <div class="metric-value" id="mTotal">0</div>
-            <div class="metric-sub">Scored opportunities</div>
+            <div class="metric-sub">Scanned opportunities</div>
           </div>
           <div class="metric">
-            <div class="metric-label">High fit</div>
+            <div class="metric-label">High-fit tenders</div>
             <div class="metric-value" id="mHigh">0</div>
-            <div class="metric-sub">Best opportunities</div>
+            <div class="metric-sub">Priority targets</div>
           </div>
           <div class="metric">
-            <div class="metric-label">Medium fit</div>
-            <div class="metric-value" id="mMedium">0</div>
-            <div class="metric-sub">Worth reviewing</div>
+            <div class="metric-label">Closing soon</div>
+            <div class="metric-value" id="mSoon">0</div>
+            <div class="metric-sub">Within 7 days</div>
           </div>
           <div class="metric">
-            <div class="metric-label">Low fit</div>
-            <div class="metric-value" id="mLow">0</div>
-            <div class="metric-sub">Lower priority</div>
+            <div class="metric-label">Average contract value</div>
+            <div class="metric-value" id="mAvgValue">R0</div>
+            <div class="metric-sub">Estimated / published</div>
           </div>
         </div>
 
-        <div id="resultsList" class="results-list">
-          <div class="empty">Your ranked opportunity matches will appear here after an analysis.</div>
-        </div>
-      </section>
+        <div class="feed-layout">
+          <div class="insight-stack">
+            <div class="card">
+              <div class="section-head" style="margin-bottom:12px;">
+                <div>
+                  <h2 style="font-size:22px;">Best opportunities for you</h2>
+                  <p style="margin-top:4px;">Tailored to your selected profile and prompt.</p>
+                </div>
+              </div>
+              <div id="bestOpportunities" class="results-list">
+                <div class="empty">Run an analysis from the homepage to populate recommendations.</div>
+              </div>
+            </div>
 
-      <section id="explorer" class="section">
-        <div class="section-head">
-          <div>
-            <h2>Tender Explorer</h2>
-            <p>Browse all tenders manually, inspect details, request advice, and request support.</p>
+            <div class="card">
+              <div class="section-head" style="margin-bottom:12px;">
+                <div>
+                  <h2 style="font-size:22px;">Procurement intelligence dashboard</h2>
+                  <p style="margin-top:4px;">Sector and province patterns from the current feed.</p>
+                </div>
+              </div>
+              <div class="insight-stack">
+                <div class="insight-card">
+                  <h3>Tenders by sector</h3>
+                  <div id="sectorBars" class="bar-list">
+                    <div class="empty">No chart data yet.</div>
+                  </div>
+                </div>
+                <div class="insight-card">
+                  <h3>Tenders by province</h3>
+                  <div id="provinceBars" class="bar-list">
+                    <div class="empty">No chart data yet.</div>
+                  </div>
+                </div>
+                <div class="insight-card">
+                  <h3>Trend insights</h3>
+                  <div id="trendInsights" class="bar-list">
+                    <div class="empty">No insights yet.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div class="explorer-layout">
-          <div class="card list-card">
-            <div class="toolbar">
+          <div class="card">
+            <div class="section-head" style="margin-bottom:12px;">
               <div>
-                <label for="explorer_date_from">From date</label>
-                <input type="date" id="explorer_date_from" value="2026-01-01">
-              </div>
-              <div>
-                <label for="explorer_date_to">To date</label>
-                <input type="date" id="explorer_date_to" value="2026-03-17">
-              </div>
-              <div>
-                <label for="explorer_page_number">Page number</label>
-                <input type="number" id="explorer_page_number" value="1" min="1">
-              </div>
-              <div>
-                <label for="explorer_page_size">Page size</label>
-                <input type="number" id="explorer_page_size" value="20" min="1" max="100">
+                <h2 style="font-size:22px;">Tender detail</h2>
+                <p style="margin-top:4px;">Select an opportunity to inspect summary, requirements, risks, and advice.</p>
               </div>
             </div>
-
-            <div class="actions" style="margin-bottom: 12px;">
-              <button class="btn btn-primary" id="loadTendersBtn" type="button">Load tenders</button>
-            </div>
-
-            <div id="explorerList" class="list-scroll">
-              <div class="empty">Load tenders to browse the market manually.</div>
-            </div>
-          </div>
-
-          <div class="card detail-card">
             <div id="detailPanel">
-              <div class="empty">Select a tender to view its overview, AI advice, value estimate, execution investment, and support options.</div>
+              <div class="empty">Select a recommended tender to inspect its intelligence breakdown.</div>
             </div>
           </div>
         </div>
-      </section>
-    </div>
+      </div>
+    </section>
   </div>
 
   <script>
+    let profiles = [];
+    let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
     let latestScan = null;
-    let explorerTenders = [];
+    let latestTenders = [];
     let selectedTender = null;
 
     const loadingMessages = [
@@ -1254,6 +1336,10 @@ HTML_PAGE = """
       return value === null || value === undefined || value === "" ? fallback : value;
     }
 
+    function formatMoney(value) {
+      return "R" + Number(value || 0).toLocaleString();
+    }
+
     function formatCount(value) {
       return Number(value || 0).toLocaleString();
     }
@@ -1264,20 +1350,156 @@ HTML_PAGE = """
       return "band low";
     }
 
+    function showView(viewId) {
+      document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+      document.querySelectorAll(".nav-btn").forEach(v => v.classList.remove("active"));
+      document.getElementById(viewId).classList.add("active");
+      document.querySelector(`.nav-btn[data-view="${viewId}"]`)?.classList.add("active");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function setLoading(show, firstMessage) {
+      const overlay = document.getElementById("loadingOverlay");
+      overlay.style.display = show ? "flex" : "none";
+      if (firstMessage) {
+        document.getElementById("loadingStepText").textContent = firstMessage;
+      }
+    }
+
+    function startLoadingTicker() {
+      let idx = 0;
+      document.getElementById("loadingStepText").textContent = loadingMessages[0];
+      window.loadingTicker = setInterval(() => {
+        idx = (idx + 1) % loadingMessages.length;
+        document.getElementById("loadingStepText").textContent = loadingMessages[idx];
+      }, 1300);
+    }
+
+    function stopLoadingTicker() {
+      clearInterval(window.loadingTicker);
+    }
+
+    async function loadProfiles() {
+      const res = await fetch("/api/profiles");
+      const data = await res.json();
+      profiles = data.profiles || [];
+
+      if (!profiles.find(p => p.id === activeProfileId)) {
+        activeProfileId = profiles[0]?.id || "";
+        localStorage.setItem("tenderai_active_profile", activeProfileId);
+      }
+
+      renderProfiles();
+      renderProfileSelects();
+    }
+
+    function renderProfileSelects() {
+      const select = document.getElementById("home_profile_select");
+      if (!profiles.length) {
+        select.innerHTML = '<option value="">No profile uploaded</option>';
+        return;
+      }
+      select.innerHTML = profiles.map(profile => `
+        <option value="${profile.id}" ${profile.id === activeProfileId ? "selected" : ""}>
+          ${escapeHtml(profile.name)}
+        </option>
+      `).join("");
+    }
+
+    function renderProfiles() {
+      const wrap = document.getElementById("profilesList");
+      if (!profiles.length) {
+        wrap.innerHTML = '<div class="empty">No profiles uploaded yet.</div>';
+        return;
+      }
+
+      wrap.innerHTML = profiles.map(profile => `
+        <div class="profile-card ${profile.id === activeProfileId ? "active" : ""}">
+          <div class="profile-title-row">
+            <div>
+              <div class="profile-title">${escapeHtml(profile.name)}</div>
+              <div class="profile-meta">
+                ${escapeHtml(profile.company_name || "Unknown company")}<br>
+                B-BBEE: ${escapeHtml(profile.bbbee_level || "Unknown")} •
+                Provinces: ${escapeHtml((profile.provinces || []).join(", ") || "Unknown")}
+              </div>
+            </div>
+            <div class="band ${profile.id === activeProfileId ? "high" : "medium"}">
+              ${profile.id === activeProfileId ? "Active" : "Available"}
+            </div>
+          </div>
+
+          <div class="keyword-list">
+            ${(profile.keywords || []).slice(0, 8).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("")}
+          </div>
+
+          <div class="profile-actions">
+            <button class="btn btn-primary" onclick="setActiveProfile('${profile.id}')">Use this profile</button>
+            <button class="btn btn-secondary" onclick="deleteProfile('${profile.id}')">Delete</button>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    async function uploadProfile() {
+      const fileInput = document.getElementById("profile_upload");
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      setLoading(true, "Reading company profile...");
+      try {
+        const formData = new FormData();
+        formData.append("profile_pdf", file);
+
+        const res = await fetch("/api/profiles", {
+          method: "POST",
+          body: formData
+        });
+        const data = await res.json();
+
+        if (data.status !== "ok") {
+          alert(data.error || "Upload failed");
+          return;
+        }
+
+        fileInput.value = "";
+        await loadProfiles();
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    async function deleteProfile(profileId) {
+      await fetch(`/api/profiles/${profileId}`, { method: "DELETE" });
+      if (activeProfileId === profileId) {
+        activeProfileId = "";
+        localStorage.removeItem("tenderai_active_profile");
+      }
+      await loadProfiles();
+    }
+
+    function setActiveProfile(profileId) {
+      activeProfileId = profileId;
+      localStorage.setItem("tenderai_active_profile", profileId);
+      renderProfiles();
+      renderProfileSelects();
+      showView("homeView");
+    }
+
     function buildWhyMatched(t) {
       const items = [];
 
       if (t.matched_keywords && t.matched_keywords.length) {
         items.push("Matched capability keywords: " + t.matched_keywords.join(", "));
       }
-      if (t.category && ["works", "services"].includes(String(t.category).toLowerCase())) {
-        items.push("Tender category aligns with operational delivery work.");
+      if (t.key_requirements && t.key_requirements.length) {
+        items.push("Key requirements identified: " + t.key_requirements.slice(0, 3).join(", "));
+      }
+      if (t.preferential_model) {
+        items.push("Estimated preference framework: " + t.preferential_model);
       }
       if (t.estimation_reason) {
         items.push("Tender value inference: " + t.estimation_reason);
-      }
-      if (t.execution_investment_reason) {
-        items.push("Execution planning signal: " + t.execution_investment_reason);
       }
       if (!items.length) {
         items.push("TenderAI found limited direct fit signals in this opportunity.");
@@ -1308,18 +1530,18 @@ HTML_PAGE = """
             <div>
               <div class="${bandClass(t.fit_band)}">${escapeHtml(safeText(t.fit_band))}</div>
               <div class="score-number">${escapeHtml(safeText(t.fit_score, 0))}/100</div>
-              <div class="score-caption">Tender fit score</div>
+              <div class="score-caption">Win probability proxy</div>
             </div>
           </div>
 
           <div class="mini" style="margin-bottom: 14px;">
-            <h4>Description of work</h4>
-            <div>${escapeHtml(safeText(t.description, "No description provided."))}</div>
+            <h4>AI summary</h4>
+            <div>${escapeHtml(safeText(t.ai_summary, "No summary available."))}</div>
           </div>
 
           <div class="two-col">
             <div class="mini">
-              <h4>Why this matches</h4>
+              <h4>Why this matters</h4>
               <div class="why-list">${whyHtml}</div>
               <div class="keyword-list">
                 ${(t.matched_keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("")}
@@ -1340,226 +1562,155 @@ HTML_PAGE = """
               <div class="tender-meta">${escapeHtml(safeText(t.execution_investment_reason))}</div>
             </div>
           </div>
+
+          <div class="actions">
+            <button class="btn btn-primary" onclick='openTenderDetail(${JSON.stringify(t).replace(/'/g, "&#39;")})'>Open tender detail</button>
+          </div>
         </div>
       `;
     }
 
-    function renderScanUnderstanding(data) {
-      const keywords = (data.profile_keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("");
+    function renderBars(targetId, items) {
+      const target = document.getElementById(targetId);
+      if (!items || !items.length) {
+        target.innerHTML = '<div class="empty">No data available.</div>';
+        return;
+      }
 
-      document.getElementById("scanUnderstanding").innerHTML = `
-        <div class="message-bubble">
-          <h4>Profile interpretation</h4>
-          <p>I used your submitted profile to extract capability signals and compare them to tender descriptions, procurement categories, and likely delivery requirements.</p>
-          <div class="keyword-list">${keywords || '<span class="chip">No keywords extracted</span>'}</div>
+      const max = Math.max(...items.map(x => x.value), 1);
+      target.innerHTML = items.map(item => `
+        <div class="bar-row">
+          <div class="bar-label">${escapeHtml(item.label)}</div>
+          <div class="bar-track"><div class="bar-fill" style="width:${(item.value / max) * 100}%"></div></div>
+          <div class="bar-value">${escapeHtml(item.value)}</div>
         </div>
+      `).join("");
+    }
 
-        <div class="message-bubble" style="margin-top: 14px;">
-          <h4>Profile preview</h4>
-          <p>${escapeHtml(data.profile_text_preview || "No preview available.")}</p>
-        </div>
+    function renderTrendInsights(summary) {
+      const target = document.getElementById("trendInsights");
+      if (!summary) {
+        target.innerHTML = '<div class="empty">No insights available.</div>';
+        return;
+      }
+
+      target.innerHTML = `
+        <div class="why-item"><div class="check">✓</div><div>${escapeHtml(summary.top_category_insight)}</div></div>
+        <div class="why-item"><div class="check">✓</div><div>${escapeHtml(summary.top_province_insight)}</div></div>
+        <div class="why-item"><div class="check">✓</div><div>${escapeHtml(summary.value_insight)}</div></div>
       `;
     }
 
-    function renderAssistantResults(data) {
+    function renderFeedAnalytics(data) {
       document.getElementById("summaryGrid").style.display = "grid";
       document.getElementById("mTotal").textContent = formatCount(data.summary.returned_tenders);
       document.getElementById("mHigh").textContent = formatCount(data.summary.high_fit);
-      document.getElementById("mMedium").textContent = formatCount(data.summary.medium_fit);
-      document.getElementById("mLow").textContent = formatCount(data.summary.low_fit);
+      document.getElementById("mSoon").textContent = formatCount(data.summary.closing_soon);
+      document.getElementById("mAvgValue").textContent = formatMoney(data.summary.average_estimated_value_mid);
 
-      const list = document.getElementById("resultsList");
-      if (!data.tenders || !data.tenders.length) {
-        list.innerHTML = '<div class="empty">No tenders were found for this request.</div>';
-      } else {
-        list.innerHTML = data.tenders.map(renderTenderCard).join("");
+      renderBars("sectorBars", data.analytics.by_sector || []);
+      renderBars("provinceBars", data.analytics.by_province || []);
+      renderTrendInsights(data.analytics.trend_insights || {});
+    }
+
+    async function runPromptAnalysis() {
+      const profileId = document.getElementById("home_profile_select").value;
+      const prompt = document.getElementById("home_prompt").value.trim();
+
+      if (!profileId) {
+        alert("Upload a business profile first.");
+        showView("profilesView");
+        return;
       }
 
-      renderScanUnderstanding(data);
-    }
-
-    function setLoadingState(show) {
-      document.getElementById("loadingOverlay").style.display = show ? "flex" : "none";
-    }
-
-    function startLoadingMessages() {
-      let idx = 0;
-      document.getElementById("loadingStepText").textContent = loadingMessages[0];
-      window.loadingTicker = setInterval(() => {
-        idx = (idx + 1) % loadingMessages.length;
-        document.getElementById("loadingStepText").textContent = loadingMessages[idx];
-      }, 1300);
-    }
-
-    function stopLoadingMessages() {
-      clearInterval(window.loadingTicker);
-    }
-
-    async function runScan() {
-      setLoadingState(true);
-      startLoadingMessages();
-
-      const pdfFile = document.getElementById("profile_pdf").files[0];
-      const profileText = document.getElementById("profile_text").value.trim();
+      setLoading(true);
+      startLoadingTicker();
 
       try {
-        let response;
+        const res = await fetch("/api/score", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profile_id: profileId,
+            prompt: prompt,
+            date_from: document.getElementById("home_date_from").value,
+            date_to: document.getElementById("home_date_to").value,
+            page_number: 1,
+            page_size: Number(document.getElementById("home_page_size").value)
+          })
+        });
 
-        if (pdfFile) {
-          const formData = new FormData();
-          formData.append("profile_pdf", pdfFile);
-          formData.append("date_from", document.getElementById("date_from").value);
-          formData.append("date_to", document.getElementById("date_to").value);
-          formData.append("page_number", document.getElementById("page_number").value);
-          formData.append("page_size", document.getElementById("page_size").value);
-
-          response = await fetch("/score", {
-            method: "POST",
-            body: formData
-          });
-        } else {
-          response = await fetch("/score", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              profile_text: profileText,
-              date_from: document.getElementById("date_from").value,
-              date_to: document.getElementById("date_to").value,
-              page_number: Number(document.getElementById("page_number").value),
-              page_size: Number(document.getElementById("page_size").value)
-            })
-          });
-        }
-
-        const data = await response.json();
-
+        const data = await res.json();
         if (data.status !== "ok") {
-          document.getElementById("assistantResponse").innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || "Unknown error")}</div>`;
+          alert(data.error || "Analysis failed");
           return;
         }
 
         latestScan = data;
-        renderAssistantResults(data);
-        document.getElementById("assistantResponse").innerHTML = `
-          <p>I completed the analysis and ranked <strong>${escapeHtml(data.summary.returned_tenders)}</strong> tender opportunities.</p>
-          <p><strong>${escapeHtml(data.summary.high_fit)}</strong> were classified as high-fit matches using the profile you submitted.</p>
-        `;
-      } catch (err) {
-        document.getElementById("assistantResponse").innerHTML = `<div class="empty">Error: ${escapeHtml(err.message)}</div>`;
+        latestTenders = data.tenders || [];
+        renderFeedAnalytics(data);
+
+        const bestOpportunities = document.getElementById("bestOpportunities");
+        if (!latestTenders.length) {
+          bestOpportunities.innerHTML = '<div class="empty">No tenders found for this scan.</div>';
+        } else {
+          bestOpportunities.innerHTML = latestTenders.map(renderTenderCard).join("");
+          renderTenderDetail(latestTenders[0]);
+        }
+
+        showView("feedView");
       } finally {
-        stopLoadingMessages();
-        setLoadingState(false);
+        stopLoadingTicker();
+        setLoading(false);
       }
     }
 
-    function clearScanForm() {
-      document.getElementById("profile_pdf").value = "";
-      document.getElementById("profile_text").value = "";
-      document.getElementById("page_number").value = "1";
-      document.getElementById("page_size").value = "10";
-    }
-
-    async function loadExplorerTenders() {
-      setLoadingState(true);
-      document.getElementById("loadingStepText").textContent = "Loading live tender market data...";
-
-      const list = document.getElementById("explorerList");
-      list.innerHTML = "";
-
-      try {
-        const qs = new URLSearchParams({
-          date_from: document.getElementById("explorer_date_from").value,
-          date_to: document.getElementById("explorer_date_to").value,
-          page_number: document.getElementById("explorer_page_number").value,
-          page_size: document.getElementById("explorer_page_size").value
-        });
-
-        const response = await fetch(`/tenders?${qs.toString()}`);
-        const data = await response.json();
-
-        if (data.status !== "ok") {
-          list.innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || "Unable to load tenders.")}</div>`;
-          return;
-        }
-
-        explorerTenders = data.tenders || [];
-
-        if (!explorerTenders.length) {
-          list.innerHTML = `<div class="empty">No tenders found for this date range.</div>`;
-          return;
-        }
-
-        list.innerHTML = explorerTenders.map((t, idx) => `
-          <div class="list-item" data-index="${idx}">
-            <h4>${escapeHtml(safeText(t.title, "Untitled tender"))}</h4>
-            <div class="list-meta">
-              ${escapeHtml(safeText(t.buyer))}<br>
-              ${escapeHtml(safeText(t.category))} • closes ${escapeHtml(safeText(t.close_date))}<br>
-              ${escapeHtml(safeText(t.value_display))}
-            </div>
-          </div>
-        `).join("");
-
-        document.querySelectorAll(".list-item").forEach(item => {
-          item.addEventListener("click", () => {
-            document.querySelectorAll(".list-item").forEach(x => x.classList.remove("active"));
-            item.classList.add("active");
-            const idx = Number(item.getAttribute("data-index"));
-            selectTender(explorerTenders[idx]);
-          });
-        });
-
-        selectTender(explorerTenders[0]);
-        document.querySelector('.list-item[data-index="0"]')?.classList.add("active");
-      } catch (err) {
-        list.innerHTML = `<div class="empty">Error: ${escapeHtml(err.message)}</div>`;
-      } finally {
-        setLoadingState(false);
-      }
-    }
-
-    function selectTender(tender) {
+    function openTenderDetail(tender) {
       selectedTender = tender;
       renderTenderDetail(tender);
+      showView("feedView");
+      window.scrollTo({ top: 0, behavior: "smooth" });
     }
 
     async function getTenderAdvice() {
       if (!selectedTender) return;
 
-      const response = await fetch("/advise", {
+      const res = await fetch("/api/advise", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tender: selectedTender,
-          profile_keywords: latestScan ? latestScan.profile_keywords : [],
-          profile_text: latestScan ? latestScan.profile_text_preview : ""
+          profile_id: activeProfileId
         })
       });
 
-      const data = await response.json();
+      const data = await res.json();
       const box = document.getElementById("adviceResult");
 
       if (data.status !== "ok") {
-        box.innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || "Unable to generate advice.")}</div>`;
+        box.innerHTML = '<div class="empty">Unable to generate advice.</div>';
         return;
       }
 
       box.innerHTML = `
         <div class="advice-box">
-          <h3 style="margin-top:0;">How to improve your score</h3>
+          <h3 style="margin-top:0;">Should you apply?</h3>
+          <div class="why-list">
+            <div class="why-item"><div class="check">✓</div><div>${escapeHtml(data.should_apply)}</div></div>
+            <div class="why-item"><div class="check">✓</div><div>${escapeHtml(data.risk_comment)}</div></div>
+            <div class="why-item"><div class="check">✓</div><div>${escapeHtml(data.competitor_assumption)}</div></div>
+          </div>
+
+          <h3 style="margin-top:16px;">Strategic advice</h3>
           <div class="why-list">
             ${data.advice.map(item => `
-              <div class="why-item">
-                <div class="check">✓</div>
-                <div>${escapeHtml(item)}</div>
-              </div>
+              <div class="why-item"><div class="check">✓</div><div>${escapeHtml(item)}</div></div>
             `).join("")}
           </div>
-          <div style="margin-top: 14px;">
-            <strong>Recommended supporting documents</strong>
-            <div class="keyword-list">
-              ${data.recommended_documents.map(item => `<span class="chip">${escapeHtml(item)}</span>`).join("")}
-            </div>
+
+          <h3 style="margin-top:16px;">Required capabilities checklist</h3>
+          <div class="keyword-list">
+            ${data.required_capabilities.map(item => `<span class="chip">${escapeHtml(item)}</span>`).join("")}
           </div>
         </div>
       `;
@@ -1577,20 +1728,35 @@ HTML_PAGE = """
         notes: document.getElementById("service_notes").value
       };
 
-      const response = await fetch("/service-request", {
+      const res = await fetch("/api/service-request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
 
-      const data = await response.json();
+      const data = await res.json();
       document.getElementById("serviceResult").textContent =
         data.status === "ok"
           ? "Request captured. Reference: " + data.reference
           : "Unable to submit request.";
     }
 
+    function renderRequirementRows(requirements) {
+      if (!requirements || !requirements.length) {
+        return '<div class="empty">No structured requirements identified.</div>';
+      }
+
+      return requirements.map(item => `
+        <div class="why-item">
+          <div class="check">✓</div>
+          <div><strong>${escapeHtml(item.name)}:</strong> ${escapeHtml(item.status)} — ${escapeHtml(item.comment)}</div>
+        </div>
+      `).join("");
+    }
+
     function renderTenderDetail(t) {
+      selectedTender = t;
+
       document.getElementById("detailPanel").innerHTML = `
         <div class="detail-head">
           <div>
@@ -1605,8 +1771,8 @@ HTML_PAGE = """
         </div>
 
         <div class="mini">
-          <h4>Tender overview</h4>
-          <div>${escapeHtml(safeText(t.description, "No description supplied."))}</div>
+          <h4>AI tender breakdown</h4>
+          <div>${escapeHtml(safeText(t.ai_summary))}</div>
         </div>
 
         <div class="detail-grid">
@@ -1624,6 +1790,37 @@ HTML_PAGE = """
             <h4>Expected execution investment</h4>
             <div class="value-big">${escapeHtml(safeText(t.execution_investment_display))}</div>
             <div class="tender-meta">${escapeHtml(safeText(t.execution_investment_reason))}</div>
+          </div>
+        </div>
+
+        <div class="section-block">
+          <h3>Requirements and specifications</h3>
+          <div class="mini">${renderRequirementRows(t.requirement_checks)}</div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="mini">
+            <h4>Risk level</h4>
+            <div class="value-big">${escapeHtml(safeText(t.risk_level))}</div>
+            <div class="tender-meta">${escapeHtml(safeText(t.risk_reason))}</div>
+          </div>
+          <div class="mini">
+            <h4>Estimated difficulty to win</h4>
+            <div class="value-big">${escapeHtml(safeText(t.difficulty_level))}</div>
+            <div class="tender-meta">${escapeHtml(safeText(t.difficulty_reason))}</div>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="mini">
+            <h4>Preference framework estimate</h4>
+            <div class="value-big">${escapeHtml(safeText(t.preferential_model))}</div>
+            <div class="tender-meta">${escapeHtml(safeText(t.preference_comment))}</div>
+          </div>
+          <div class="mini">
+            <h4>Bid-readiness</h4>
+            <div class="value-big">${escapeHtml(safeText(t.bid_readiness))}</div>
+            <div class="tender-meta">${escapeHtml(safeText(t.bid_readiness_comment))}</div>
           </div>
         </div>
 
@@ -1679,9 +1876,20 @@ HTML_PAGE = """
       document.getElementById("requestServiceBtn").addEventListener("click", submitServiceRequest);
     }
 
-    document.getElementById("runScanBtn").addEventListener("click", runScan);
-    document.getElementById("clearBtn").addEventListener("click", clearScanForm);
-    document.getElementById("loadTendersBtn").addEventListener("click", loadExplorerTenders);
+    document.querySelectorAll(".nav-btn").forEach(btn => {
+      btn.addEventListener("click", () => showView(btn.dataset.view));
+    });
+
+    document.getElementById("runPromptBtn").addEventListener("click", runPromptAnalysis);
+    document.getElementById("goProfilesBtn").addEventListener("click", () => showView("profilesView"));
+    document.getElementById("uploadProfileBtn").addEventListener("click", uploadProfile);
+    document.getElementById("home_profile_select").addEventListener("change", (e) => {
+      activeProfileId = e.target.value;
+      localStorage.setItem("tenderai_active_profile", activeProfileId);
+      renderProfiles();
+    });
+
+    loadProfiles();
   </script>
 </body>
 </html>
@@ -1745,53 +1953,62 @@ def extract_pdf_text(file_storage):
     return "\\n".join(pages)
 
 
-def extract_profile_text():
-    if "profile_pdf" in request.files:
-        uploaded_file = request.files["profile_pdf"]
-        if uploaded_file and uploaded_file.filename.lower().endswith(".pdf"):
-            return extract_pdf_text(uploaded_file), "pdf"
+def extract_company_name(text):
+    patterns = [
+        r"Legal Name\\s*:?\\s*(.+)",
+        r"Company Name\\s*:?\\s*(.+)",
+        r"Trading Name\\s*:?\\s*(.+)"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).split("\\n")[0].strip()[:120]
 
-    body = request.get_json(silent=True) or {}
-    profile_text = body.get("profile_text", "")
-    return profile_text, "text"
+    for line in text.splitlines():
+        clean = line.strip()
+        if 4 <= len(clean) <= 90 and not re.search(r"(summary|registration|supplier|report|database)", clean, re.I):
+            return clean
+    return "Unknown company"
 
 
-def get_request_value(name, default_value):
-    if request.content_type and "multipart/form-data" in request.content_type:
-        return request.form.get(name, default_value)
+def parse_profile_metadata(text):
+    provinces = [
+        "gauteng", "western cape", "eastern cape", "kwazulu-natal",
+        "free state", "limpopo", "mpumalanga", "north west", "northern cape"
+    ]
 
-    body = request.get_json(silent=True) or {}
-    return body.get(name, default_value)
+    bbbee_match = re.search(r"b[- ]?bbee(?:\\s+status\\s+level|\\s+level)?\\s*[:\\-]?\\s*(\\d)", text, re.I)
+    cidb_match = re.search(r"cidb[^\\n]{0,30}?([1-9][A-Z]{1,2})", text, re.I)
+
+    found_provinces = [p.title() for p in provinces if p in text.lower()]
+    keywords = tokenize(text)[:25]
+
+    return {
+        "company_name": extract_company_name(text),
+        "bbbee_level": bbbee_match.group(1) if bbbee_match else "Unknown",
+        "cidb": cidb_match.group(1).upper() if cidb_match else "Unknown",
+        "provinces": found_provinces,
+        "keywords": keywords
+    }
 
 
-def score_tender(profile_keywords, tender_text, category=""):
-    tender_tokens = set(tokenize(tender_text))
-    profile_set = set(profile_keywords)
-
-    matched = sorted(profile_set.intersection(tender_tokens))
-    base_score = (len(matched) / max(len(profile_set), 1)) * 100
-
-    bonus = 0
-
-    if category:
-        category = category.lower()
-        if category in ["works", "services"]:
-            bonus += 10
-
-    intent_keywords = ["installation", "maintenance", "repair", "construction", "electrical", "generator"]
-    intent_hits = [k for k in intent_keywords if k in tender_tokens]
-    bonus += len(intent_hits) * 5
-
-    final_score = round(min(base_score + bonus, 100), 1)
-
-    if final_score >= 70:
-        fit_band = "High fit"
-    elif final_score >= 40:
-        fit_band = "Medium fit"
-    else:
-        fit_band = "Low fit"
-
-    return final_score, fit_band, matched
+def infer_province(text):
+    mapping = [
+        ("Gauteng", ["gauteng", "johannesburg", "tshwane", "ekurhuleni"]),
+        ("Western Cape", ["western cape", "cape town"]),
+        ("Eastern Cape", ["eastern cape", "gqeberha", "east london", "mthatha"]),
+        ("KwaZulu-Natal", ["kwazulu", "kzn", "durban", "pietermaritzburg"]),
+        ("Free State", ["free state", "bloemfontein"]),
+        ("Limpopo", ["limpopo", "polokwane", "vhembe"]),
+        ("Mpumalanga", ["mpumalanga", "mbombela"]),
+        ("North West", ["north west", "mahikeng", "potchefstroom"]),
+        ("Northern Cape", ["northern cape", "kimberley"])
+    ]
+    lower = text.lower()
+    for province, keys in mapping:
+        if any(k in lower for k in keys):
+            return province
+    return "Unspecified"
 
 
 def estimate_tender_value(title, description, category):
@@ -1803,33 +2020,27 @@ def estimate_tender_value(title, description, category):
     reason = "Generic service estimate based on tender wording."
 
     if "generator" in text:
-        low = 800000
-        high = 3000000
+        low, high = 800000, 3000000
         confidence = "Medium"
         reason = "Generator installations typically fall within this range."
     elif any(k in text for k in ["construction", "building", "infrastructure"]):
-        low = 500000
-        high = 5000000
+        low, high = 500000, 5000000
         confidence = "Medium"
         reason = "Construction and infrastructure tenders are usually medium to high value."
     elif any(k in text for k in ["maintenance", "repair", "servicing"]):
-        low = 100000
-        high = 1000000
+        low, high = 100000, 1000000
         confidence = "Medium"
         reason = "Maintenance and repair contracts vary with scope and contract term."
     elif any(k in text for k in ["truck", "vehicle", "fire truck"]):
-        low = 1000000
-        high = 8000000
+        low, high = 1000000, 8000000
         confidence = "High"
         reason = "Specialized vehicles are typically high-value procurements."
     elif any(k in text for k in ["server", "hardware", "storage", "backup appliance"]):
-        low = 200000
-        high = 2000000
+        low, high = 200000, 2000000
         confidence = "Medium"
         reason = "IT infrastructure procurement depends on scale and specification."
     elif category and category.lower() == "goods":
-        low = 50000
-        high = 1000000
+        low, high = 50000, 1000000
         confidence = "Low"
         reason = "General goods procurement estimate."
 
@@ -1854,28 +2065,22 @@ def estimate_execution_investment(title, description, category, estimated_low, e
     reason = "Typical execution readiness, procurement, mobilisation, and delivery costs were applied."
 
     if "generator" in text:
-        ratio_low = 0.55
-        ratio_high = 0.82
+        ratio_low, ratio_high = 0.55, 0.82
         reason = "Generator supply and installation usually require significant equipment, transport, and technical delivery spend."
     elif any(k in text for k in ["construction", "building", "infrastructure"]):
-        ratio_low = 0.60
-        ratio_high = 0.85
+        ratio_low, ratio_high = 0.60, 0.85
         reason = "Construction and infrastructure work generally requires substantial materials, labour, and site mobilisation."
     elif any(k in text for k in ["maintenance", "repair", "servicing"]):
-        ratio_low = 0.40
-        ratio_high = 0.70
+        ratio_low, ratio_high = 0.40, 0.70
         reason = "Maintenance and repair contracts usually carry labour, tools, materials, and travel costs."
     elif any(k in text for k in ["truck", "vehicle", "fire truck"]):
-        ratio_low = 0.70
-        ratio_high = 0.92
+        ratio_low, ratio_high = 0.70, 0.92
         reason = "Vehicle and specialized equipment tenders often require high capital outlay before delivery."
     elif any(k in text for k in ["server", "hardware", "storage", "backup appliance"]):
-        ratio_low = 0.65
-        ratio_high = 0.88
+        ratio_low, ratio_high = 0.65, 0.88
         reason = "Hardware and IT supply contracts typically need significant procurement capital and logistics."
     elif category and category.lower() == "services":
-        ratio_low = 0.30
-        ratio_high = 0.60
+        ratio_low, ratio_high = 0.30, 0.60
         reason = "Service tenders usually need less equipment spend, but still require staffing, compliance, and delivery overhead."
 
     low = round(estimated_low * ratio_low, 0)
@@ -1891,7 +2096,143 @@ def estimate_execution_investment(title, description, category, estimated_low, e
     }
 
 
-def enrich_tender(item, profile_keywords=None):
+def infer_requirements(tender_text, profile_text):
+    checks = []
+    text = tender_text.lower()
+    profile = profile_text.lower()
+
+    rules = [
+        ("CSD registration", ["csd"]),
+        ("Tax compliance", ["tax"]),
+        ("B-BBEE evidence", ["b-bbee", "bbbee"]),
+        ("CIDB", ["cidb"]),
+        ("Compulsory briefing", ["briefing", "site meeting"]),
+        ("Local content forms", ["local content", "sbd 6.2"]),
+        ("Professional registration", ["professional registration", "sacpcmp", "ecsa", "preng"]),
+        ("Health and safety", ["safety", "ohs", "health and safety"]),
+    ]
+
+    for name, keys in rules:
+        if any(k in text for k in keys):
+            if any(k in profile for k in keys if k not in ["briefing", "site meeting", "local content", "sbd 6.2"]):
+                status = "Likely met"
+                comment = "Related evidence appears in the profile."
+            elif name in ["Compulsory briefing", "Local content forms"]:
+                status = "Action required"
+                comment = "TenderAI detected this in the tender. Confirm attendance/forms during bid preparation."
+            else:
+                status = "Check"
+                comment = "TenderAI detected the requirement but could not confirm evidence from the profile."
+            checks.append({
+                "name": name,
+                "status": status,
+                "comment": comment
+            })
+
+    return checks[:8]
+
+
+def build_ai_summary(title, description, buyer, category):
+    desc = (description or "").strip()
+    if desc:
+        short_desc = desc[:240] + ("..." if len(desc) > 240 else "")
+        return f"{title} issued by {buyer} appears to be a {category.lower() if category else 'procurement'} opportunity focused on: {short_desc}"
+    return f"{title} issued by {buyer} appears to be a {category.lower() if category else 'procurement'} opportunity with limited public description."
+
+
+def infer_risk_and_difficulty(description, requirement_checks):
+    text = (description or "").lower()
+    risk_score = 0
+    diff_score = 0
+
+    if any(k in text for k in ["compulsory briefing", "site meeting", "mandatory", "compulsory"]):
+        risk_score += 2
+        diff_score += 1
+    if any(k in text for k in ["cidb", "local content", "electrical", "generator", "specialized", "specialised"]):
+        risk_score += 2
+        diff_score += 2
+    if any(k in text for k in ["construction", "infrastructure", "server", "hardware", "truck"]):
+        diff_score += 2
+    if len(requirement_checks) >= 4:
+        risk_score += 1
+        diff_score += 1
+
+    if risk_score >= 4:
+        risk_level = "High"
+        risk_reason = "The tender appears to include multiple conditions, specialized requirements, or mandatory bid risks."
+    elif risk_score >= 2:
+        risk_level = "Medium"
+        risk_reason = "The tender has some conditions that may increase compliance or delivery risk."
+    else:
+        risk_level = "Low"
+        risk_reason = "The tender appears relatively straightforward based on the available notice content."
+
+    if diff_score >= 4:
+        difficulty_level = "High"
+        difficulty_reason = "The tender likely requires stronger capability proof and tighter delivery planning."
+    elif diff_score >= 2:
+        difficulty_level = "Medium"
+        difficulty_reason = "The tender seems achievable but may require stronger documentation and positioning."
+    else:
+        difficulty_level = "Low"
+        difficulty_reason = "The tender appears comparatively accessible based on the available text."
+
+    return risk_level, risk_reason, difficulty_level, difficulty_reason
+
+
+def infer_preference_model(value_mid, profile_text):
+    model = "Estimated 80/20" if value_mid <= 50000000 else "Estimated 90/10"
+    if "bbbee" in profile_text.lower() or "b-bbee" in profile_text.lower():
+        comment = "Profile appears to include B-BBEE-related evidence, which may support specific-goal scoring if the tender documents allow it."
+    else:
+        comment = "TenderAI could not confirm B-BBEE-specific evidence from the profile. Confirm the tender's specific goals and proof rules."
+    return model, comment
+
+
+def calculate_fit(profile_keywords, prompt_keywords, tender_text, category, requirement_checks):
+    tokens = set(tokenize(tender_text))
+    combined = list(dict.fromkeys((profile_keywords or []) + (prompt_keywords or [])))
+    matched = sorted(set(combined).intersection(tokens))
+
+    base_score = (len(matched) / max(len(set(combined)), 1)) * 100
+    bonus = 0
+
+    if category and category.lower() in ["works", "services"]:
+        bonus += 10
+
+    intent_keywords = ["installation", "maintenance", "repair", "construction", "electrical", "generator", "supply"]
+    bonus += sum(1 for k in intent_keywords if k in tokens) * 4
+
+    if len(requirement_checks) >= 3:
+        bonus += 4
+
+    score = round(min(base_score + bonus, 100), 1)
+
+    if score >= 70:
+        band = "High fit"
+    elif score >= 40:
+        band = "Medium fit"
+    else:
+        band = "Low fit"
+
+    return score, band, matched
+
+
+def compute_bid_readiness(requirement_checks):
+    if not requirement_checks:
+        return "Early-stage", "Limited tender-document requirements were detected from the available notice text."
+
+    action_required = sum(1 for r in requirement_checks if r["status"] == "Action required")
+    checks = sum(1 for r in requirement_checks if r["status"] == "Check")
+
+    if action_required == 0 and checks <= 1:
+        return "Strong", "The profile appears broadly aligned with the detected requirement set."
+    if action_required <= 1 and checks <= 3:
+        return "Moderate", "Some requirements need confirmation or bid preparation work."
+    return "Needs work", "Several requirements or actions need attention before submission."
+
+
+def enrich_tender(item, profile=None, prompt=""):
     tender = item.get("tender", {}) if isinstance(item, dict) else {}
     buyer = item.get("buyer", {}) if isinstance(item, dict) else {}
     tender_period = tender.get("tenderPeriod", {}) if isinstance(tender, dict) else {}
@@ -1901,14 +2242,20 @@ def enrich_tender(item, profile_keywords=None):
     title = tender.get("title", "") or ""
     buyer_name = buyer.get("name", "") or ""
     category = tender.get("mainProcurementCategory", "") or ""
+    province = infer_province(f"{buyer_name} {description}")
     combined_text = f"{title} {description} {buyer_name} {category}"
 
-    if profile_keywords is None:
-        fit_score = 0
-        fit_band = "Low fit"
-        matched_keywords = []
-    else:
-        fit_score, fit_band, matched_keywords = score_tender(profile_keywords, combined_text, category)
+    profile_text = profile["text"] if profile else ""
+    profile_keywords = profile["meta"]["keywords"] if profile else []
+    prompt_keywords = tokenize(prompt)[:10]
+    requirement_checks = infer_requirements(combined_text, profile_text)
+    fit_score, fit_band, matched_keywords = calculate_fit(
+        profile_keywords=profile_keywords,
+        prompt_keywords=prompt_keywords,
+        tender_text=combined_text,
+        category=category,
+        requirement_checks=requirement_checks
+    )
 
     published_value = value.get("amount")
     published_currency = value.get("currency")
@@ -1939,6 +2286,13 @@ def enrich_tender(item, profile_keywords=None):
         estimated_high=estimated_value_high
     )
 
+    ai_summary = build_ai_summary(title, description, buyer_name, category)
+    risk_level, risk_reason, difficulty_level, difficulty_reason = infer_risk_and_difficulty(description, requirement_checks)
+    preferential_model, preference_comment = infer_preference_model(estimated_value_mid, profile_text)
+    bid_readiness, bid_readiness_comment = compute_bid_readiness(requirement_checks)
+
+    win_probability = max(10, min(92, round(fit_score - (5 if risk_level == "High" else 0) + (4 if bid_readiness == "Strong" else 0), 0)))
+
     return {
         "ocid": item.get("ocid") if isinstance(item, dict) else None,
         "title": title,
@@ -1946,6 +2300,7 @@ def enrich_tender(item, profile_keywords=None):
         "description": description,
         "status": tender.get("status"),
         "category": category,
+        "province": province,
         "close_date": tender_period.get("endDate"),
         "value_amount": published_value,
         "value_currency": published_currency,
@@ -1958,12 +2313,24 @@ def enrich_tender(item, profile_keywords=None):
         "estimated_value_mid": estimated_value_mid,
         "fit_score": fit_score,
         "fit_band": fit_band,
+        "win_probability": win_probability,
         "matched_keywords": matched_keywords,
         "execution_investment_low": execution["execution_investment_low"],
         "execution_investment_high": execution["execution_investment_high"],
         "execution_investment_mid": execution["execution_investment_mid"],
         "execution_investment_display": execution["execution_investment_display"],
-        "execution_investment_reason": execution["execution_investment_reason"]
+        "execution_investment_reason": execution["execution_investment_reason"],
+        "ai_summary": ai_summary,
+        "key_requirements": [r["name"] for r in requirement_checks],
+        "requirement_checks": requirement_checks,
+        "risk_level": risk_level,
+        "risk_reason": risk_reason,
+        "difficulty_level": difficulty_level,
+        "difficulty_reason": difficulty_reason,
+        "preferential_model": preferential_model,
+        "preference_comment": preference_comment,
+        "bid_readiness": bid_readiness,
+        "bid_readiness_comment": bid_readiness_comment,
     }
 
 
@@ -1983,151 +2350,201 @@ def fetch_tenders(date_from, date_to, page_number, page_size):
     return releases, params
 
 
-@app.post("/score")
-def score():
-    profile_text, profile_source = extract_profile_text()
+def build_analytics(tenders):
+    sector_counter = Counter([t.get("category") or "Unspecified" for t in tenders])
+    province_counter = Counter([t.get("province") or "Unspecified" for t in tenders])
 
-    date_from = get_request_value("date_from", "2026-01-01")
-    date_to = get_request_value("date_to", "2026-03-17")
-    page_number = int(get_request_value("page_number", 1))
-    page_size = int(get_request_value("page_size", 10))
+    by_sector = [{"label": k, "value": v} for k, v in sector_counter.most_common(6)]
+    by_province = [{"label": k, "value": v} for k, v in province_counter.most_common(6)]
 
-    profile_keywords = tokenize(profile_text)[:25]
+    avg_value = round(sum(t.get("estimated_value_mid", 0) for t in tenders) / max(len(tenders), 1), 0)
+
+    top_category = by_sector[0]["label"] if by_sector else "No dominant sector"
+    top_category_share = round((by_sector[0]["value"] / max(len(tenders), 1)) * 100, 0) if by_sector else 0
+
+    top_province = by_province[0]["label"] if by_province else "No dominant province"
+    top_province_share = round((by_province[0]["value"] / max(len(tenders), 1)) * 100, 0) if by_province else 0
+
+    return {
+        "by_sector": by_sector,
+        "by_province": by_province,
+        "trend_insights": {
+            "top_category_insight": f"{top_category} accounts for roughly {top_category_share}% of the current opportunity set.",
+            "top_province_insight": f"{top_province} contributes roughly {top_province_share}% of the observed opportunities.",
+            "value_insight": f"The average estimated contract value in the current scan is about R{avg_value:,.0f}."
+        }
+    }
+
+
+def count_closing_soon(tenders):
+    count = 0
+    now = datetime.now(timezone.utc)
+    for t in tenders:
+        close_date = t.get("close_date")
+        if not close_date:
+            continue
+        try:
+            dt = datetime.fromisoformat(close_date.replace("Z", "+00:00"))
+            delta_days = (dt - now).days
+            if 0 <= delta_days <= 7:
+                count += 1
+        except Exception:
+            pass
+    return count
+
+
+@app.get("/api/profiles")
+def api_profiles():
+    profiles = list(PROFILE_STORE.values())
+    return jsonify({
+        "status": "ok",
+        "profiles": [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "company_name": p["meta"]["company_name"],
+                "bbbee_level": p["meta"]["bbbee_level"],
+                "cidb": p["meta"]["cidb"],
+                "provinces": p["meta"]["provinces"],
+                "keywords": p["meta"]["keywords"][:12],
+                "uploaded_at": p["uploaded_at"]
+            }
+            for p in profiles
+        ]
+    })
+
+
+@app.post("/api/profiles")
+def api_upload_profile():
+    if "profile_pdf" not in request.files:
+        return jsonify({"status": "error", "error": "No PDF uploaded"}), 400
+
+    file = request.files["profile_pdf"]
+    if not file.filename.lower().endswith(".pdf"):
+        return jsonify({"status": "error", "error": "Upload a PDF file"}), 400
+
+    text = extract_pdf_text(file)
+    meta = parse_profile_metadata(text)
+
+    profile_id = str(uuid.uuid4())
+    PROFILE_STORE[profile_id] = {
+        "id": profile_id,
+        "name": file.filename,
+        "text": text,
+        "meta": meta,
+        "uploaded_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    return jsonify({"status": "ok", "profile_id": profile_id})
+
+
+@app.delete("/api/profiles/<profile_id>")
+def api_delete_profile(profile_id):
+    PROFILE_STORE.pop(profile_id, None)
+    return jsonify({"status": "ok"})
+
+
+@app.post("/api/score")
+def api_score():
+    body = request.get_json(silent=True) or {}
+    profile_id = body.get("profile_id")
+    prompt = body.get("prompt", "")
+    date_from = body.get("date_from", "2026-01-01")
+    date_to = body.get("date_to", "2026-03-17")
+    page_number = int(body.get("page_number", 1))
+    page_size = int(body.get("page_size", 10))
+
+    profile = PROFILE_STORE.get(profile_id)
+    if not profile:
+        return jsonify({"status": "error", "error": "Profile not found"}), 404
 
     try:
         releases, params = fetch_tenders(date_from, date_to, page_number, page_size)
-        tenders = [enrich_tender(item, profile_keywords=profile_keywords) for item in releases]
-        tenders = sorted(tenders, key=lambda x: x["fit_score"], reverse=True)
+        tenders = [enrich_tender(item, profile=profile, prompt=prompt) for item in releases]
+        tenders = sorted(tenders, key=lambda x: (x["fit_score"], x["win_probability"]), reverse=True)
+
+        analytics = build_analytics(tenders)
 
         return jsonify({
             "status": "ok",
-            "profile_source": profile_source,
-            "profile_text_preview": profile_text[:500],
-            "profile_keywords": profile_keywords,
-            "request_used": params,
+            "profile_name": profile["name"],
+            "prompt": prompt,
             "summary": {
-                "total_releases_found": len(releases),
                 "returned_tenders": len(tenders),
                 "high_fit": sum(1 for t in tenders if t["fit_band"] == "High fit"),
                 "medium_fit": sum(1 for t in tenders if t["fit_band"] == "Medium fit"),
-                "low_fit": sum(1 for t in tenders if t["fit_band"] == "Low fit")
+                "low_fit": sum(1 for t in tenders if t["fit_band"] == "Low fit"),
+                "closing_soon": count_closing_soon(tenders),
+                "average_estimated_value_mid": round(sum(t["estimated_value_mid"] for t in tenders) / max(len(tenders), 1), 0)
             },
+            "analytics": analytics,
             "tenders": tenders
         })
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "error": str(e)
-        }), 500
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
-@app.get("/tenders")
-def tenders():
-    try:
-        date_from = request.args.get("date_from", "2026-01-01")
-        date_to = request.args.get("date_to", "2026-03-17")
-        page_number = int(request.args.get("page_number", 1))
-        page_size = int(request.args.get("page_size", 20))
+@app.post("/api/advise")
+def api_advise():
+    body = request.get_json(silent=True) or {}
+    tender = body.get("tender", {}) or {}
+    profile_id = body.get("profile_id")
+    profile = PROFILE_STORE.get(profile_id)
 
-        releases, params = fetch_tenders(date_from, date_to, page_number, page_size)
-        tender_rows = [enrich_tender(item, profile_keywords=None) for item in releases]
+    profile_text = profile["text"] if profile else ""
+    title = str(tender.get("title", ""))
+    description = str(tender.get("description", ""))
+    category = str(tender.get("category", ""))
+    matched_keywords = tender.get("matched_keywords", []) or []
 
-        return jsonify({
-            "status": "ok",
-            "request_used": params,
-            "summary": {
-                "returned_tenders": len(tender_rows)
-            },
-            "tenders": tender_rows
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "error": str(e)
-        }), 500
+    advice = []
+    required_capabilities = tender.get("key_requirements", []) or []
 
+    if not matched_keywords:
+        advice.append("Sharpen your capability statement so it mirrors the tender language more directly.")
+    else:
+        advice.append("Reflect the strongest matched keywords in your executive summary, methodology, and pricing narrative.")
 
-@app.post("/advise")
-def advise():
-    try:
-        body = request.get_json(silent=True) or {}
-        tender = body.get("tender", {})
-        profile_keywords = body.get("profile_keywords", []) or []
-        profile_text = body.get("profile_text", "") or ""
+    if "generator" in f"{title} {description}".lower():
+        advice.append("Include generator-specific references, electrical compliance evidence, and technical delivery capability.")
+        required_capabilities.extend(["Electrical compliance", "Generator installation references", "Technical delivery methodology"])
 
-        title = str(tender.get("title", ""))
-        description = str(tender.get("description", ""))
-        category = str(tender.get("category", ""))
-        matched_keywords = tender.get("matched_keywords", []) or []
+    if category.lower() == "works":
+        advice.append("Show site methodology, supervision structure, safety planning, and mobilisation readiness.")
+        required_capabilities.extend(["Health and safety file", "Site mobilisation plan", "Project supervision structure"])
 
-        advice = []
-        recommended_documents = []
+    if category.lower() == "services":
+        advice.append("Show turnaround times, staffing depth, response processes, and geographic operating capacity.")
+        required_capabilities.extend(["Service delivery plan", "Operational response plan", "Staffing capacity"])
 
-        if not matched_keywords:
-            advice.append("Sharpen your capability statement so it mirrors the exact tender language more directly.")
-        else:
-            advice.append("Reflect the strongest matched keywords in your executive summary, methodology, and pricing narrative.")
+    if "bbbee" not in profile_text.lower() and "b-bbee" not in profile_text.lower():
+        advice.append("Confirm whether you have current B-BBEE evidence available if the tender allocates points to specific goals.")
 
-        if "generator" in f"{title} {description}".lower():
-            advice.append("Include generator-specific references, electrical compliance evidence, and technical delivery capability.")
-            recommended_documents.extend([
-                "Electrical compliance certificate",
-                "Generator installation references",
-                "Technical methodology"
-            ])
+    if tender.get("bid_readiness") == "Needs work":
+        advice.append("Do not treat this as submission-ready yet. Close the missing evidence gaps before committing bid resources.")
 
-        if category.lower() == "works":
-            advice.append("Show site methodology, supervision structure, safety planning, and mobilisation readiness.")
-            recommended_documents.extend([
-                "Health and safety file",
-                "Construction methodology",
-                "Site mobilisation plan"
-            ])
+    should_apply = "Apply if you can close the highlighted compliance and documentation gaps quickly." if tender.get("fit_score", 0) >= 55 else "Monitor rather than apply immediately unless you have stronger supporting evidence than TenderAI could detect."
+    risk_comment = f"Current risk view: {tender.get('risk_level', 'Unknown')} risk. {tender.get('risk_reason', '')}"
+    competitor_assumption = "Expect competition from suppliers with stronger reference portfolios, complete compliance packs, and closer scope alignment."
 
-        if category.lower() == "services":
-            advice.append("Show turnaround times, staffing depth, response processes, and geographic operating capacity.")
-            recommended_documents.extend([
-                "Service delivery plan",
-                "Team CVs",
-                "Operational response plan"
-            ])
+    required_capabilities = list(dict.fromkeys(required_capabilities))[:10]
 
-        if not profile_text:
-            advice.append("Submit a richer supplier profile or capability statement so TenderAI can compare more precise signals.")
-        else:
-            advice.append("Tailor your cover letter so it directly links your business strengths to the tender scope and delivery risk.")
-
-        advice.append("Validate working capital early, because the estimated execution investment suggests meaningful upfront spend before payment is received.")
-
-        if not recommended_documents:
-            recommended_documents = [
-                "Capability statement",
-                "Client references",
-                "Execution methodology",
-                "Compliance pack"
-            ]
-
-        recommended_documents = list(dict.fromkeys(recommended_documents))
-
-        return jsonify({
-            "status": "ok",
-            "advice": advice,
-            "recommended_documents": recommended_documents
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "error": str(e)
-        }), 500
+    return jsonify({
+        "status": "ok",
+        "should_apply": should_apply,
+        "risk_comment": risk_comment,
+        "competitor_assumption": competitor_assumption,
+        "advice": advice,
+        "required_capabilities": required_capabilities
+    })
 
 
-@app.post("/service-request")
-def service_request():
+@app.post("/api/service-request")
+def api_service_request():
     body = request.get_json(silent=True) or {}
     name = body.get("name", "Unknown")
     company = body.get("company", "Unknown")
     tender = body.get("tender", {}) or {}
-
     reference = f"TAI-{abs(hash((name, company, tender.get('ocid', 'NA')))) % 1000000:06d}"
 
     return jsonify({
