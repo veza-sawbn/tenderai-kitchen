@@ -12,7 +12,13 @@
           <select id="home_profile_select"></select>
           <input type="date" id="home_date_from" value="2026-01-01">
           <input type="date" id="home_date_to" value="2026-03-17">
-          <button id="runPromptBtn" class="primary-btn">Analyze</button>
+          <button id="runPromptBtn" class="primary-btn" type="button">Analyze</button>
+        </div>
+
+        <div class="prompt-examples">
+          <button type="button" class="example-chip" data-prompt="Find tenders in construction in Gauteng">Find tenders in construction in Gauteng</button>
+          <button type="button" class="example-chip" data-prompt="Estimate cost for this tender">Estimate cost for this tender</button>
+          <button type="button" class="example-chip" data-prompt="Who are competitors on this bid?">Who are competitors on this bid?</button>
         </div>
       </div>
     </div>
@@ -50,7 +56,7 @@
       <option value="maintenance">Maintenance</option>
     </select>
 
-    <button id="loadInsightsBtn" class="secondary-btn">Refresh</button>
+    <button id="loadInsightsBtn" class="secondary-btn" type="button">Refresh</button>
   </div>
 
   <div id="liveTenderList" class="tender-table">
@@ -85,10 +91,10 @@
       </option>
     `).join("");
 
-    select.addEventListener("change", (e) => {
+    select.onchange = (e) => {
       activeProfileId = e.target.value;
       localStorage.setItem("tenderai_active_profile", activeProfileId);
-    });
+    };
   }
 
   function renderLiveTenderRow(t) {
@@ -102,7 +108,7 @@
         </div>
         <div class="tender-side">
           <div class="tender-number">${t.tender_number || "N/A"}</div>
-          <button class="text-btn" onclick="window.location='/tender/${t.id}'">Open Tender Detail</button>
+          <button class="text-btn" type="button" onclick="window.location='/tender/${t.id}'">Open Tender Detail</button>
         </div>
       </div>
     `;
@@ -134,6 +140,8 @@
       }
 
       list.innerHTML = data.tenders.map(renderLiveTenderRow).join("");
+    } catch (e) {
+      document.getElementById("liveTenderList").innerHTML = '<div class="empty-state">Unable to load live tenders.</div>';
     } finally {
       setLoading(false);
     }
@@ -165,10 +173,16 @@
       });
 
       const data = await res.json();
-      if (data.status === "ok") {
-        sessionStorage.setItem("tenderai_latest_scan", JSON.stringify(data));
-        window.location = "/tenders";
+
+      if (data.status !== "ok") {
+        alert(data.error || "Analysis failed");
+        return;
       }
+
+      sessionStorage.setItem("tenderai_latest_scan", JSON.stringify(data));
+      window.location = "/tenders";
+    } catch (e) {
+      alert("Analysis could not start.");
     } finally {
       setLoading(false);
     }
@@ -176,6 +190,18 @@
 
   document.getElementById("runPromptBtn").addEventListener("click", runAnalysis);
   document.getElementById("loadInsightsBtn").addEventListener("click", loadLiveTenders);
+
+  document.getElementById("home_prompt").addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      runAnalysis();
+    }
+  });
+
+  document.querySelectorAll(".example-chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.getElementById("home_prompt").value = btn.dataset.prompt;
+    });
+  });
 
   loadProfilesForHome();
   loadLiveTenders();
