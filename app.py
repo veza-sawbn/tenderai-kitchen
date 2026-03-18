@@ -16,20 +16,22 @@ HTML_PAGE = """
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {
-      --bg: #07110b;
-      --bg-2: #0b1610;
-      --panel: rgba(10, 19, 14, 0.72);
-      --panel-solid: #0e1913;
-      --border: rgba(126, 211, 161, 0.11);
-      --text: #edf7f0;
-      --muted: #9fb5a8;
-      --accent: #73f0a6;
-      --accent-2: #43c97b;
-      --accent-3: #b7ffd2;
-      --shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
-      --radius: 24px;
-      --red: #f08f8f;
-      --amber: #e8ca7d;
+      --bg: #060b08;
+      --bg-2: #0a120e;
+      --panel: rgba(12, 18, 14, 0.72);
+      --panel-solid: rgba(11, 17, 13, 0.92);
+      --panel-soft: rgba(255, 255, 255, 0.03);
+      --border: rgba(132, 233, 167, 0.10);
+      --text: #edf6ef;
+      --muted: #9caf9f;
+      --accent: #7ef0ab;
+      --accent-2: #42cc7e;
+      --accent-3: #c7ffd9;
+      --amber: #e8c874;
+      --red: #f29a9a;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+      --radius: 28px;
+      --maxw: 1380px;
     }
 
     * {
@@ -45,7 +47,9 @@ HTML_PAGE = """
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        linear-gradient(180deg, #06100a 0%, #09150f 50%, #08110d 100%);
+        radial-gradient(circle at 12% 12%, rgba(66, 204, 126, 0.08), transparent 24%),
+        radial-gradient(circle at 88% 10%, rgba(126, 240, 171, 0.08), transparent 20%),
+        linear-gradient(180deg, #050907 0%, #08100c 50%, #07100b 100%);
       min-height: 100vh;
       overflow-x: hidden;
     }
@@ -54,33 +58,32 @@ HTML_PAGE = """
     body::after {
       content: "";
       position: fixed;
-      inset: auto;
       width: 34rem;
       height: 34rem;
       border-radius: 50%;
-      filter: blur(110px);
-      opacity: 0.26;
+      filter: blur(120px);
+      opacity: 0.22;
       pointer-events: none;
       z-index: 0;
     }
 
     body::before {
-      top: -8rem;
-      left: -8rem;
-      background: radial-gradient(circle, rgba(67, 201, 123, 0.85) 0%, rgba(67, 201, 123, 0) 68%);
+      top: -10rem;
+      left: -10rem;
+      background: radial-gradient(circle, rgba(66, 204, 126, 0.9) 0%, rgba(66, 204, 126, 0) 70%);
       animation: driftA 18s ease-in-out infinite alternate;
     }
 
     body::after {
-      right: -10rem;
+      right: -12rem;
       top: 10rem;
-      background: radial-gradient(circle, rgba(115, 240, 166, 0.6) 0%, rgba(115, 240, 166, 0) 70%);
+      background: radial-gradient(circle, rgba(126, 240, 171, 0.72) 0%, rgba(126, 240, 171, 0) 72%);
       animation: driftB 24s ease-in-out infinite alternate;
     }
 
     @keyframes driftA {
       0% { transform: translate3d(0, 0, 0) scale(1); }
-      100% { transform: translate3d(5rem, 6rem, 0) scale(1.12); }
+      100% { transform: translate3d(5rem, 6rem, 0) scale(1.1); }
     }
 
     @keyframes driftB {
@@ -88,153 +91,139 @@ HTML_PAGE = """
       100% { transform: translate3d(-6rem, 8rem, 0) scale(1.08); }
     }
 
-    .shell {
+    .page {
       position: relative;
       z-index: 1;
-      max-width: 1380px;
+    }
+
+    .container {
+      width: min(var(--maxw), calc(100% - 32px));
       margin: 0 auto;
-      padding: 20px;
     }
 
     .topbar {
       position: sticky;
       top: 16px;
-      z-index: 20;
+      z-index: 30;
+      width: min(var(--maxw), calc(100% - 32px));
+      margin: 18px auto 0 auto;
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
       gap: 16px;
       padding: 14px 18px;
-      margin-bottom: 18px;
-      background: rgba(8, 16, 12, 0.72);
-      backdrop-filter: blur(18px);
-      border: 1px solid rgba(115, 240, 166, 0.08);
-      border-radius: 20px;
+      border-radius: 22px;
+      background: rgba(8, 12, 10, 0.68);
+      border: 1px solid var(--border);
       box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
     }
 
     .brand {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-
-    .brand img {
-      height: 42px;
-      width: auto;
-      display: block;
-      filter: drop-shadow(0 0 22px rgba(115, 240, 166, 0.2));
-    }
-
-    .brand-title {
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 800;
-      letter-spacing: 0.01em;
+      letter-spacing: -0.02em;
     }
 
-    .brand-sub {
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 2px;
+    .brand span {
+      color: var(--accent-3);
     }
 
-    .nav-links {
+    .nav {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
     }
 
-    .nav-link {
+    .nav a {
       color: var(--muted);
       text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
       padding: 10px 14px;
       border-radius: 999px;
       border: 1px solid rgba(255,255,255,0.04);
       background: rgba(255,255,255,0.02);
-      font-size: 13px;
-      font-weight: 700;
       transition: 0.2s ease;
     }
 
-    .nav-link:hover {
+    .nav a:hover {
       color: var(--accent-3);
-      border-color: rgba(115, 240, 166, 0.16);
+      border-color: rgba(126, 240, 171, 0.18);
     }
 
     .hero {
       position: relative;
       overflow: hidden;
-      min-height: 74vh;
-      padding: 3.8rem 2rem 2.8rem 2rem;
-      border-radius: 32px;
-      background:
-        linear-gradient(180deg, rgba(10, 21, 15, 0.72) 0%, rgba(9, 16, 12, 0.82) 100%),
-        radial-gradient(circle at 20% 20%, rgba(115, 240, 166, 0.06), transparent 28%),
-        radial-gradient(circle at 80% 10%, rgba(67, 201, 123, 0.07), transparent 24%),
-        linear-gradient(135deg, #08120c 0%, #0b1711 55%, #08120c 100%);
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      min-height: 84vh;
+      margin: 20px auto 24px auto;
+      width: min(100%, calc(100vw - 24px));
+      border-radius: 34px;
+      border: 1px solid var(--border);
       box-shadow: var(--shadow);
-      margin-bottom: 22px;
+      background:
+        linear-gradient(180deg, rgba(9, 14, 11, 0.72) 0%, rgba(9, 14, 11, 0.88) 100%),
+        linear-gradient(135deg, #08110c 0%, #0b1712 55%, #08110c 100%);
     }
 
     .hero::before,
     .hero::after {
       content: "";
       position: absolute;
-      inset: auto;
       border-radius: 50%;
-      filter: blur(80px);
-      opacity: 0.22;
+      filter: blur(100px);
+      opacity: 0.18;
       pointer-events: none;
     }
 
     .hero::before {
-      width: 22rem;
-      height: 22rem;
-      left: 6%;
-      top: 5%;
-      background: radial-gradient(circle, rgba(115, 240, 166, 0.75) 0%, rgba(115, 240, 166, 0) 70%);
-      animation: heroGlowA 16s ease-in-out infinite alternate;
+      width: 26rem;
+      height: 26rem;
+      left: 7%;
+      top: 8%;
+      background: radial-gradient(circle, rgba(126, 240, 171, 0.92) 0%, rgba(126, 240, 171, 0) 70%);
+      animation: heroGlowA 20s ease-in-out infinite alternate;
     }
 
     .hero::after {
-      width: 26rem;
-      height: 26rem;
-      right: 2%;
-      bottom: -5%;
-      background: radial-gradient(circle, rgba(67, 201, 123, 0.62) 0%, rgba(67, 201, 123, 0) 72%);
-      animation: heroGlowB 20s ease-in-out infinite alternate;
+      width: 28rem;
+      height: 28rem;
+      right: 4%;
+      bottom: -8%;
+      background: radial-gradient(circle, rgba(66, 204, 126, 0.86) 0%, rgba(66, 204, 126, 0) 72%);
+      animation: heroGlowB 24s ease-in-out infinite alternate;
     }
 
     @keyframes heroGlowA {
       0% { transform: translate3d(0, 0, 0) scale(1); }
-      100% { transform: translate3d(4rem, 4rem, 0) scale(1.15); }
+      100% { transform: translate3d(4rem, 5rem, 0) scale(1.12); }
     }
 
     @keyframes heroGlowB {
       0% { transform: translate3d(0, 0, 0) scale(1); }
-      100% { transform: translate3d(-4rem, -3rem, 0) scale(1.1); }
+      100% { transform: translate3d(-5rem, -4rem, 0) scale(1.08); }
     }
 
-    .grid-lines {
+    .hero-grid {
       position: absolute;
       inset: 0;
       background-image:
-        linear-gradient(rgba(115, 240, 166, 0.035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(115, 240, 166, 0.035) 1px, transparent 1px);
-      background-size: 42px 42px;
-      mask-image: linear-gradient(180deg, rgba(0,0,0,0.8), transparent 85%);
+        linear-gradient(rgba(126, 240, 171, 0.028) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(126, 240, 171, 0.028) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), transparent 86%);
       pointer-events: none;
     }
 
-    .hero-content {
+    .hero-inner {
       position: relative;
       z-index: 1;
       display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: 2rem;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 28px;
       align-items: end;
-      height: 100%;
+      min-height: 84vh;
+      padding: 5rem 2.2rem 2.6rem 2.2rem;
     }
 
     .eyebrow {
@@ -246,30 +235,39 @@ HTML_PAGE = """
       font-weight: 800;
       letter-spacing: 0.16em;
       text-transform: uppercase;
-      margin-bottom: 16px;
+      margin-bottom: 18px;
     }
 
-    .hero h1 {
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 16px rgba(126, 240, 171, 0.95);
+    }
+
+    .hero-copy h1 {
       margin: 0 0 16px 0;
-      font-size: clamp(3rem, 6vw, 5.2rem);
+      font-size: clamp(3rem, 6vw, 5.4rem);
       line-height: 0.96;
-      letter-spacing: -0.045em;
-      max-width: 760px;
+      letter-spacing: -0.05em;
+      max-width: 820px;
     }
 
-    .hero p {
+    .hero-copy p {
       margin: 0;
-      max-width: 720px;
+      max-width: 760px;
       color: var(--muted);
-      line-height: 1.75;
+      line-height: 1.8;
       font-size: 17px;
     }
 
     .hero-actions {
-      margin-top: 28px;
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
+      margin-top: 28px;
     }
 
     .btn {
@@ -288,53 +286,52 @@ HTML_PAGE = """
 
     .btn-primary {
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      color: #041008;
-      box-shadow: 0 14px 32px rgba(67, 201, 123, 0.22);
+      color: #061008;
+      box-shadow: 0 14px 32px rgba(66, 204, 126, 0.24);
     }
 
     .btn-secondary {
       color: var(--text);
       background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      border: 1px solid rgba(126, 240, 171, 0.08);
     }
 
-    .hero-stats {
+    .hero-panel-stack {
       display: grid;
-      grid-template-columns: 1fr 1fr;
       gap: 14px;
       align-self: center;
     }
 
-    .hero-stat {
+    .hero-panel {
       padding: 18px;
-      border-radius: 20px;
-      background: rgba(255,255,255,0.035);
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      border-radius: 22px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(126, 240, 171, 0.08);
       backdrop-filter: blur(12px);
     }
 
-    .hero-stat-label {
+    .hero-panel-label {
       color: var(--muted);
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.14em;
       margin-bottom: 8px;
     }
 
-    .hero-stat-value {
+    .hero-panel-value {
       font-size: 30px;
       font-weight: 900;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
     }
 
-    .hero-stat-sub {
+    .hero-panel-copy {
       color: var(--muted);
-      font-size: 13px;
-      line-height: 1.5;
+      font-size: 14px;
+      line-height: 1.6;
     }
 
     .section {
-      margin-bottom: 20px;
+      margin-bottom: 26px;
     }
 
     .section-head {
@@ -357,40 +354,38 @@ HTML_PAGE = """
       font-size: 14px;
     }
 
-    .features-strip {
-      position: relative;
+    .features-wrap {
       overflow: hidden;
-      border-radius: 28px;
-      padding: 18px 0 10px 0;
-      margin-bottom: 22px;
+      border-radius: 30px;
+      margin-bottom: 24px;
     }
 
     .carousel-track {
       display: flex;
       gap: 18px;
       width: max-content;
-      animation: scrollTrack 28s linear infinite;
-      padding: 0 6px;
+      animation: marquee 32s linear infinite;
+      padding: 0 4px;
     }
 
-    .features-strip:hover .carousel-track {
+    .features-wrap:hover .carousel-track {
       animation-play-state: paused;
     }
 
-    @keyframes scrollTrack {
+    @keyframes marquee {
       0% { transform: translateX(0); }
       100% { transform: translateX(-50%); }
     }
 
     .feature-card {
-      flex: 0 0 360px;
-      min-height: 260px;
-      border-radius: 26px;
-      overflow: hidden;
       position: relative;
-      border: 1px solid rgba(115, 240, 166, 0.08);
-      background: #0d1712;
+      flex: 0 0 380px;
+      min-height: 260px;
+      border-radius: 28px;
+      overflow: hidden;
+      border: 1px solid var(--border);
       box-shadow: var(--shadow);
+      background: #0d1712;
     }
 
     .feature-image {
@@ -398,15 +393,15 @@ HTML_PAGE = """
       inset: 0;
       background-size: cover;
       background-position: center;
+      filter: brightness(0.72) saturate(1.02);
       transform: scale(1.02);
-      filter: saturate(1.08) brightness(0.72);
     }
 
     .feature-overlay {
       position: absolute;
       inset: 0;
       background:
-        linear-gradient(180deg, rgba(5, 10, 8, 0.12) 0%, rgba(7, 13, 10, 0.78) 72%, rgba(7, 13, 10, 0.96) 100%);
+        linear-gradient(180deg, rgba(8, 12, 10, 0.12) 0%, rgba(8, 12, 10, 0.70) 66%, rgba(8, 12, 10, 0.96) 100%);
     }
 
     .feature-copy {
@@ -425,8 +420,8 @@ HTML_PAGE = """
     .feature-copy p {
       margin: 0;
       color: var(--muted);
-      line-height: 1.6;
       font-size: 14px;
+      line-height: 1.6;
     }
 
     .assistant-layout {
@@ -451,35 +446,13 @@ HTML_PAGE = """
     }
 
     .message {
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-    }
-
-    .message.user {
-      flex-direction: row-reverse;
-    }
-
-    .avatar {
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      flex: 0 0 16px;
-      margin-top: 14px;
-      background: rgba(115, 240, 166, 0.28);
-      box-shadow: 0 0 14px rgba(115, 240, 166, 0.28);
-    }
-
-    .message.user .avatar {
-      background: rgba(255, 255, 255, 0.12);
-      box-shadow: none;
+      display: block;
     }
 
     .message-bubble {
-      width: calc(100% - 28px);
       padding: 18px;
       background: var(--panel-solid);
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      border: 1px solid rgba(126, 240, 171, 0.08);
       border-radius: 22px;
     }
 
@@ -491,7 +464,6 @@ HTML_PAGE = """
     .message-bubble p {
       margin: 0 0 10px 0;
       line-height: 1.68;
-      color: var(--text);
     }
 
     .message-bubble p:last-child {
@@ -513,7 +485,7 @@ HTML_PAGE = """
     select {
       width: 100%;
       border-radius: 16px;
-      border: 1px solid rgba(115, 240, 166, 0.10);
+      border: 1px solid rgba(126, 240, 171, 0.10);
       background: rgba(255,255,255,0.03);
       color: var(--text);
       padding: 13px 14px;
@@ -526,8 +498,8 @@ HTML_PAGE = """
     input:focus,
     textarea:focus,
     select:focus {
-      border-color: rgba(115, 240, 166, 0.28);
-      box-shadow: 0 0 0 4px rgba(115, 240, 166, 0.08);
+      border-color: rgba(126, 240, 171, 0.28);
+      box-shadow: 0 0 0 4px rgba(126, 240, 171, 0.08);
     }
 
     textarea {
@@ -569,7 +541,7 @@ HTML_PAGE = """
       padding: 18px;
       border-radius: 20px;
       background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      border: 1px solid rgba(126, 240, 171, 0.08);
     }
 
     .metric-label {
@@ -607,8 +579,8 @@ HTML_PAGE = """
       width: min(420px, 100%);
       padding: 28px;
       border-radius: 28px;
-      background: rgba(10, 19, 14, 0.92);
-      border: 1px solid rgba(115, 240, 166, 0.12);
+      background: rgba(10, 19, 14, 0.94);
+      border: 1px solid rgba(126, 240, 171, 0.12);
       box-shadow: var(--shadow);
       text-align: center;
     }
@@ -619,8 +591,8 @@ HTML_PAGE = """
       margin: 0 auto 20px auto;
       border-radius: 50%;
       position: relative;
-      border: 1px solid rgba(115, 240, 166, 0.10);
-      background: radial-gradient(circle at center, rgba(115, 240, 166, 0.06), transparent 68%);
+      border: 1px solid rgba(126, 240, 171, 0.10);
+      background: radial-gradient(circle at center, rgba(126, 240, 171, 0.06), transparent 68%);
     }
 
     .loading-orb::before {
@@ -628,7 +600,7 @@ HTML_PAGE = """
       position: absolute;
       inset: 10px;
       border-radius: 50%;
-      border: 1px dashed rgba(115, 240, 166, 0.18);
+      border: 1px dashed rgba(126, 240, 171, 0.18);
     }
 
     .loading-orb::after {
@@ -642,7 +614,7 @@ HTML_PAGE = """
       background: linear-gradient(135deg, var(--accent-3), var(--accent-2));
       transform: translateX(-50%);
       transform-origin: 0 39px;
-      box-shadow: 0 0 24px rgba(115, 240, 166, 0.95);
+      box-shadow: 0 0 24px rgba(126, 240, 171, 0.95);
       animation: orbit 1.1s linear infinite;
     }
 
@@ -663,8 +635,7 @@ HTML_PAGE = """
       font-size: 14px;
     }
 
-    .results-list,
-    .tender-list {
+    .results-list {
       display: grid;
       gap: 14px;
     }
@@ -710,20 +681,20 @@ HTML_PAGE = """
 
     .band.high {
       color: var(--accent-3);
-      background: rgba(115, 240, 166, 0.10);
-      border: 1px solid rgba(115, 240, 166, 0.18);
+      background: rgba(126, 240, 171, 0.10);
+      border: 1px solid rgba(126, 240, 171, 0.18);
     }
 
     .band.medium {
       color: #f2d993;
-      background: rgba(232, 202, 125, 0.10);
-      border: 1px solid rgba(232, 202, 125, 0.18);
+      background: rgba(232, 200, 116, 0.10);
+      border: 1px solid rgba(232, 200, 116, 0.18);
     }
 
     .band.low {
       color: #efb4b4;
-      background: rgba(240, 143, 143, 0.08);
-      border: 1px solid rgba(240, 143, 143, 0.16);
+      background: rgba(242, 154, 154, 0.08);
+      border: 1px solid rgba(242, 154, 154, 0.16);
     }
 
     .score-number {
@@ -749,7 +720,7 @@ HTML_PAGE = """
       padding: 16px;
       border-radius: 18px;
       background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      border: 1px solid rgba(126, 240, 171, 0.08);
     }
 
     .mini h4 {
@@ -785,11 +756,10 @@ HTML_PAGE = """
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: rgba(115, 240, 166, 0.10);
+      background: rgba(126, 240, 171, 0.10);
       color: var(--accent-3);
       font-weight: 900;
       flex: 0 0 22px;
-      box-shadow: 0 0 18px rgba(115, 240, 166, 0.12);
     }
 
     .keyword-list {
@@ -802,8 +772,8 @@ HTML_PAGE = """
     .chip {
       padding: 8px 12px;
       border-radius: 999px;
-      background: rgba(115, 240, 166, 0.08);
-      border: 1px solid rgba(115, 240, 166, 0.12);
+      background: rgba(126, 240, 171, 0.08);
+      border: 1px solid rgba(126, 240, 171, 0.12);
       color: var(--accent-3);
       font-size: 12px;
       font-weight: 700;
@@ -813,7 +783,7 @@ HTML_PAGE = """
       padding: 24px;
       text-align: center;
       color: var(--muted);
-      border: 1px dashed rgba(115, 240, 166, 0.10);
+      border: 1px dashed rgba(126, 240, 171, 0.10);
       border-radius: 20px;
       background: rgba(255,255,255,0.02);
     }
@@ -846,7 +816,7 @@ HTML_PAGE = """
     .list-item {
       padding: 16px;
       border-radius: 18px;
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      border: 1px solid rgba(126, 240, 171, 0.08);
       background: rgba(255,255,255,0.03);
       margin-bottom: 10px;
       cursor: pointer;
@@ -855,8 +825,8 @@ HTML_PAGE = """
 
     .list-item:hover,
     .list-item.active {
-      border-color: rgba(115, 240, 166, 0.20);
-      box-shadow: 0 14px 30px rgba(115, 240, 166, 0.08);
+      border-color: rgba(126, 240, 171, 0.20);
+      box-shadow: 0 14px 30px rgba(126, 240, 171, 0.08);
       background: rgba(255,255,255,0.04);
     }
 
@@ -907,7 +877,7 @@ HTML_PAGE = """
     .service-box {
       padding: 16px;
       border-radius: 18px;
-      border: 1px solid rgba(115, 240, 166, 0.08);
+      border: 1px solid rgba(126, 240, 171, 0.08);
       background: rgba(255,255,255,0.03);
       margin-top: 12px;
     }
@@ -931,7 +901,7 @@ HTML_PAGE = """
     }
 
     @media (max-width: 1180px) {
-      .hero-content,
+      .hero-inner,
       .assistant-layout,
       .explorer-layout,
       .summary-grid,
@@ -941,7 +911,7 @@ HTML_PAGE = """
         grid-template-columns: 1fr;
       }
 
-      .features-strip {
+      .features-wrap {
         overflow: auto;
       }
 
@@ -951,18 +921,20 @@ HTML_PAGE = """
     }
 
     @media (max-width: 760px) {
-      .shell {
-        padding: 14px;
-      }
-
       .topbar {
+        width: calc(100% - 20px);
         flex-direction: column;
         align-items: flex-start;
       }
 
       .hero {
+        width: calc(100% - 10px);
         min-height: auto;
-        padding: 2.6rem 1.2rem 2rem 1.2rem;
+      }
+
+      .hero-inner {
+        min-height: auto;
+        padding: 3rem 1.2rem 2rem 1.2rem;
       }
 
       .hero-actions {
@@ -998,281 +970,263 @@ HTML_PAGE = """
     </div>
   </div>
 
-  <div class="shell">
+  <div class="page">
     <div class="topbar">
-      <div class="brand">
-        <img src="https://static.wixstatic.com/media/7193cf_13ca777ff7cc4c79a68caa1b2024f707~mv2.png" alt="Logo">
-        <div>
-          <div class="brand-title">TenderAI</div>
-          <div class="brand-sub">Procurement intelligence and execution planning</div>
-        </div>
-      </div>
-
-      <div class="nav-links">
-        <a class="nav-link" href="#assistant">Assistant</a>
-        <a class="nav-link" href="#matches">Matches</a>
-        <a class="nav-link" href="#explorer">Explorer</a>
+      <div class="brand">Tender<span>AI</span></div>
+      <div class="nav">
+        <a href="#assistant">Assistant</a>
+        <a href="#matches">Matches</a>
+        <a href="#explorer">Explorer</a>
       </div>
     </div>
 
     <section class="hero">
-      <div class="grid-lines"></div>
-      <div class="hero-content">
-        <div>
+      <div class="hero-grid"></div>
+      <div class="hero-inner">
+        <div class="hero-copy">
           <div class="eyebrow">Procurement intelligence platform</div>
-          <h1>Discover, evaluate, and plan for the tenders your business is built to pursue.</h1>
+          <h1>The strategic layer for public procurement opportunity discovery.</h1>
           <p>
-            TenderAI reads your supplier profile, compares your business signals against live public tenders,
-            estimates likely contract value and delivery investment, and helps you understand where to focus your effort.
+            TenderAI helps businesses understand where to bid, why a tender matters, what it may take to execute,
+            and how to position more intelligently. Upload your profile, analyze live public tenders, and act with more confidence.
           </p>
           <div class="hero-actions">
             <button class="btn btn-primary" onclick="document.getElementById('assistant').scrollIntoView({behavior:'smooth'})">Start analysis</button>
-            <button class="btn btn-secondary" onclick="document.getElementById('explorer').scrollIntoView({behavior:'smooth'})">Browse tenders</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('explorer').scrollIntoView({behavior:'smooth'})">Explore tenders</button>
           </div>
         </div>
 
-        <div class="hero-stats">
-          <div class="hero-stat">
-            <div class="hero-stat-label">Supplier profile understanding</div>
-            <div class="hero-stat-value">PDF + AI</div>
-            <div class="hero-stat-sub">Reads supplier profiles and extracts capability signals.</div>
+        <div class="hero-panel-stack">
+          <div class="hero-panel">
+            <div class="hero-panel-label">Positioning</div>
+            <div class="hero-panel-value">Tender intelligence</div>
+            <div class="hero-panel-copy">More than listings: profile understanding, opportunity ranking, and execution planning.</div>
           </div>
-          <div class="hero-stat">
-            <div class="hero-stat-label">Opportunity ranking</div>
-            <div class="hero-stat-value">Live</div>
-            <div class="hero-stat-sub">Scores public tenders using profile, category, and scope alignment.</div>
+          <div class="hero-panel">
+            <div class="hero-panel-label">Analysis depth</div>
+            <div class="hero-panel-value">AI-assisted</div>
+            <div class="hero-panel-copy">Estimate value, score fit, surface strategic advice, and assess delivery investment.</div>
           </div>
-          <div class="hero-stat">
-            <div class="hero-stat-label">Execution planning</div>
-            <div class="hero-stat-value">Estimated</div>
-            <div class="hero-stat-sub">Forecasts project value and likely investment requirements.</div>
-          </div>
-          <div class="hero-stat">
-            <div class="hero-stat-label">Support services</div>
-            <div class="hero-stat-value">On demand</div>
-            <div class="hero-stat-sub">Request logistics and tender support for selected opportunities.</div>
+          <div class="hero-panel">
+            <div class="hero-panel-label">Operational outcome</div>
+            <div class="hero-panel-value">Decision-ready</div>
+            <div class="hero-panel-copy">Know which tenders to pursue, what to prepare, and what support you may need.</div>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="features-strip">
-      <div class="carousel-track">
-        <div class="feature-card">
-          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80');"></div>
-          <div class="feature-overlay"></div>
-          <div class="feature-copy">
-            <h3>Profile understanding</h3>
-            <p>Extract business signals, trade focus, and capability language from profile documents.</p>
-          </div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80');"></div>
-          <div class="feature-overlay"></div>
-          <div class="feature-copy">
-            <h3>Opportunity ranking</h3>
-            <p>Surface the tenders that align most strongly with your business capabilities and delivery intent.</p>
-          </div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1200&q=80');"></div>
-          <div class="feature-overlay"></div>
-          <div class="feature-copy">
-            <h3>Execution support</h3>
-            <p>Estimate delivery investment, request advice, and route logistics support into your operating process.</p>
-          </div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80');"></div>
-          <div class="feature-overlay"></div>
-          <div class="feature-copy">
-            <h3>Profile understanding</h3>
-            <p>Extract business signals, trade focus, and capability language from profile documents.</p>
-          </div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80');"></div>
-          <div class="feature-overlay"></div>
-          <div class="feature-copy">
-            <h3>Opportunity ranking</h3>
-            <p>Surface the tenders that align most strongly with your business capabilities and delivery intent.</p>
-          </div>
-        </div>
-
-        <div class="feature-card">
-          <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1200&q=80');"></div>
-          <div class="feature-overlay"></div>
-          <div class="feature-copy">
-            <h3>Execution support</h3>
-            <p>Estimate delivery investment, request advice, and route logistics support into your operating process.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="assistant" class="section">
-      <div class="section-head">
-        <div>
-          <h2>Assistant</h2>
-          <p>Run a profile-led tender analysis through a guided AI workflow.</p>
-        </div>
-      </div>
-
-      <div class="assistant-layout">
-        <div class="card">
-          <div class="chat-thread">
-            <div class="message">
-              <div class="avatar"></div>
-              <div class="message-bubble">
-                <h3>Start with your business profile.</h3>
-                <p>Upload a supplier profile PDF or paste business capability text. TenderAI will interpret your profile, scan public tenders, rank relevant opportunities, and estimate what delivery might require.</p>
-              </div>
+    <div class="container">
+      <section class="features-wrap">
+        <div class="carousel-track">
+          <div class="feature-card">
+            <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80');"></div>
+            <div class="feature-overlay"></div>
+            <div class="feature-copy">
+              <h3>Profile understanding</h3>
+              <p>Extract business signals, service focus, and capability language from supplier profiles and PDF documents.</p>
             </div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80');"></div>
+            <div class="feature-overlay"></div>
+            <div class="feature-copy">
+              <h3>Opportunity ranking</h3>
+              <p>Identify the tenders that align most strongly with your profile, category, scope, and likely execution fit.</p>
+            </div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1200&q=80');"></div>
+            <div class="feature-overlay"></div>
+            <div class="feature-copy">
+              <h3>Execution support</h3>
+              <p>Estimate delivery investment, request advice, and route logistics support into your operating process.</p>
+            </div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=80');"></div>
+            <div class="feature-overlay"></div>
+            <div class="feature-copy">
+              <h3>Profile understanding</h3>
+              <p>Extract business signals, service focus, and capability language from supplier profiles and PDF documents.</p>
+            </div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1200&q=80');"></div>
+            <div class="feature-overlay"></div>
+            <div class="feature-copy">
+              <h3>Opportunity ranking</h3>
+              <p>Identify the tenders that align most strongly with your profile, category, scope, and likely execution fit.</p>
+            </div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-image" style="background-image:url('https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=1200&q=80');"></div>
+            <div class="feature-overlay"></div>
+            <div class="feature-copy">
+              <h3>Execution support</h3>
+              <p>Estimate delivery investment, request advice, and route logistics support into your operating process.</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
-            <div class="message user">
-              <div class="avatar"></div>
-              <div class="message-bubble">
-                <div class="form-grid">
-                  <div class="field">
-                    <label for="profile_pdf">Supplier profile PDF</label>
-                    <input type="file" id="profile_pdf" accept=".pdf">
-                    <div class="hint">CSD summaries, company profiles, and capability statements work best.</div>
+      <section id="assistant" class="section">
+        <div class="section-head">
+          <div>
+            <h2>Assistant</h2>
+            <p>Run a profile-led tender analysis through a guided AI workflow.</p>
+          </div>
+        </div>
+
+        <div class="assistant-layout">
+          <div class="card">
+            <div class="chat-thread">
+              <div class="message">
+                <div class="message-bubble">
+                  <h3>Start with your business profile.</h3>
+                  <p>Upload a supplier profile PDF or paste business capability text. TenderAI will interpret your profile, scan public tenders, rank relevant opportunities, and estimate what delivery may require.</p>
+                </div>
+              </div>
+
+              <div class="message">
+                <div class="message-bubble">
+                  <div class="form-grid">
+                    <div class="field">
+                      <label for="profile_pdf">Supplier profile PDF</label>
+                      <input type="file" id="profile_pdf" accept=".pdf">
+                      <div class="hint">CSD summaries, company profiles, and capability statements work best.</div>
+                    </div>
+
+                    <div class="field">
+                      <label for="profile_text">Or paste profile text</label>
+                      <textarea id="profile_text" placeholder="Use this only if you are not uploading a PDF."></textarea>
+                    </div>
+
+                    <div class="field">
+                      <label for="date_from">From date</label>
+                      <input type="date" id="date_from" value="2026-01-01">
+                    </div>
+
+                    <div class="field">
+                      <label for="date_to">To date</label>
+                      <input type="date" id="date_to" value="2026-03-17">
+                    </div>
+
+                    <div class="field">
+                      <label for="page_number">Page number</label>
+                      <input type="number" id="page_number" value="1" min="1">
+                    </div>
+
+                    <div class="field">
+                      <label for="page_size">Page size</label>
+                      <input type="number" id="page_size" value="10" min="1" max="100">
+                    </div>
                   </div>
 
-                  <div class="field">
-                    <label for="profile_text">Or paste profile text</label>
-                    <textarea id="profile_text" placeholder="Use this only if you are not uploading a PDF."></textarea>
-                  </div>
-
-                  <div class="field">
-                    <label for="date_from">From date</label>
-                    <input type="date" id="date_from" value="2026-01-01">
-                  </div>
-
-                  <div class="field">
-                    <label for="date_to">To date</label>
-                    <input type="date" id="date_to" value="2026-03-17">
-                  </div>
-
-                  <div class="field">
-                    <label for="page_number">Page number</label>
-                    <input type="number" id="page_number" value="1" min="1">
-                  </div>
-
-                  <div class="field">
-                    <label for="page_size">Page size</label>
-                    <input type="number" id="page_size" value="10" min="1" max="100">
+                  <div class="actions">
+                    <button class="btn btn-primary" id="runScanBtn" type="button">Run TenderAI analysis</button>
+                    <button class="btn btn-secondary" id="clearBtn" type="button">Clear</button>
                   </div>
                 </div>
+              </div>
 
-                <div class="actions">
-                  <button class="btn btn-primary" id="runScanBtn" type="button">Run TenderAI analysis</button>
-                  <button class="btn btn-secondary" id="clearBtn" type="button">Clear</button>
+              <div class="message">
+                <div class="message-bubble" id="assistantResponse">
+                  <p>Once the scan completes, TenderAI will summarize what it understood from your profile and show your ranked opportunities below.</p>
                 </div>
               </div>
             </div>
+          </div>
 
-            <div class="message">
-              <div class="avatar"></div>
-              <div class="message-bubble" id="assistantResponse">
-                <p>Once the scan completes, TenderAI will summarize what it understood from your profile and show your ranked opportunities below.</p>
+          <div class="card">
+            <h3 style="margin-top:0;">What TenderAI understood</h3>
+            <div id="scanUnderstanding" class="empty">Run a scan to see extracted keywords and a concise profile interpretation.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="matches" class="section">
+        <div class="section-head">
+          <div>
+            <h2>Best-fit matches</h2>
+            <p>Ranked opportunities based on your profile and the tender scope.</p>
+          </div>
+        </div>
+
+        <div class="summary-grid" id="summaryGrid" style="display:none;">
+          <div class="metric">
+            <div class="metric-label">Returned tenders</div>
+            <div class="metric-value" id="mTotal">0</div>
+            <div class="metric-sub">Scored opportunities</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">High fit</div>
+            <div class="metric-value" id="mHigh">0</div>
+            <div class="metric-sub">Best opportunities</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Medium fit</div>
+            <div class="metric-value" id="mMedium">0</div>
+            <div class="metric-sub">Worth reviewing</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Low fit</div>
+            <div class="metric-value" id="mLow">0</div>
+            <div class="metric-sub">Lower priority</div>
+          </div>
+        </div>
+
+        <div id="resultsList" class="results-list">
+          <div class="empty">Your ranked opportunity matches will appear here after an analysis.</div>
+        </div>
+      </section>
+
+      <section id="explorer" class="section">
+        <div class="section-head">
+          <div>
+            <h2>Tender Explorer</h2>
+            <p>Browse all tenders manually, inspect details, request advice, and request support.</p>
+          </div>
+        </div>
+
+        <div class="explorer-layout">
+          <div class="card list-card">
+            <div class="toolbar">
+              <div>
+                <label for="explorer_date_from">From date</label>
+                <input type="date" id="explorer_date_from" value="2026-01-01">
+              </div>
+              <div>
+                <label for="explorer_date_to">To date</label>
+                <input type="date" id="explorer_date_to" value="2026-03-17">
+              </div>
+              <div>
+                <label for="explorer_page_number">Page number</label>
+                <input type="number" id="explorer_page_number" value="1" min="1">
+              </div>
+              <div>
+                <label for="explorer_page_size">Page size</label>
+                <input type="number" id="explorer_page_size" value="20" min="1" max="100">
               </div>
             </div>
-          </div>
-        </div>
 
-        <div class="card">
-          <h3 style="margin-top:0;">What TenderAI understood</h3>
-          <div id="scanUnderstanding" class="empty">Run a scan to see extracted keywords and a concise profile interpretation.</div>
-        </div>
-      </div>
-    </section>
-
-    <section id="matches" class="section">
-      <div class="section-head">
-        <div>
-          <h2>Best-fit matches</h2>
-          <p>Ranked opportunities based on your profile and the tender scope.</p>
-        </div>
-      </div>
-
-      <div class="summary-grid" id="summaryGrid" style="display:none;">
-        <div class="metric">
-          <div class="metric-label">Returned tenders</div>
-          <div class="metric-value" id="mTotal">0</div>
-          <div class="metric-sub">Scored opportunities</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">High fit</div>
-          <div class="metric-value" id="mHigh">0</div>
-          <div class="metric-sub">Best opportunities</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">Medium fit</div>
-          <div class="metric-value" id="mMedium">0</div>
-          <div class="metric-sub">Worth reviewing</div>
-        </div>
-        <div class="metric">
-          <div class="metric-label">Low fit</div>
-          <div class="metric-value" id="mLow">0</div>
-          <div class="metric-sub">Lower priority</div>
-        </div>
-      </div>
-
-      <div id="resultsList" class="results-list">
-        <div class="empty">Your ranked opportunity matches will appear here after an analysis.</div>
-      </div>
-    </section>
-
-    <section id="explorer" class="section">
-      <div class="section-head">
-        <div>
-          <h2>Tender Explorer</h2>
-          <p>Browse all tenders manually, inspect details, request advice, and request support.</p>
-        </div>
-      </div>
-
-      <div class="explorer-layout">
-        <div class="card list-card">
-          <div class="toolbar">
-            <div>
-              <label for="explorer_date_from">From date</label>
-              <input type="date" id="explorer_date_from" value="2026-01-01">
+            <div class="actions" style="margin-bottom: 12px;">
+              <button class="btn btn-primary" id="loadTendersBtn" type="button">Load tenders</button>
             </div>
-            <div>
-              <label for="explorer_date_to">To date</label>
-              <input type="date" id="explorer_date_to" value="2026-03-17">
-            </div>
-            <div>
-              <label for="explorer_page_number">Page number</label>
-              <input type="number" id="explorer_page_number" value="1" min="1">
-            </div>
-            <div>
-              <label for="explorer_page_size">Page size</label>
-              <input type="number" id="explorer_page_size" value="20" min="1" max="100">
+
+            <div id="explorerList" class="list-scroll">
+              <div class="empty">Load tenders to browse the market manually.</div>
             </div>
           </div>
 
-          <div class="actions" style="margin-bottom: 12px;">
-            <button class="btn btn-primary" id="loadTendersBtn" type="button">Load tenders</button>
-          </div>
-
-          <div id="explorerList" class="list-scroll">
-            <div class="empty">Load tenders to browse the market manually.</div>
+          <div class="card detail-card">
+            <div id="detailPanel">
+              <div class="empty">Select a tender to view its overview, AI advice, value estimate, execution investment, and support options.</div>
+            </div>
           </div>
         </div>
-
-        <div class="card detail-card">
-          <div id="detailPanel">
-            <div class="empty">Select a tender to view its overview, AI advice, value estimate, execution investment, and support options.</div>
-          </div>
-        </div>
-      </div>
-    </section>
+      </section>
+    </div>
   </div>
 
   <script>
@@ -1394,21 +1348,15 @@ HTML_PAGE = """
       const keywords = (data.profile_keywords || []).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join("");
 
       document.getElementById("scanUnderstanding").innerHTML = `
-        <div class="message">
-          <div class="avatar"></div>
-          <div class="message-bubble" style="width:100%;">
-            <h4>Profile interpretation</h4>
-            <p>I used your submitted profile to extract capability signals and compare them to tender descriptions, procurement categories, and likely delivery requirements.</p>
-            <div class="keyword-list">${keywords || '<span class="chip">No keywords extracted</span>'}</div>
-          </div>
+        <div class="message-bubble">
+          <h4>Profile interpretation</h4>
+          <p>I used your submitted profile to extract capability signals and compare them to tender descriptions, procurement categories, and likely delivery requirements.</p>
+          <div class="keyword-list">${keywords || '<span class="chip">No keywords extracted</span>'}</div>
         </div>
 
-        <div class="message" style="margin-top: 14px;">
-          <div class="avatar"></div>
-          <div class="message-bubble" style="width:100%;">
-            <h4>Profile preview</h4>
-            <p>${escapeHtml(data.profile_text_preview || "No preview available.")}</p>
-          </div>
+        <div class="message-bubble" style="margin-top: 14px;">
+          <h4>Profile preview</h4>
+          <p>${escapeHtml(data.profile_text_preview || "No preview available.")}</p>
         </div>
       `;
     }
