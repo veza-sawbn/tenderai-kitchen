@@ -68,24 +68,27 @@
 {% block scripts %}
 <script>
   let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
+  let profilesCache = [];
 
   async function loadProfilesForHome() {
     const res = await fetch("/api/profiles");
     const data = await res.json();
     const select = document.getElementById("home_profile_select");
-    const profiles = data.profiles || [];
+    profilesCache = data.profiles || [];
 
-    if (!profiles.length) {
+    if (!profilesCache.length) {
+      activeProfileId = "";
+      localStorage.removeItem("tenderai_active_profile");
       select.innerHTML = '<option value="">No profile uploaded</option>';
       return;
     }
 
-    if (!profiles.find(p => p.id === activeProfileId)) {
-      activeProfileId = profiles[0].id;
+    if (!profilesCache.find(p => p.id === activeProfileId)) {
+      activeProfileId = profilesCache[0].id;
       localStorage.setItem("tenderai_active_profile", activeProfileId);
     }
 
-    select.innerHTML = profiles.map(profile => `
+    select.innerHTML = profilesCache.map(profile => `
       <option value="${profile.id}" ${profile.id === activeProfileId ? "selected" : ""}>
         ${profile.name}
       </option>
@@ -115,8 +118,6 @@
   }
 
   async function loadLiveTenders() {
-    setLoading(true, "Loading live tender insights...");
-
     try {
       const province = document.getElementById("province_filter").value;
       const industry = document.getElementById("industry_filter").value;
@@ -142,16 +143,17 @@
       list.innerHTML = data.tenders.map(renderLiveTenderRow).join("");
     } catch (e) {
       document.getElementById("liveTenderList").innerHTML = '<div class="empty-state">Unable to load live tenders.</div>';
-    } finally {
-      setLoading(false);
     }
   }
 
   async function runAnalysis() {
+    await loadProfilesForHome();
+
     const prompt = document.getElementById("home_prompt").value.trim();
     const profileId = document.getElementById("home_profile_select").value;
 
-    if (!profileId) {
+    if (!profilesCache.length || !profileId) {
+      localStorage.removeItem("tenderai_active_profile");
       window.location = "/profiles";
       return;
     }
@@ -175,6 +177,12 @@
       const data = await res.json();
 
       if (data.status !== "ok") {
+        if ((data.error || "").toLowerCase().includes("profile not found")) {
+          localStorage.removeItem("tenderai_active_profile");
+          alert("Your uploaded profile is no longer available. Please upload it again.");
+          window.location = "/profiles";
+          return;
+        }
         alert(data.error || "Analysis failed");
         return;
       }
