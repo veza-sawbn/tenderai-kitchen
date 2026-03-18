@@ -502,6 +502,40 @@ def parse_profile_metadata(text):
     }
 
 
+def extract_releases(payload):
+    if isinstance(payload, list):
+        return payload
+
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ["releases", "data", "value", "results", "items"]:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+
+    if "ocid" in payload or "tender" in payload or "buyer" in payload:
+        return [payload]
+
+    return []
+
+
+def fetch_tenders(date_from, date_to, page_number, page_size):
+    url = "https://ocds-api.etenders.gov.za/api/OCDSReleases"
+    params = {
+        "PageNumber": page_number,
+        "PageSize": page_size,
+        "dateFrom": date_from,
+        "dateTo": date_to
+    }
+
+    response = requests.get(url, params=params, timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+    releases = extract_releases(payload)
+    return releases, params
+
+
 def pick_best_tender_document(documents):
     if not documents:
         return None
