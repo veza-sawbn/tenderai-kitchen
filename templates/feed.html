@@ -1,275 +1,91 @@
 {% extends "base.html" %}
+{% set title = "Tender intelligence · TenderAI V3" %}
 
 {% block content %}
-<section class="page-section">
-  <div class="section-head full-width">
-    <div>
-      <h2>Procurement intelligence</h2>
-    </div>
+<section class="section shell shell-wide">
+  <div class="section-head">
+    <h1>Tender intelligence</h1>
+    <p>{{ prompt or "Live tenders analyzed with current settings." }}</p>
   </div>
 
-  <div id="summaryGrid" class="metrics-row" style="display:none;">
-    <div class="metric-card">
-      <div class="metric-label">Available tenders</div>
-      <div class="metric-value" id="mTotal">0</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">High-fit tenders</div>
-      <div class="metric-value" id="mHigh">0</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Closing soon</div>
-      <div class="metric-value" id="mSoon">0</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">Average contract value</div>
-      <div class="metric-value" id="mAvgValue">R0</div>
-    </div>
-  </div>
+  {% if error_message %}
+    <div class="flash flash-error">{{ error_message }}</div>
+  {% endif %}
 
-  <div class="feed-layout">
-    <div class="feed-left">
-      <div class="analytics-panel">
-        <h3>Best opportunities for you</h3>
-        <div id="bestOpportunities" class="opportunity-list">
-          <div class="empty-state">No analysis loaded yet.</div>
+  <div class="analysis-grid">
+    {% for tender in tenders %}
+      {% set analysis = tender.analysis %}
+      <article class="card intelligence-card">
+        <div class="card-top">
+          <div>
+            <div class="meta-row">
+              <span class="meta-pill">{{ tender.status or "Open" }}</span>
+              {% if tender.province %}
+                <span class="meta-muted">{{ tender.province }}</span>
+              {% endif %}
+            </div>
+            <h2>{{ tender.title or "Untitled tender" }}</h2>
+          </div>
+
+          <div class="fit-badge fit-{{ analysis.fit_band|lower|replace(' ', '-') }}">
+            {{ analysis.fit_band }}
+          </div>
         </div>
-      </div>
 
-      <div class="analytics-panel">
-        <h3>Tenders by sector</h3>
-        <div id="sectorBars" class="bar-list"></div>
-      </div>
+        <div class="score-row">
+          <div class="score-number">{{ analysis.fit_score }}</div>
+          <div class="score-copy">Fit score</div>
+        </div>
 
-      <div class="analytics-panel">
-        <h3>Tenders by province</h3>
-        <div id="provinceBars" class="bar-list"></div>
-      </div>
+        <p class="card-copy">
+          {{ tender.description[:260] ~ ("..." if tender.description and tender.description|length > 260 else "") }}
+        </p>
 
-      <div class="analytics-panel">
-        <h3>Trend insights</h3>
-        <div id="trendInsights" class="insight-list"></div>
-      </div>
-    </div>
+        <div class="detail-stack">
+          <div>
+            <strong>Competitiveness</strong>
+            <p>{{ analysis.competitiveness }}</p>
+          </div>
 
-    <div class="feed-right">
-      <div id="detailPanel" class="detail-panel">
-        <div class="empty-state">Select an opportunity to inspect its intelligence breakdown.</div>
+          <div>
+            <strong>Execution investment</strong>
+            <p>{{ analysis.execution_investment }}</p>
+          </div>
+
+          <div>
+            <strong>Fit reasons</strong>
+            <ul class="clean-list">
+              {% for item in analysis.fit_reasons %}
+                <li>{{ item }}</li>
+              {% else %}
+                <li>No strong overlap signals found yet.</li>
+              {% endfor %}
+            </ul>
+          </div>
+
+          <div>
+            <strong>Risk flags</strong>
+            <ul class="clean-list">
+              {% for item in analysis.risk_flags %}
+                <li>{{ item }}</li>
+              {% else %}
+                <li>No major risk flags detected from current extraction.</li>
+              {% endfor %}
+            </ul>
+          </div>
+        </div>
+
+        <div class="card-foot">
+          <span>{{ tender.buyer_name or "Unknown buyer" }}</span>
+          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid) }}">Open detail</a>
+        </div>
+      </article>
+    {% else %}
+      <div class="card empty-card">
+        <h2>No tenders returned</h2>
+        <p>Check API filters, deployment version, or upstream API availability.</p>
       </div>
-    </div>
+    {% endfor %}
   </div>
 </section>
-{% endblock %}
-
-{% block scripts %}
-<script>
-  let latestScan = null;
-  let selectedTender = null;
-  let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
-
-  function formatMoney(value) {
-    return "R" + Number(value || 0).toLocaleString();
-  }
-
-  function bandClass(band) {
-    if (band === "High fit") return "band high";
-    if (band === "Medium fit") return "band medium";
-    return "band low";
-  }
-
-  function renderBars(targetId, items) {
-    const target = document.getElementById(targetId);
-    if (!items || !items.length) {
-      target.innerHTML = '<div class="empty-state">No data available.</div>';
-      return;
-    }
-
-    const max = Math.max(...items.map(x => x.value), 1);
-    target.innerHTML = items.map(item => `
-      <div class="bar-row">
-        <div class="bar-label">${item.label}</div>
-        <div class="bar-track"><div class="bar-fill" style="width:${(item.value / max) * 100}%"></div></div>
-        <div class="bar-value">${item.value}</div>
-      </div>
-    `).join("");
-  }
-
-  function renderTrendInsights(summary) {
-    const target = document.getElementById("trendInsights");
-    target.innerHTML = `
-      <div class="insight-item">${summary.top_category_insight}</div>
-      <div class="insight-item">${summary.top_province_insight}</div>
-      <div class="insight-item">${summary.value_insight}</div>
-    `;
-  }
-
-  function renderOpportunityCard(t) {
-    return `
-      <div class="opportunity-card" onclick="renderTenderDetailById('${t.id}')">
-        <div class="opportunity-top">
-          <div>
-            <div class="opportunity-title">${t.title}</div>
-            <div class="opportunity-meta">${t.organ_of_state} · ${t.province} · closes ${t.close_date || "N/A"}</div>
-          </div>
-          <div class="${bandClass(t.fit_band)}">${t.fit_band}</div>
-        </div>
-        <div class="opportunity-summary">${t.ai_summary}</div>
-      </div>
-    `;
-  }
-
-  async function renderTenderDetailById(tenderId) {
-    const res = await fetch(`/api/tender/${tenderId}`);
-    const data = await res.json();
-    if (data.status !== "ok") return;
-
-    selectedTender = data.tender;
-    renderTenderDetail(selectedTender);
-  }
-
-  function renderRequirementRows(requirements) {
-    if (!requirements || !requirements.length) {
-      return '<div class="empty-state">No structured requirements identified.</div>';
-    }
-
-    return requirements.map(item => `
-      <div class="requirement-row">
-        <div class="requirement-name">${item.name}</div>
-        <div class="requirement-status">${item.status}</div>
-        <div class="requirement-comment">${item.comment}</div>
-      </div>
-    `).join("");
-  }
-
-  function renderTenderDetail(t) {
-    document.getElementById("detailPanel").innerHTML = `
-      <div class="detail-head">
-        <div>
-          <h2>${t.title}</h2>
-          <div class="detail-meta">${t.organ_of_state} · ${t.province} · closes ${t.close_date || "N/A"}</div>
-        </div>
-        <div class="${bandClass(t.fit_band)}">${t.fit_band}</div>
-      </div>
-
-      <div class="detail-block">
-        <h3>AI breakdown</h3>
-        <p>${t.ai_summary}</p>
-      </div>
-
-      <div class="detail-grid-two">
-        <div class="detail-block">
-          <h3>Risk level</h3>
-          <div class="big-value">${t.risk_level}</div>
-          <p>${t.risk_reason}</p>
-        </div>
-        <div class="detail-block">
-          <h3>Estimated difficulty to win</h3>
-          <div class="big-value">${t.difficulty_level}</div>
-          <p>${t.difficulty_reason}</p>
-        </div>
-      </div>
-
-      <div class="detail-grid-two">
-        <div class="detail-block">
-          <h3>Estimated tender value</h3>
-          <div class="big-value">${t.value_display}</div>
-          <p>${t.estimation_reason}</p>
-        </div>
-        <div class="detail-block">
-          <h3>Expected execution investment</h3>
-          <div class="big-value">${t.execution_investment_display}</div>
-          <p>${t.execution_investment_reason}</p>
-        </div>
-      </div>
-
-      <div class="detail-block">
-        <h3>Requirements and specifications</h3>
-        <div class="requirements-table">
-          ${renderRequirementRows(t.requirement_checks)}
-        </div>
-      </div>
-
-      <div class="detail-grid-two">
-        <div class="detail-block">
-          <h3>Preference framework estimate</h3>
-          <div class="big-value">${t.preferential_model}</div>
-          <p>${t.preference_comment}</p>
-        </div>
-        <div class="detail-block">
-          <h3>Bid-readiness</h3>
-          <div class="big-value">${t.bid_readiness}</div>
-          <p>${t.bid_readiness_comment}</p>
-        </div>
-      </div>
-
-      <div class="detail-actions">
-        <button class="primary-btn" onclick="getTenderAdvice()">Ask TenderAI for advice</button>
-        <button class="secondary-btn" onclick="window.location='/tender/${t.id}'">Open Tender Detail Page</button>
-      </div>
-
-      <div id="adviceResult" class="advice-box"></div>
-    `;
-  }
-
-  async function getTenderAdvice() {
-    if (!selectedTender) return;
-
-    const res = await fetch("/api/advise", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        tender: selectedTender,
-        profile_id: activeProfileId
-      })
-    });
-
-    const data = await res.json();
-    if (data.status !== "ok") return;
-
-    document.getElementById("adviceResult").innerHTML = `
-      <h3>Should you apply?</h3>
-      <p>${data.should_apply}</p>
-      <p>${data.risk_comment}</p>
-      <p>${data.competitor_assumption}</p>
-
-      <h3>Strategic advice</h3>
-      <ul>
-        ${data.advice.map(item => `<li>${item}</li>`).join("")}
-      </ul>
-
-      <h3>Required capabilities checklist</h3>
-      <div class="chip-list">
-        ${data.required_capabilities.map(item => `<span class="chip">${item}</span>`).join("")}
-      </div>
-    `;
-  }
-
-  function loadLatestScan() {
-    const raw = sessionStorage.getItem("tenderai_latest_scan");
-    if (!raw) return;
-
-    latestScan = JSON.parse(raw);
-
-    document.getElementById("summaryGrid").style.display = "grid";
-    document.getElementById("mTotal").textContent = latestScan.summary.returned_tenders;
-    document.getElementById("mHigh").textContent = latestScan.summary.high_fit;
-    document.getElementById("mSoon").textContent = latestScan.summary.closing_soon;
-    document.getElementById("mAvgValue").textContent = formatMoney(latestScan.summary.average_estimated_value_mid);
-
-    document.getElementById("bestOpportunities").innerHTML =
-      (latestScan.tenders || []).map(renderOpportunityCard).join("") ||
-      '<div class="empty-state">No tenders found.</div>';
-
-    renderBars("sectorBars", latestScan.analytics.by_sector || []);
-    renderBars("provinceBars", latestScan.analytics.by_province || []);
-    renderTrendInsights(latestScan.analytics.trend_insights || {});
-
-    if ((latestScan.tenders || []).length) {
-      renderTenderDetail(latestScan.tenders[0]);
-      selectedTender = latestScan.tenders[0];
-    }
-  }
-
-  loadLatestScan();
-</script>
 {% endblock %}
