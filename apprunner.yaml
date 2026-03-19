@@ -5,7 +5,8 @@ build:
   commands:
     build:
       - python3 -m pip install --upgrade pip
-      - pip3 install -r requirements.txt
+      - python3 -m pip install -r requirements.txt
+      - python3 -m pip show gunicorn
 
 run:
   runtime-version: 3.11
@@ -18,7 +19,7 @@ run:
     - name: PARSER_MODE
       value: "auto"
     - name: APP_VERSION
-      value: "20260319-beta-6"
+      value: "20260319-beta-7"
     - name: FLASK_SECRET_KEY
       value: "replace-this-with-a-real-secret"
     - name: DATABASE_URL
