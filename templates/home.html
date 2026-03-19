@@ -1,29 +1,32 @@
 {% extends "base.html" %}
-{% set title = "TenderAI V3" %}
+{% set title = "TenderAI Beta" %}
 
 {% block content %}
 <section class="hero shell shell-wide">
   <div class="hero-inner">
-    <div class="eyebrow">South African procurement intelligence</div>
+    <div class="hero-orb" aria-hidden="true"></div>
+    <div class="eyebrow">South African Procurement Intelligence</div>
+
     <h1>Ask TenderAI…</h1>
+
     <p class="hero-copy">
-      Analyze live tenders against your business profile using tender documents,
-      procurement signals, and compliance cues.
+      Analyze live South African tenders against your supplier profile using document intelligence,
+      compliance signals, evaluation cues, and procurement-fit reasoning.
     </p>
 
-    <form class="prompt-panel" action="{{ url_for('tenders_page') }}" method="get">
+    <form id="analyze-form" class="prompt-panel" action="{{ url_for('tenders_page') }}" method="get">
       <div class="prompt-row">
         <textarea
           name="prompt"
           rows="3"
-          placeholder="Compare our profile to current IT, facilities, engineering, cleaning, training, or professional services tenders. Highlight risk, fit, likely competitiveness, and mandatory requirements."
+          placeholder="Compare our profile against currently advertised tenders. Highlight fit, risk, likely competitiveness, execution effort, mandatory requirements, and briefing obligations."
         ></textarea>
       </div>
 
       <div class="prompt-actions">
         <label class="select-wrap">
           <span>Profile</span>
-          <select name="profile_id">
+          <select id="profile-select" name="profile_id">
             <option value="">Use active profile</option>
             {% for profile in profiles %}
               <option value="{{ profile.id }}">
@@ -33,13 +36,11 @@
           </select>
         </label>
 
-        <button class="btn btn-primary" type="submit">Analyze</button>
+        <button id="analyze-button" class="btn btn-primary" type="submit">
+          Analyze
+        </button>
       </div>
     </form>
-
-    <div class="orb-loader" aria-hidden="true">
-      <span></span>
-    </div>
   </div>
 </section>
 
@@ -73,9 +74,52 @@
     {% else %}
       <div class="card empty-card">
         <h3>No live opportunities loaded</h3>
-        <p>Check the API connection and deployment version.</p>
+        <p>Check the API connection and the deployed build version.</p>
       </div>
     {% endfor %}
   </div>
 </section>
+
+<script>
+  (function () {
+    const form = document.getElementById("analyze-form");
+    const button = document.getElementById("analyze-button");
+    const profileSelect = document.getElementById("profile-select");
+
+    if (!form) return;
+
+    form.addEventListener("submit", async function () {
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Analyzing…";
+      }
+
+      const selectedProfileId = profileSelect ? profileSelect.value : "";
+      const storedProfileId = localStorage.getItem("active_profile_id");
+
+      try {
+        const response = await fetch("/api/profiles", { cache: "no-store" });
+        const profiles = await response.json();
+
+        const availableIds = new Set((profiles || []).map((item) => item.id));
+        const effectiveId = selectedProfileId || storedProfileId || "";
+
+        if (effectiveId && !availableIds.has(effectiveId)) {
+          localStorage.removeItem("active_profile_id");
+        }
+
+        if (selectedProfileId) {
+          localStorage.setItem("active_profile_id", selectedProfileId);
+        }
+      } catch (error) {
+        console.error("Profile refresh failed", error);
+      }
+
+      window.TenderAI.showProcessing(
+        "Analyzing live tenders…",
+        "TenderAI is matching your profile against current opportunities and parsing tender documents."
+      );
+    });
+  })();
+</script>
 {% endblock %}
