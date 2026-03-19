@@ -5,7 +5,9 @@ build:
   commands:
     build:
       - python3 -m pip install --upgrade pip
-      - python3 -m pip install -r requirements.txt
+      - rm -rf python_packages
+      - mkdir -p python_packages
+      - python3 -m pip install -r requirements.txt --target python_packages
 
 run:
   runtime-version: 3.11
@@ -13,12 +15,14 @@ run:
   network:
     port: 8080
   env:
+    - name: PYTHONPATH
+      value: "/app/python_packages"
     - name: OPENAI_PARSER_MODEL
       value: "gpt-4o-mini"
     - name: PARSER_MODE
       value: "auto"
     - name: APP_VERSION
-      value: "20260319-beta-11"
+      value: "20260319-beta-13"
     - name: FLASK_SECRET_KEY
       value: "replace-this-with-a-real-secret"
     - name: DATABASE_URL
