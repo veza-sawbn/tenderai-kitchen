@@ -1,193 +1,90 @@
 {% extends "base.html" %}
-{% set title = "Profiles · TenderAI Beta" %}
 
 {% block content %}
-<section class="section shell shell-wide">
+<section class="content-section">
   <div class="section-head">
-    <h1>Supplier profiles</h1>
-    <p>Upload and manage supplier or CSD-style PDF profiles.</p>
+    <h1>Supplier Profiles</h1>
+    <p>Upload and manage supplier capability profiles.</p>
   </div>
 
-  <div class="upload-card card">
-    <form id="upload-form" enctype="multipart/form-data">
-      <label class="upload-input">
-        <span>Upload profile PDF</span>
-        <input id="profile-file-input" type="file" name="file" accept="application/pdf" required>
-      </label>
+  <form id="profileUploadForm" class="upload-form">
+    <input type="file" id="profileFile" accept=".pdf" required>
+    <button type="submit" class="btn btn-primary">Upload Profile</button>
+  </form>
 
-      <button id="upload-button" class="btn btn-primary" type="submit">
-        Upload profile
-      </button>
-    </form>
-
-    <div id="upload-status" class="upload-status"></div>
+  <div id="profileUploadStatus" class="analyze-status hidden">
+    <div class="spinner"></div>
+    <span>Parsing supplier profile...</span>
   </div>
 
-  <div class="profile-grid">
-    {% for profile in profiles %}
-      <article class="card profile-card">
-        <div class="meta-row">
-          {% if profile.is_active %}
-            <span class="meta-pill active">Active</span>
-          {% else %}
-            <span class="meta-pill">Stored</span>
-          {% endif %}
-          <span class="meta-muted">{{ profile.uploaded_at[:10] }}</span>
-        </div>
-
-        <h2>{{ profile.summary.company_name or profile.file_name }}</h2>
-
-        <div class="profile-block">
-          <h3>B-BBEE</h3>
-          <p>{{ profile.summary.bbbee_information.verification_status or "Not clearly detected" }}</p>
-        </div>
-
-        <div class="profile-block">
-          <h3>Industry main groups</h3>
-          <p>{{ profile.summary.industry_main_groups | join(", ") or "Not clearly detected" }}</p>
-        </div>
-
-        <div class="profile-block">
-          <h3>Industry divisions</h3>
-          <p>{{ profile.summary.industry_divisions | join(", ") or "Not clearly detected" }}</p>
-        </div>
-
-        <div class="profile-block">
-          <h3>Accreditations</h3>
-          {% if profile.summary.accreditations %}
-            <ul class="clean-list">
-              {% for accreditation in profile.summary.accreditations[:5] %}
-                <li>
-                  <strong>{{ accreditation.body or "Detected" }}</strong>
-                  <span>{{ accreditation.description }}</span>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p>No accreditations confidently extracted.</p>
-          {% endif %}
-        </div>
-
-        <div class="card-actions">
-          <button class="btn btn-secondary activate-profile" data-profile-id="{{ profile.id }}">
-            Set active
-          </button>
-          <button class="btn btn-ghost delete-profile" data-profile-id="{{ profile.id }}">
-            Delete
-          </button>
-        </div>
-      </article>
-    {% else %}
-      <div class="card empty-card">
-        <h2>No profiles yet</h2>
-        <p>Upload a profile PDF to enable tender-fit analysis.</p>
-      </div>
-    {% endfor %}
-  </div>
+  <div id="profileError" class="page-error hidden"></div>
+  <div id="profilesList" class="results-grid"></div>
 </section>
 
 <script>
-  (function () {
-    const uploadForm = document.getElementById("upload-form");
-    const uploadStatus = document.getElementById("upload-status");
-    const uploadButton = document.getElementById("upload-button");
+const profileUploadForm = document.getElementById("profileUploadForm");
+const profileFile = document.getElementById("profileFile");
+const profileUploadStatus = document.getElementById("profileUploadStatus");
+const profileError = document.getElementById("profileError");
+const profilesList = document.getElementById("profilesList");
 
-    if (uploadForm) {
-      uploadForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
+async function loadProfiles() {
+  const res = await fetch("/api/profiles");
+  const data = await res.json();
 
-        if (uploadButton) {
-          uploadButton.disabled = true;
-          uploadButton.textContent = "Processing…";
-        }
+  profilesList.innerHTML = data.map(p => `
+    <article class="result-card">
+      <div class="result-card-top">
+        <div>
+          <p class="result-buyer">Profile</p>
+          <h3 class="result-title">${p.name || p.filename || ("Profile " + p.id)}</h3>
+        </div>
+        <div class="fit-badge">ID ${p.id}</div>
+      </div>
+      <pre>${JSON.stringify(p.parsed_json || {}, null, 2)}</pre>
+    </article>
+  `).join("");
+}
 
-        uploadStatus.textContent = "Uploading profile…";
+profileUploadForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
 
-        window.TenderAI.showProcessing(
-          "Processing supplier profile…",
-          "TenderAI is extracting, validating, and structuring your business profile."
-        );
+  profileError.classList.add("hidden");
+  profileError.textContent = "";
 
-        const formData = new FormData(uploadForm);
+  const file = profileFile.files[0];
+  if (!file) {
+    profileError.textContent = "Please select a PDF file";
+    profileError.classList.remove("hidden");
+    return;
+  }
 
-        try {
-          const response = await fetch("/api/profiles", {
-            method: "POST",
-            body: formData,
-          });
+  const formData = new FormData();
+  formData.append("file", file);
 
-          const data = await response.json();
+  profileUploadStatus.classList.remove("hidden");
 
-          if (!response.ok) {
-            uploadStatus.textContent = data.error || "Upload failed";
-            window.TenderAI.hideProcessing();
-            if (uploadButton) {
-              uploadButton.disabled = false;
-              uploadButton.textContent = "Upload profile";
-            }
-            return;
-          }
+  try {
+    const res = await fetch("/api/profiles", {
+      method: "POST",
+      body: formData
+    });
+    const data = await res.json();
 
-          localStorage.setItem("active_profile_id", data.id);
-          uploadStatus.textContent = "Profile processed successfully.";
-          window.location.reload();
-        } catch (error) {
-          uploadStatus.textContent = "Upload failed";
-          window.TenderAI.hideProcessing();
-          if (uploadButton) {
-            uploadButton.disabled = false;
-            uploadButton.textContent = "Upload profile";
-          }
-        }
-      });
+    if (!res.ok) {
+      throw new Error(data.error || "Upload failed");
     }
 
-    document.querySelectorAll(".activate-profile").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const profileId = button.dataset.profileId;
-        window.TenderAI.showProcessing(
-          "Activating profile…",
-          "TenderAI is updating your active supplier profile."
-        );
+    await loadProfiles();
+    profileFile.value = "";
+  } catch (err) {
+    profileError.textContent = err.message || "Upload failed";
+    profileError.classList.remove("hidden");
+  } finally {
+    profileUploadStatus.classList.add("hidden");
+  }
+});
 
-        const response = await fetch(`/api/profiles/${profileId}/activate`, {
-          method: "POST",
-        });
-
-        const data = await response.json();
-
-        if (response.ok) {
-          localStorage.setItem("active_profile_id", data.active_profile_id);
-          window.location.reload();
-        } else {
-          window.TenderAI.hideProcessing();
-        }
-      });
-    });
-
-    document.querySelectorAll(".delete-profile").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const profileId = button.dataset.profileId;
-        window.TenderAI.showProcessing(
-          "Removing profile…",
-          "TenderAI is deleting the selected supplier profile."
-        );
-
-        const response = await fetch(`/api/profiles/${profileId}`, {
-          method: "DELETE",
-        });
-
-        if (response.ok) {
-          const activeProfileId = localStorage.getItem("active_profile_id");
-          if (activeProfileId === profileId) {
-            localStorage.removeItem("active_profile_id");
-          }
-          window.location.reload();
-        } else {
-          window.TenderAI.hideProcessing();
-        }
-      });
-    });
-  })();
+loadProfiles();
 </script>
 {% endblock %}
