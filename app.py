@@ -21,17 +21,18 @@ from flask import (
 )
 from pypdf import PdfReader
 from sqlalchemy import Boolean, DateTime, String, Text, create_engine, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-5")
+APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-6")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
 MAX_TENDERS = int(os.getenv("MAX_TENDERS", "24"))
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///tenderai.db")
-LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "uploads")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/tenderai.db")
+LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "/tmp/uploads")
 MAX_CONTENT_LENGTH = 20 * 1024 * 1024
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
@@ -43,9 +44,6 @@ ALLOWED_PROFILE_EXTENSIONS = {"pdf"}
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-secret")
-
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 
 class Base(DeclarativeBase):
@@ -68,8 +66,43 @@ class Profile(Base):
     )
 
 
-engine = create_engine(DATABASE_URL, future=True)
-Base.metadata.create_all(engine)
+engine = None
+SessionLocal = None
+DB_INIT_ERROR = None
+
+
+def configure_database() -> None:
+    global engine, SessionLocal, DB_INIT_ERROR
+
+    if engine is not None:
+        return
+
+    db_url = DATABASE_URL
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+    try:
+        if db_url.startswith("sqlite:///"):
+            os.makedirs("/tmp", exist_ok=True)
+
+        engine = create_engine(db_url, future=True)
+        SessionLocal = sessionmaker(bind=engine, future=True)
+        Base.metadata.create_all(engine)
+        DB_INIT_ERROR = None
+    except Exception as exc:
+        DB_INIT_ERROR = str(exc)
+        engine = None
+        SessionLocal = None
+
+
+configure_database()
+
+
+def db_session() -> Session:
+    configure_database()
+    if SessionLocal is None:
+        raise RuntimeError(DB_INIT_ERROR or "Database not initialized")
+    return SessionLocal()
 
 
 def ensure_local_upload_dir() -> None:
@@ -349,156 +382,18 @@ def profile_schema() -> dict[str, Any]:
                 },
                 "required": ["main_group", "division", "core_industry", "turnover_percentage"],
             },
-            "contact_information": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "contact_type": {"type": ["string", "null"]},
-                        "is_preferred": {"type": ["boolean", "null"]},
-                        "name": {"type": ["string", "null"]},
-                        "surname": {"type": ["string", "null"]},
-                        "phone": {"type": ["string", "null"]},
-                        "email": {"type": ["string", "null"]},
-                        "website": {"type": ["string", "null"]},
-                        "communication_preference": {"type": ["string", "null"]},
-                        "is_csd_user": {"type": ["boolean", "null"]},
-                    },
-                    "required": [
-                        "contact_type", "is_preferred", "name", "surname", "phone",
-                        "email", "website", "communication_preference", "is_csd_user",
-                    ],
-                },
-            },
-            "address_information": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "address_line_1": {"type": ["string", "null"]},
-                        "address_line_2": {"type": ["string", "null"]},
-                        "suburb": {"type": ["string", "null"]},
-                        "city": {"type": ["string", "null"]},
-                        "municipality": {"type": ["string", "null"]},
-                        "province": {"type": ["string", "null"]},
-                        "country": {"type": ["string", "null"]},
-                        "postal_code": {"type": ["string", "null"]},
-                        "ward_number": {"type": ["string", "null"]},
-                    },
-                    "required": [
-                        "address_line_1", "address_line_2", "suburb", "city", "municipality",
-                        "province", "country", "postal_code", "ward_number",
-                    ],
-                },
-            },
-            "bank_information": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "verification_status": {"type": ["string", "null"]},
-                    "verification_response": {"type": ["string", "null"]},
-                },
-                "required": ["verification_status", "verification_response"],
-            },
-            "tax_information": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "income_tax_number": {"type": ["string", "null"]},
-                    "is_vat_vendor": {"type": ["boolean", "null"]},
-                    "is_registered_with_sars": {"type": ["boolean", "null"]},
-                    "tax_compliance_status": {"type": ["string", "null"]},
-                    "compliance_pin_provided": {"type": ["boolean", "null"]},
-                    "last_validation_date": {"type": ["string", "null"]},
-                },
-                "required": [
-                    "income_tax_number", "is_vat_vendor", "is_registered_with_sars",
-                    "tax_compliance_status", "compliance_pin_provided", "last_validation_date",
-                ],
-            },
-            "bbbbee_information": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "certificate_number": {"type": ["string", "null"]},
-                    "issue_date": {"type": ["string", "null"]},
-                    "expiry_date": {"type": ["string", "null"]},
-                    "verification_status": {"type": ["string", "null"]},
-                    "black_ownership_percent": {"type": ["string", "null"]},
-                    "women_ownership_percent": {"type": ["string", "null"]},
-                    "youth_ownership_percent": {"type": ["string", "null"]},
-                },
-                "required": [
-                    "certificate_number", "issue_date", "expiry_date", "verification_status",
-                    "black_ownership_percent", "women_ownership_percent", "youth_ownership_percent",
-                ],
-            },
-            "accreditations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "body": {"type": ["string", "null"]},
-                        "description": {"type": ["string", "null"]},
-                        "accreditation_number": {"type": ["string", "null"]},
-                        "issue_date": {"type": ["string", "null"]},
-                        "expiry_date": {"type": ["string", "null"]},
-                        "status": {"type": ["string", "null"]},
-                        "verification_status": {"type": ["string", "null"]},
-                    },
-                    "required": [
-                        "body", "description", "accreditation_number", "issue_date",
-                        "expiry_date", "status", "verification_status",
-                    ],
-                },
-            },
-            "directors": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "name": {"type": ["string", "null"]},
-                        "ownership_flags": {"type": "array", "items": {"type": "string"}},
-                        "youth_flag": {"type": ["boolean", "null"]},
-                        "disability_flag": {"type": ["boolean", "null"]},
-                        "veteran_flag": {"type": ["boolean", "null"]},
-                        "government_employee_flag": {"type": ["boolean", "null"]},
-                    },
-                    "required": [
-                        "name", "ownership_flags", "youth_flag", "disability_flag",
-                        "veteran_flag", "government_employee_flag",
-                    ],
-                },
-            },
-            "ownership_summary": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "black_owned": {"type": ["boolean", "null"]},
-                    "youth_owned": {"type": ["boolean", "null"]},
-                    "township_based": {"type": ["boolean", "null"]},
-                    "rural_based": {"type": ["boolean", "null"]},
-                },
-                "required": ["black_owned", "youth_owned", "township_based", "rural_based"],
-            },
+            "contact_information": {"type": "array", "items": {"type": "object"}},
+            "address_information": {"type": "array", "items": {"type": "object"}},
+            "bank_information": {"type": "object"},
+            "tax_information": {"type": "object"},
+            "bbbbee_information": {"type": "object"},
+            "accreditations": {"type": "array", "items": {"type": "object"}},
+            "directors": {"type": "array", "items": {"type": "object"}},
+            "ownership_summary": {"type": "object"},
             "commodities": {"type": "array", "items": {"type": "string"}},
             "provinces": {"type": "array", "items": {"type": "string"}},
             "keywords": {"type": "array", "items": {"type": "string"}},
-            "ai_enrichment": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "summary": {"type": ["string", "null"]},
-                    "capability_keywords": {"type": "array", "items": {"type": "string"}},
-                    "compliance_flags": {"type": "array", "items": {"type": "string"}},
-                    "risk_notes": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["summary", "capability_keywords", "compliance_flags", "risk_notes"],
-            },
+            "ai_enrichment": {"type": "object"},
         },
         "required": [
             "metadata", "supplier_identification", "industry_classification",
@@ -695,24 +590,6 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
     ]
     profile["provinces"] = [province for province in provinces if province.lower() in text_lower]
 
-    accreditation_lines = []
-    for line in lines:
-        if re.search(r"(accredit|iso|cidb|sacec|sacpcmp|nhbrc|saqa|qcto)", line, re.IGNORECASE):
-            accreditation_lines.append(line)
-
-    for line in accreditation_lines[:8]:
-        profile["accreditations"].append(
-            {
-                "body": first_match([r"(CIDB|ISO|SACEC|SACPCMP|NHBRC|SAQA|QCTO)"], line),
-                "description": line[:250],
-                "accreditation_number": first_match([r"(?:number|no\.?)\s*[:\-]?\s*([A-Z0-9\-\/]+)"], line),
-                "issue_date": None,
-                "expiry_date": None,
-                "status": "detected",
-                "verification_status": None,
-            }
-        )
-
     profile["ai_enrichment"]["summary"] = build_profile_summary_text(profile)
     profile["ai_enrichment"]["capability_keywords"] = []
     profile["ai_enrichment"]["compliance_flags"] = []
@@ -725,7 +602,6 @@ def parse_profile_pdf_text(text: str) -> dict[str, Any]:
         parsed = llm_parse_profile_pdf_text(text)
         if parsed:
             return parsed
-
     return parse_profile_pdf_text_heuristic(text)
 
 
@@ -881,34 +757,28 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
         text,
         ["80/20", "90/10", "preference point", "specific goals", "bbbee", "functionality", "evaluation criteria", "score", "points"],
     )
-
     mandatory = find_keyword_lines(
         text,
         ["must submit", "mandatory", "compulsory", "required", "failure to", "tax clearance", "csd", "cidb", "proof", "attach", "non-responsive"],
     )
-
     specifications = extract_section(
         text,
         ["scope of work", "specification", "specifications", "terms of reference", "deliverables"],
         ["special conditions", "evaluation", "briefing", "contact person", "closing date"],
     )
-
     special_conditions = extract_section(
         text,
         ["special conditions", "general conditions", "conditions of tender", "conditions"],
         ["evaluation", "briefing", "scope of work", "specification", "contact person"],
     )
-
     briefing = find_keyword_lines(
         text,
         ["briefing", "compulsory briefing", "briefing session", "site inspection", "site briefing", "clarification meeting"],
     )
-
     compliance = find_keyword_lines(
         text,
         ["tax compliance", "csd", "pin", "sbd", "declaration", "proof of registration", "bank", "iso", "cidb", "good standing"],
     )
-
     evaluation = find_keyword_lines(
         text,
         ["pppfa", "80/20", "90/10", "specific goals", "functionality", "threshold", "minimum score", "price and preference"],
@@ -1027,13 +897,6 @@ def score_fit(
     if "compulsory briefing" in " ".join(parsed_doc.get("briefing_details", [])).lower():
         risks.append("Compulsory briefing cue detected")
 
-    if "cidb" in tender_text:
-        risks.append("CIDB or construction-class compliance may be required")
-    if "csd" in tender_text:
-        readiness.append("CSD alignment likely relevant")
-    if "sbd" in tender_text:
-        risks.append("Standard bidding documents likely required")
-
     fit_score = max(5, min(95, fit_score))
 
     if fit_score >= 75:
@@ -1087,10 +950,6 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
         "tender_value": value,
         "documents": documents,
         "lots": tender.get("lots", []),
-        "parties": item.get("parties", []),
-        "awards": item.get("awards", []),
-        "contracts": item.get("contracts", []),
-        "related_processes": item.get("relatedProcesses", []),
     }
 
 
@@ -1115,12 +974,12 @@ def enrich_tender(
 
 
 def get_profile_record(profile_id: str) -> Optional[Profile]:
-    with Session(engine) as session:
+    with db_session() as session:
         return session.get(Profile, profile_id)
 
 
 def get_active_profile_record() -> Optional[Profile]:
-    with Session(engine) as session:
+    with db_session() as session:
         statement = select(Profile).where(Profile.is_active.is_(True)).order_by(Profile.uploaded_at.desc())
         return session.scalar(statement)
 
@@ -1146,16 +1005,27 @@ def home():
     except Exception:
         tenders = []
 
-    with Session(engine) as session:
-        profiles = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
+    profiles = []
+    try:
+        with db_session() as session:
+            profiles = session.scalars(
+                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
+            ).all()
+    except Exception:
+        profiles = []
 
     return render_template("home.html", tenders=tenders, profiles=profiles)
 
 
 @app.get("/profiles")
 def profiles_page():
-    with Session(engine) as session:
-        profiles = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
+    try:
+        with db_session() as session:
+            profiles = session.scalars(
+                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
+            ).all()
+    except Exception:
+        profiles = []
 
     parsed_profiles = []
     for profile in profiles:
@@ -1231,21 +1101,29 @@ def tender_detail_page(tender_id: str):
 
 @app.get("/health")
 def health():
-    return render_json_response(
-        {
-            "status": "ok",
-            "app_version": APP_VERSION,
-            "openai_configured": bool(OPENAI_API_KEY),
-            "parser_mode": PARSER_MODE,
-            "time": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    configure_database()
+    health_payload = {
+        "status": "ok" if DB_INIT_ERROR is None else "degraded",
+        "app_version": APP_VERSION,
+        "openai_configured": bool(OPENAI_API_KEY),
+        "parser_mode": PARSER_MODE,
+        "database_url": DATABASE_URL,
+        "database_error": DB_INIT_ERROR,
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    status_code = 200 if DB_INIT_ERROR is None else 200
+    return render_json_response(health_payload, status_code)
 
 
 @app.get("/api/profiles")
 def api_profiles_list():
-    with Session(engine) as session:
-        profiles = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
+    try:
+        with db_session() as session:
+            profiles = session.scalars(
+                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
+            ).all()
+    except Exception as exc:
+        return render_json_response({"error": str(exc)}, 500)
 
     payload = []
     for profile in profiles:
@@ -1287,20 +1165,23 @@ def api_profiles_upload():
     parsed = parse_profile_pdf_text(profile_text)
     summary = profile_summary_for_ui(parsed)
 
-    with Session(engine) as session:
-        has_any_profile = session.scalar(select(Profile.id).limit(1)) is not None
+    try:
+        with db_session() as session:
+            has_any_profile = session.scalar(select(Profile.id).limit(1)) is not None
 
-        record = Profile(
-            id=profile_id,
-            file_name=safe_name,
-            company_name=summary.get("company_name"),
-            profile_text=profile_text,
-            parsed_json=json.dumps(parsed),
-            summary_json=json.dumps(summary),
-            is_active=not has_any_profile,
-        )
-        session.add(record)
-        session.commit()
+            record = Profile(
+                id=profile_id,
+                file_name=safe_name,
+                company_name=summary.get("company_name"),
+                profile_text=profile_text,
+                parsed_json=json.dumps(parsed),
+                summary_json=json.dumps(summary),
+                is_active=not has_any_profile,
+            )
+            session.add(record)
+            session.commit()
+    except Exception as exc:
+        return render_json_response({"error": str(exc)}, 500)
 
     return render_json_response(
         {
@@ -1317,36 +1198,42 @@ def api_profiles_upload():
 
 @app.post("/api/profiles/<profile_id>/activate")
 def api_profiles_activate(profile_id: str):
-    with Session(engine) as session:
-        target = session.get(Profile, profile_id)
-        if not target:
-            return render_json_response({"error": "Profile not found"}, 404)
+    try:
+        with db_session() as session:
+            target = session.get(Profile, profile_id)
+            if not target:
+                return render_json_response({"error": "Profile not found"}, 404)
 
-        all_profiles = session.scalars(select(Profile)).all()
-        for profile in all_profiles:
-            profile.is_active = profile.id == profile_id
+            all_profiles = session.scalars(select(Profile)).all()
+            for profile in all_profiles:
+                profile.is_active = profile.id == profile_id
 
-        session.commit()
+            session.commit()
+    except Exception as exc:
+        return render_json_response({"error": str(exc)}, 500)
 
     return render_json_response({"status": "ok", "active_profile_id": profile_id})
 
 
 @app.delete("/api/profiles/<profile_id>")
 def api_profiles_delete(profile_id: str):
-    with Session(engine) as session:
-        target = session.get(Profile, profile_id)
-        if not target:
-            return render_json_response({"error": "Profile not found"}, 404)
+    try:
+        with db_session() as session:
+            target = session.get(Profile, profile_id)
+            if not target:
+                return render_json_response({"error": "Profile not found"}, 404)
 
-        was_active = target.is_active
-        session.delete(target)
-        session.commit()
+            was_active = target.is_active
+            session.delete(target)
+            session.commit()
 
-        if was_active:
-            next_profile = session.scalar(select(Profile).order_by(Profile.uploaded_at.desc()))
-            if next_profile:
-                next_profile.is_active = True
-                session.commit()
+            if was_active:
+                next_profile = session.scalar(select(Profile).order_by(Profile.uploaded_at.desc()))
+                if next_profile:
+                    next_profile.is_active = True
+                    session.commit()
+    except Exception as exc:
+        return render_json_response({"error": str(exc)}, 500)
 
     return render_json_response({"status": "deleted", "id": profile_id})
 
