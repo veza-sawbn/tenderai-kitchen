@@ -4,12 +4,21 @@ runtime: python311
 build:
   commands:
     build:
-      - echo "build step"
+      - pip3 install -r requirements.txt
 
 run:
   runtime-version: 3.11
-  pre-run:
-    - pip3 install -r requirements.txt
-  command: gunicorn --bind 0.0.0.0:8080 app:app
+  command: gunicorn app:app --bind 0.0.0.0:8080
   network:
     port: 8080
+  env:
+    - name: OPENAI_PARSER_MODEL
+      value: "gpt-4o-mini"
+    - name: PARSER_MODE
+      value: "auto"
+    - name: APP_VERSION
+      value: "20260319-beta-1"
+  secrets:
+    - name: OPENAI_API_KEY
+      value-from: arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ
+      
