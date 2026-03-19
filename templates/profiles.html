@@ -1,154 +1,147 @@
 {% extends "base.html" %}
+{% set title = "Profiles · TenderAI V3" %}
 
 {% block content %}
-<section class="page-section">
-  <div class="section-head full-width">
-    <div>
-      <h2>Business profiles</h2>
-    </div>
+<section class="section shell shell-wide">
+  <div class="section-head">
+    <h1>Supplier profiles</h1>
+    <p>Upload and manage South African supplier or CSD-style profile PDFs.</p>
   </div>
 
-  <div class="profiles-layout">
-    <div class="profile-upload-panel">
-      <label for="profile_upload">Upload company profile PDF</label>
-      <input type="file" id="profile_upload" accept=".pdf">
-      <button id="uploadProfileBtn" class="primary-btn" type="button">Upload profile</button>
-    </div>
+  <div class="upload-card card">
+    <form id="upload-form" enctype="multipart/form-data">
+      <label class="upload-input">
+        <span>Upload profile PDF</span>
+        <input type="file" name="file" accept="application/pdf">
+      </label>
+      <button class="btn btn-primary" type="submit">Upload profile</button>
+    </form>
+    <div id="upload-status" class="upload-status"></div>
+  </div>
 
-    <div id="profilesList" class="profiles-grid">
-      <div class="empty-state">No profiles uploaded yet.</div>
-    </div>
+  <div class="profile-grid">
+    {% for profile in profiles %}
+      <article class="card profile-card">
+        <div class="meta-row">
+          {% if profile.is_active %}
+            <span class="meta-pill active">Active</span>
+          {% else %}
+            <span class="meta-pill">Stored</span>
+          {% endif %}
+          <span class="meta-muted">{{ profile.uploaded_at[:10] }}</span>
+        </div>
+
+        <h2>{{ profile.summary.company_name or profile.file_name }}</h2>
+
+        <div class="profile-block">
+          <h3>B-BBEE</h3>
+          <p>
+            {{ profile.summary.bbbee_information.verification_status or "Not clearly detected" }}
+          </p>
+        </div>
+
+        <div class="profile-block">
+          <h3>Industry main groups</h3>
+          <p>{{ profile.summary.industry_main_groups | join(", ") or "Not clearly detected" }}</p>
+        </div>
+
+        <div class="profile-block">
+          <h3>Industry divisions</h3>
+          <p>{{ profile.summary.industry_divisions | join(", ") or "Not clearly detected" }}</p>
+        </div>
+
+        <div class="profile-block">
+          <h3>Accreditations</h3>
+          {% if profile.summary.accreditations %}
+            <ul class="clean-list">
+              {% for accreditation in profile.summary.accreditations[:5] %}
+                <li>
+                  <strong>{{ accreditation.body or "Detected" }}</strong>
+                  <span>{{ accreditation.description }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p>No accreditations confidently extracted.</p>
+          {% endif %}
+        </div>
+
+        <div class="card-actions">
+          <button class="btn btn-secondary activate-profile" data-profile-id="{{ profile.id }}">
+            Set active
+          </button>
+          <button class="btn btn-ghost delete-profile" data-profile-id="{{ profile.id }}">
+            Delete
+          </button>
+        </div>
+      </article>
+    {% else %}
+      <div class="card empty-card">
+        <h2>No profiles yet</h2>
+        <p>Upload a supplier profile PDF to enable tender-fit analysis.</p>
+      </div>
+    {% endfor %}
   </div>
 </section>
-{% endblock %}
 
-{% block scripts %}
 <script>
-  let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
+  const uploadForm = document.getElementById("upload-form");
+  const uploadStatus = document.getElementById("upload-status");
 
-  function renderAccreditations(accreditations) {
-    if (!accreditations || !accreditations.length) {
-      return '<div class="muted-block">No accreditation information detected.</div>';
-    }
+  if (uploadForm) {
+    uploadForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      uploadStatus.textContent = "Uploading and parsing profile...";
+      const formData = new FormData(uploadForm);
 
-    return accreditations.map(item => `
-      <div class="mini-info-row">
-        <div><strong>Status</strong><br>${item.status || "Unknown"}</div>
-        <div><strong>Description</strong><br>${item.description || "Unknown"}</div>
-        <div><strong>Expiration</strong><br>${item.expiration_date || "Unknown"}</div>
-      </div>
-    `).join("");
-  }
-
-  async function loadProfiles() {
-    const res = await fetch("/api/profiles");
-    const data = await res.json();
-    const profiles = data.profiles || [];
-    const wrap = document.getElementById("profilesList");
-
-    if (!profiles.length) {
-      wrap.innerHTML = '<div class="empty-state">No profiles uploaded yet.</div>';
-      return;
-    }
-
-    wrap.innerHTML = profiles.map(profile => `
-      <div class="profile-card ${profile.id === activeProfileId ? "active" : ""}">
-        <div class="profile-card-header">
-          <div>
-            <div class="profile-name">${profile.name}</div>
-            <div class="profile-company">${profile.company_name || "Unknown company"}</div>
-          </div>
-          <div class="mini-badge">${profile.id === activeProfileId ? "Active" : "Available"}</div>
-        </div>
-
-        <div class="profile-grid">
-          <div><strong>Supplier active status</strong><br>${profile.supplier_active_status}</div>
-          <div><strong>Supplier sub-type</strong><br>${profile.supplier_sub_type}</div>
-          <div><strong>Country of origin</strong><br>${profile.country_of_origin}</div>
-          <div><strong>Government employee</strong><br>${profile.government_employee}</div>
-          <div><strong>Overall tax status</strong><br>${profile.overall_tax_status}</div>
-          <div><strong>SARS registration</strong><br>${profile.sars_registration_status}</div>
-          <div><strong>Industry classification</strong><br>${profile.industry_classification}</div>
-          <div><strong>B-BBEE</strong><br>${profile.bbbee_information}</div>
-        </div>
-
-        <div class="profile-section">
-          <h4>Main groups</h4>
-          <div class="chip-list">
-            ${(profile.industry_main_groups || []).map(item => `<span class="chip">${item}</span>`).join("") || '<span class="chip">None detected</span>'}
-          </div>
-        </div>
-
-        <div class="profile-section">
-          <h4>Divisions</h4>
-          <div class="chip-list">
-            ${(profile.industry_divisions || []).map(item => `<span class="chip">${item}</span>`).join("") || '<span class="chip">None detected</span>'}
-          </div>
-        </div>
-
-        <div class="profile-section">
-          <h4>B-BBEE details</h4>
-          <div class="chip-list">
-            ${(profile.bbbee_details || []).map(item => `<span class="chip">${item}</span>`).join("") || '<span class="chip">None detected</span>'}
-          </div>
-        </div>
-
-        <div class="profile-section">
-          <h4>Accreditations</h4>
-          ${renderAccreditations(profile.accreditations || [])}
-        </div>
-
-        <div class="profile-actions">
-          <button class="primary-btn" type="button" onclick="setActiveProfile('${profile.id}')">Use this profile</button>
-          <button class="secondary-btn" type="button" onclick="deleteProfile('${profile.id}')">Delete</button>
-        </div>
-      </div>
-    `).join("");
-  }
-
-  async function uploadProfile() {
-    const file = document.getElementById("profile_upload").files[0];
-    if (!file) return;
-
-    setLoading(true, "Parsing supplier profile...");
-
-    try {
-      const formData = new FormData();
-      formData.append("profile_pdf", file);
-
-      const res = await fetch("/api/profiles", {
+      const response = await fetch("/api/profiles", {
         method: "POST",
-        body: formData
+        body: formData,
       });
 
-      const data = await res.json();
-      if (data.status === "ok") {
-        document.getElementById("profile_upload").value = "";
-        await loadProfiles();
-      } else {
-        alert(data.error || "Upload failed");
+      const data = await response.json();
+
+      if (!response.ok) {
+        uploadStatus.textContent = data.error || "Upload failed";
+        return;
       }
-    } finally {
-      setLoading(false);
-    }
+
+      localStorage.setItem("active_profile_id", data.id);
+      uploadStatus.textContent = "Profile uploaded successfully.";
+      window.location.reload();
+    });
   }
 
-  function setActiveProfile(profileId) {
-    activeProfileId = profileId;
-    localStorage.setItem("tenderai_active_profile", profileId);
-    loadProfiles();
-  }
+  document.querySelectorAll(".activate-profile").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const profileId = button.dataset.profileId;
+      const response = await fetch(`/api/profiles/${profileId}/activate`, {
+        method: "POST",
+      });
+      const data = await response.json();
 
-  async function deleteProfile(profileId) {
-    await fetch(`/api/profiles/${profileId}`, { method: "DELETE" });
-    if (activeProfileId === profileId) {
-      activeProfileId = "";
-      localStorage.removeItem("tenderai_active_profile");
-    }
-    loadProfiles();
-  }
+      if (response.ok) {
+        localStorage.setItem("active_profile_id", data.active_profile_id);
+        window.location.reload();
+      }
+    });
+  });
 
-  document.getElementById("uploadProfileBtn").addEventListener("click", uploadProfile);
-  loadProfiles();
+  document.querySelectorAll(".delete-profile").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const profileId = button.dataset.profileId;
+      const response = await fetch(`/api/profiles/${profileId}`, {
+        method: "DELETE",
+      });
+
+      if (response.ok) {
+        const activeProfileId = localStorage.getItem("active_profile_id");
+        if (activeProfileId === profileId) {
+          localStorage.removeItem("active_profile_id");
+        }
+        window.location.reload();
+      }
+    });
+  });
 </script>
 {% endblock %}
