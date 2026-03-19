@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover
 # Config
 # -----------------------------------------------------------------------------
 
-APP_VERSION <- os.getenv("APP_VERSION", "20260319-1")
+APP_VERSION = os.getenv("APP_VERSION", "20260319-2")
 ETENDERS_BASE_URL = os.getenv(
     "ETENDERS_BASE_URL",
     "https://ocds-api.etenders.gov.za",
