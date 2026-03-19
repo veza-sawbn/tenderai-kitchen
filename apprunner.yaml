@@ -20,5 +20,5 @@ run:
       value: "20260319-beta-1"
   secrets:
     - name: OPENAI_API_KEY
-      value-from: arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ
+      value-from: "arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ"
       
