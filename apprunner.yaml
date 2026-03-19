@@ -4,20 +4,25 @@ runtime: python311
 build:
   commands:
     build:
-      - python -m pip install --upgrade pip
-      - python -m pip install -r requirements.txt
+      - python3 -m pip install --upgrade pip
+      - pip3 install -r requirements.txt
 
 run:
   runtime-version: 3.11
-  command: python -m gunicorn app:app --bind 0.0.0.0:8080
+  command: python3 -m gunicorn app:app --bind 0.0.0.0:8080
   network:
     port: 8080
   env:
-    - name: OPENAI_API_KEY
-      value: "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"
     - name: OPENAI_PARSER_MODEL
       value: "gpt-4o-mini"
     - name: PARSER_MODE
       value: "auto"
     - name: APP_VERSION
-      value: "20260319-beta-3"
+      value: "20260319-beta-5"
+    - name: FLASK_SECRET_KEY
+      value: "replace-this-with-a-real-secret"
+    - name: DATABASE_URL
+      value: "sqlite:///tenderai.db"
+  secrets:
+    - name: OPENAI_API_KEY
+      value-from: "arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ"
