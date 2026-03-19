@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-orb"></div>
+  <div class="hero-copy">
+    <p class="eyebrow">South African Procurement Intelligence</p>
+    <h1 class="hero-title">TenderAI Beta</h1>
+    <p class="hero-subtitle">
+      Parse tender documents, parse supplier capability, score fit, flag procurement risk, and assess strategic readiness.
+    </p>
+
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="{{ url_for('profiles_page') }}">Upload Supplier Profile</a>
+      <a class="btn btn-secondary" href="{{ url_for('tenders_page') }}">View Live Tenders</a>
+    </div>
+  </div>
+</section>
+{% endblock %}
