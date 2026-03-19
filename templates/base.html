@@ -1,42 +1,46 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>TenderAI</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v=20260318-3">
-</head>
-<body>
-  <div class="loading-overlay" id="loadingOverlay">
-    <div class="loading-modal">
-      <div class="loading-orb"></div>
-      <div class="loading-title">TenderAI is analyzing</div>
-      <div class="loading-step" id="loadingStepText">Reading supplier profile and scanning tender releases...</div>
-    </div>
-  </div>
+  <head>
+    <meta charset="utf-8">
+    <title>{{ title or "TenderAI V3" }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#070b14">
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ app_version }}">
+  </head>
+  <body>
+    <div class="ambient ambient-cyan"></div>
+    <div class="ambient ambient-purple"></div>
 
-  <header class="site-header">
-    <div class="brand" onclick="window.location='/'">TenderAI V3</div>
-    <nav class="main-nav">
-      <a href="/">Home</a>
-      <a href="/tenders">Insights</a>
-      <a href="/tenders">Tenders</a>
-      <a href="/profiles">Profiles</a>
-    </nav>
-    <div class="profile-icon" title="Profile">◯</div>
-  </header>
+    <header class="site-header">
+      <a class="brand" href="{{ url_for('home') }}">
+        <span class="brand-mark"></span>
+        <span>TenderAI V3</span>
+      </a>
 
-  {% block content %}{% endblock %}
+      <nav class="site-nav">
+        <a href="{{ url_for('home') }}">Home</a>
+        <a href="{{ url_for('profiles_page') }}">Profiles</a>
+        <a href="{{ url_for('tenders_page') }}">Tenders</a>
+      </nav>
+    </header>
 
-  <script>
-    function setLoading(show, message) {
-      const overlay = document.getElementById("loadingOverlay");
-      const text = document.getElementById("loadingStepText");
-      overlay.style.display = show ? "flex" : "none";
-      if (message) text.textContent = message;
-    }
-  </script>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <section class="flash-stack shell">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
 
-  {% block scripts %}{% endblock %}
-</body>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer shell">
+      <div>Build {{ app_version }}</div>
+      <div>/health available</div>
+    </footer>
+  </body>
 </html>
