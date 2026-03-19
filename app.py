@@ -1,10 +1,8 @@
-print("=== TenderAI Boot Starting ===")
-print(f"APP_VERSION: {APP_VERSION}")
-print(f"OPENAI KEY PRESENT: {bool(OPENAI_API_KEY)}")
 import io
 import json
 import os
 import re
+import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -24,16 +22,15 @@ from flask import (
 )
 from pypdf import PdfReader
 from sqlalchemy import Boolean, DateTime, String, Text, create_engine, select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-6")
+APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-11")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
-MAX_TENDERS = int(os.getenv("MAX_TENDERS", "24"))
+MAX_TENDERS = int(os.getenv("MAX_TENDERS", "20"))
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/tenderai.db")
 LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "/tmp/uploads")
 MAX_CONTENT_LENGTH = 20 * 1024 * 1024
@@ -43,6 +40,11 @@ OPENAI_PARSER_MODEL = os.getenv("OPENAI_PARSER_MODEL", "gpt-4o-mini").strip()
 PARSER_MODE = os.getenv("PARSER_MODE", "auto").strip().lower()
 
 ALLOWED_PROFILE_EXTENSIONS = {"pdf"}
+
+print("=== TenderAI Boot Starting ===")
+print(f"APP_VERSION={APP_VERSION}")
+print(f"OPENAI_CONFIGURED={bool(OPENAI_API_KEY)}")
+print(f"DATABASE_URL={DATABASE_URL}")
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
@@ -80,25 +82,22 @@ def configure_database() -> None:
     if engine is not None:
         return
 
-    db_url = DATABASE_URL
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-
     try:
-        if db_url.startswith("sqlite:///"):
+        if DATABASE_URL.startswith("sqlite:////tmp/"):
             os.makedirs("/tmp", exist_ok=True)
 
-        engine = create_engine(db_url, future=True)
+        connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+        engine = create_engine(DATABASE_URL, future=True, connect_args=connect_args)
         SessionLocal = sessionmaker(bind=engine, future=True)
         Base.metadata.create_all(engine)
         DB_INIT_ERROR = None
+        print("Database initialized successfully")
     except Exception as exc:
         DB_INIT_ERROR = str(exc)
         engine = None
         SessionLocal = None
-
-
-configure_database()
+        print(f"Database initialization failed: {DB_INIT_ERROR}")
+        traceback.print_exc()
 
 
 def db_session() -> Session:
@@ -106,6 +105,9 @@ def db_session() -> Session:
     if SessionLocal is None:
         raise RuntimeError(DB_INIT_ERROR or "Database not initialized")
     return SessionLocal()
+
+
+configure_database()
 
 
 def ensure_local_upload_dir() -> None:
@@ -186,6 +188,7 @@ def extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
                 pages.append(text)
         return normalize_whitespace("\n\n".join(pages))
     except Exception:
+        traceback.print_exc()
         return ""
 
 
@@ -203,6 +206,7 @@ def download_pdf_text_from_url(url: str) -> str:
 
         return normalize_whitespace(response.text)
     except Exception:
+        traceback.print_exc()
         return ""
 
 
@@ -215,6 +219,7 @@ def openai_chat_json_schema(
     temperature: float = 0.1,
 ) -> Optional[dict[str, Any]]:
     if not OPENAI_API_KEY:
+        print("OpenAI key not configured")
         return None
 
     payload = {
@@ -246,11 +251,19 @@ def openai_chat_json_schema(
             json=payload,
             timeout=90,
         )
-        response.raise_for_status()
+
+        if not response.ok:
+            print("OpenAI parser request failed")
+            print(f"Status: {response.status_code}")
+            print(response.text[:1200])
+            return None
+
         data = response.json()
         content = data["choices"][0]["message"]["content"]
         return json.loads(content)
     except Exception:
+        print("OpenAI parser exception")
+        traceback.print_exc()
         return None
 
 
@@ -347,7 +360,7 @@ def profile_schema() -> dict[str, Any]:
             },
             "supplier_identification": {
                 "type": "object",
-                "additionalProperties": False,
+                "additionalProperties": True,
                 "properties": {
                     "supplier_number": {"type": ["string", "null"]},
                     "legal_name": {"type": ["string", "null"]},
@@ -376,7 +389,7 @@ def profile_schema() -> dict[str, Any]:
             },
             "industry_classification": {
                 "type": "object",
-                "additionalProperties": False,
+                "additionalProperties": True,
                 "properties": {
                     "main_group": {"type": "array", "items": {"type": "string"}},
                     "division": {"type": "array", "items": {"type": "string"}},
@@ -592,7 +605,6 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
         "Mpumalanga", "Northern Cape", "North West", "Western Cape",
     ]
     profile["provinces"] = [province for province in provinces if province.lower() in text_lower]
-
     profile["ai_enrichment"]["summary"] = build_profile_summary_text(profile)
     profile["ai_enrichment"]["capability_keywords"] = []
     profile["ai_enrichment"]["compliance_flags"] = []
@@ -709,10 +721,6 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
             score += 5
         if "specification" in title or "terms of reference" in title:
             score += 5
-        if "advert" in title:
-            score -= 2
-        if "notice" in title:
-            score -= 1
 
         scored.append((score, doc))
 
@@ -756,45 +764,22 @@ def find_keyword_lines(text: str, keywords: list[str], limit: int = 12) -> list[
 
 
 def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
-    scoring = find_keyword_lines(
-        text,
-        ["80/20", "90/10", "preference point", "specific goals", "bbbee", "functionality", "evaluation criteria", "score", "points"],
-    )
-    mandatory = find_keyword_lines(
-        text,
-        ["must submit", "mandatory", "compulsory", "required", "failure to", "tax clearance", "csd", "cidb", "proof", "attach", "non-responsive"],
-    )
-    specifications = extract_section(
-        text,
-        ["scope of work", "specification", "specifications", "terms of reference", "deliverables"],
-        ["special conditions", "evaluation", "briefing", "contact person", "closing date"],
-    )
-    special_conditions = extract_section(
-        text,
-        ["special conditions", "general conditions", "conditions of tender", "conditions"],
-        ["evaluation", "briefing", "scope of work", "specification", "contact person"],
-    )
-    briefing = find_keyword_lines(
-        text,
-        ["briefing", "compulsory briefing", "briefing session", "site inspection", "site briefing", "clarification meeting"],
-    )
-    compliance = find_keyword_lines(
-        text,
-        ["tax compliance", "csd", "pin", "sbd", "declaration", "proof of registration", "bank", "iso", "cidb", "good standing"],
-    )
-    evaluation = find_keyword_lines(
-        text,
-        ["pppfa", "80/20", "90/10", "specific goals", "functionality", "threshold", "minimum score", "price and preference"],
-    )
-
     return {
-        "scoring_criteria": scoring,
-        "mandatory_requirements": mandatory,
-        "specifications_scope": specifications,
-        "special_conditions": special_conditions,
-        "briefing_details": briefing,
-        "compliance_cues": compliance,
-        "evaluation_cues": evaluation,
+        "scoring_criteria": find_keyword_lines(text, ["80/20", "90/10", "functionality", "points"]),
+        "mandatory_requirements": find_keyword_lines(text, ["must submit", "mandatory", "required", "csd", "cidb", "tax"]),
+        "specifications_scope": extract_section(
+            text,
+            ["scope of work", "specification", "specifications", "terms of reference", "deliverables"],
+            ["special conditions", "evaluation", "briefing", "contact person", "closing date"],
+        ),
+        "special_conditions": extract_section(
+            text,
+            ["special conditions", "conditions of tender", "conditions"],
+            ["evaluation", "briefing", "scope of work", "specification", "contact person"],
+        ),
+        "briefing_details": find_keyword_lines(text, ["briefing", "site inspection", "clarification meeting"]),
+        "compliance_cues": find_keyword_lines(text, ["tax compliance", "csd", "pin", "sbd", "declaration"]),
+        "evaluation_cues": find_keyword_lines(text, ["pppfa", "80/20", "90/10", "specific goals", "functionality"]),
         "confidence": 0.46,
     }
 
@@ -865,6 +850,7 @@ def score_fit(
         profile_keywords = infer_profile_keywords(profile_data)
         overlap = sorted({token for token in profile_keywords if len(token) > 3 and token in tender_text})
         fit_score += min(len(overlap) * 4, 24)
+
         if overlap:
             reasons.append(f"Capability overlap: {', '.join(overlap[:6])}")
 
@@ -875,31 +861,6 @@ def score_fit(
         else:
             risks.append("Tax compliance status not clearly confirmed in profile")
 
-        bbbee_status = (profile_data.get("bbbbee_information", {}).get("verification_status") or "").lower()
-        if bbbee_status:
-            readiness.append(f"B-BBEE signal: {bbbee_status}")
-
-        profile_provinces = set(profile_data.get("provinces", []))
-        tender_province = tender.get("province")
-        if tender_province and tender_province in profile_provinces:
-            fit_score += 6
-            reasons.append(f"Province match: {tender_province}")
-
-    mandatory_requirements = parsed_doc.get("mandatory_requirements", [])
-    if mandatory_requirements:
-        risks.append("Mandatory submission items detected in tender document")
-
-    evaluation_cues = " ".join(parsed_doc.get("evaluation_cues", [])).lower()
-    if "90/10" in evaluation_cues:
-        competitiveness = "Likely stronger weight on price, with preference contribution"
-    elif "80/20" in evaluation_cues:
-        competitiveness = "Likely balanced SME-accessible preference framework"
-    elif "functionality" in evaluation_cues:
-        competitiveness = "Likely prequalification through functionality threshold"
-
-    if "compulsory briefing" in " ".join(parsed_doc.get("briefing_details", [])).lower():
-        risks.append("Compulsory briefing cue detected")
-
     fit_score = max(5, min(95, fit_score))
 
     if fit_score >= 75:
@@ -909,19 +870,13 @@ def score_fit(
     else:
         fit_band = "Low fit"
 
-    investment = "Medium"
-    if len(mandatory_requirements) >= 8:
-        investment = "High"
-    elif len(mandatory_requirements) <= 2:
-        investment = "Low"
-
     return {
         "fit_score": fit_score,
         "fit_band": fit_band,
         "fit_reasons": reasons[:5],
         "risk_flags": risks[:6],
         "competitiveness": competitiveness,
-        "execution_investment": investment,
+        "execution_investment": "Medium",
         "strategic_readiness": readiness[:6],
     }
 
@@ -929,7 +884,7 @@ def score_fit(
 def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
     tender = item.get("tender", {}) or {}
     buyer = item.get("buyer", {}) or {}
-    documents = tender.get("documents", []) or []
+    documents = tender.get("documents", []) or {}
     tender_period = tender.get("tenderPeriod", {}) or {}
     value = tender.get("value", {}) or {}
 
@@ -951,8 +906,7 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
         "buyer_name": buyer.get("name"),
         "tender_period": tender_period,
         "tender_value": value,
-        "documents": documents,
-        "lots": tender.get("lots", []),
+        "documents": documents if isinstance(documents, list) else [],
     }
 
 
@@ -996,18 +950,32 @@ def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
 
 @app.get("/")
 def home():
-    today = datetime.now(timezone.utc).date()
-    date_from = (today - timedelta(days=7)).isoformat()
-    date_to = (today + timedelta(days=30)).isoformat()
-
     tenders = []
+    profiles = []
+
     try:
+        today = datetime.now(timezone.utc).date()
+        date_from = (today - timedelta(days=7)).isoformat()
+        date_to = (today + timedelta(days=30)).isoformat()
         releases = fetch_tenders(date_from=date_from, date_to=date_to, page_number=1, page_size=10)
         for item in releases[:8]:
             tenders.append(normalize_tender_release(item))
     except Exception:
-        tenders = []
+        traceback.print_exc()
 
+    try:
+        with db_session() as session:
+            profiles = session.scalars(
+                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
+            ).all()
+    except Exception:
+        traceback.print_exc()
+
+    return render_template("home.html", tenders=tenders, profiles=profiles)
+
+
+@app.get("/profiles")
+def profiles_page():
     profiles = []
     try:
         with db_session() as session:
@@ -1015,20 +983,7 @@ def home():
                 select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
             ).all()
     except Exception:
-        profiles = []
-
-    return render_template("home.html", tenders=tenders, profiles=profiles)
-
-
-@app.get("/profiles")
-def profiles_page():
-    try:
-        with db_session() as session:
-            profiles = session.scalars(
-                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
-            ).all()
-    except Exception:
-        profiles = []
+        traceback.print_exc()
 
     parsed_profiles = []
     for profile in profiles:
@@ -1067,6 +1022,7 @@ def tenders_page():
         for item in releases[:MAX_TENDERS]:
             enriched.append(enrich_tender(item, profile=profile_data, prompt=prompt))
     except Exception as exc:
+        traceback.print_exc()
         error_message = str(exc)
 
     return render_template(
@@ -1105,17 +1061,16 @@ def tender_detail_page(tender_id: str):
 @app.get("/health")
 def health():
     configure_database()
-    health_payload = {
-        "status": "ok" if DB_INIT_ERROR is None else "degraded",
-        "app_version": APP_VERSION,
-        "openai_configured": bool(OPENAI_API_KEY),
-        "parser_mode": PARSER_MODE,
-        "database_url": DATABASE_URL,
-        "database_error": DB_INIT_ERROR,
-        "time": datetime.now(timezone.utc).isoformat(),
-    }
-    status_code = 200 if DB_INIT_ERROR is None else 200
-    return render_json_response(health_payload, status_code)
+    return render_json_response(
+        {
+            "status": "ok" if DB_INIT_ERROR is None else "degraded",
+            "app_version": APP_VERSION,
+            "openai_configured": bool(OPENAI_API_KEY),
+            "parser_mode": PARSER_MODE,
+            "database_error": DB_INIT_ERROR,
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 @app.get("/api/profiles")
@@ -1171,7 +1126,6 @@ def api_profiles_upload():
     try:
         with db_session() as session:
             has_any_profile = session.scalar(select(Profile.id).limit(1)) is not None
-
             record = Profile(
                 id=profile_id,
                 file_name=safe_name,
@@ -1184,6 +1138,7 @@ def api_profiles_upload():
             session.add(record)
             session.commit()
     except Exception as exc:
+        traceback.print_exc()
         return render_json_response({"error": str(exc)}, 500)
 
     return render_json_response(
@@ -1213,6 +1168,7 @@ def api_profiles_activate(profile_id: str):
 
             session.commit()
     except Exception as exc:
+        traceback.print_exc()
         return render_json_response({"error": str(exc)}, 500)
 
     return render_json_response({"status": "ok", "active_profile_id": profile_id})
@@ -1236,6 +1192,7 @@ def api_profiles_delete(profile_id: str):
                     next_profile.is_active = True
                     session.commit()
     except Exception as exc:
+        traceback.print_exc()
         return render_json_response({"error": str(exc)}, 500)
 
     return render_json_response({"status": "deleted", "id": profile_id})
@@ -1311,19 +1268,20 @@ def api_advise():
     profile = payload.get("profile") or {}
     parsed_doc = tender.get("parsed_document") or {}
 
-    advice = {
-        "summary": "Prioritize compliance completeness, capability proof, and evaluation-fit evidence.",
-        "actions": [
-            "Validate all mandatory submission items against the tender document.",
-            "Prepare a response structure aligned to specifications and scope headings.",
-            "Surface tax, CSD, and B-BBEE evidence early in the submission pack.",
-            "Address functionality thresholds and scoring cues explicitly where detected.",
-            "Confirm briefing attendance requirements and date constraints before bid/no-bid.",
-        ],
-        "profile_signals": profile.get("ai_enrichment", {}).get("compliance_flags", []),
-        "tender_signals": parsed_doc.get("evaluation_cues", []),
-    }
-    return render_json_response(advice)
+    return render_json_response(
+        {
+            "summary": "Prioritize compliance completeness, capability proof, and evaluation-fit evidence.",
+            "actions": [
+                "Validate all mandatory submission items against the tender document.",
+                "Prepare a response structure aligned to specifications and scope headings.",
+                "Surface tax, CSD, and B-BBEE evidence early in the submission pack.",
+                "Address functionality thresholds and scoring cues explicitly where detected.",
+                "Confirm briefing attendance requirements and date constraints before bid/no-bid.",
+            ],
+            "profile_signals": profile.get("ai_enrichment", {}).get("compliance_flags", []),
+            "tender_signals": parsed_doc.get("evaluation_cues", []),
+        }
+    )
 
 
 @app.post("/api/service-request")
@@ -1341,10 +1299,5 @@ def api_service_request():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
-    print(f"Starting TenderAI on port {port}...")
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False
-    )
+    print(f"Starting TenderAI on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
