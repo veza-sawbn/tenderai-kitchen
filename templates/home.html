@@ -1,217 +1,81 @@
 {% extends "base.html" %}
+{% set title = "TenderAI V3" %}
 
 {% block content %}
-<section class="hero">
-  <div class="hero-grid"></div>
+<section class="hero shell shell-wide">
   <div class="hero-inner">
-    <div class="hero-center">
-      <div class="prompt-shell">
-        <textarea id="home_prompt" class="hero-prompt" placeholder="Ask TenderAI…"></textarea>
+    <div class="eyebrow">South African procurement intelligence</div>
+    <h1>Ask TenderAI…</h1>
+    <p class="hero-copy">
+      Analyze live tenders against your business profile using tender documents,
+      procurement signals, and compliance cues.
+    </p>
 
-        <div class="hero-controls">
-          <select id="home_profile_select"></select>
-          <input type="date" id="home_date_from" value="2026-01-01">
-          <input type="date" id="home_date_to" value="2026-03-17">
-          <button id="runPromptBtn" class="primary-btn" type="button">Analyze</button>
-        </div>
-
-        <div class="prompt-examples">
-          <button type="button" class="example-chip" data-prompt="Find tenders in construction in Gauteng">Find tenders in construction in Gauteng</button>
-          <button type="button" class="example-chip" data-prompt="Estimate cost for this tender">Estimate cost for this tender</button>
-          <button type="button" class="example-chip" data-prompt="Who are competitors on this bid?">Who are competitors on this bid?</button>
-        </div>
+    <form class="prompt-panel" action="{{ url_for('tenders_page') }}" method="get">
+      <div class="prompt-row">
+        <textarea
+          name="prompt"
+          rows="3"
+          placeholder="Compare our profile to current IT, facilities, engineering, cleaning, training, or professional services tenders. Highlight risk, fit, likely competitiveness, and mandatory requirements."
+        ></textarea>
       </div>
+
+      <div class="prompt-actions">
+        <label class="select-wrap">
+          <span>Profile</span>
+          <select name="profile_id">
+            <option value="">Use active profile</option>
+            {% for profile in profiles %}
+              <option value="{{ profile.id }}">
+                {{ profile.company_name or profile.file_name }}{% if profile.is_active %} · active{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <button class="btn btn-primary" type="submit">Analyze</button>
+      </div>
+    </form>
+
+    <div class="orb-loader" aria-hidden="true">
+      <span></span>
     </div>
   </div>
 </section>
 
-<section class="live-insights">
-  <div class="section-head full-width">
-    <div>
-      <h2>Live tender insights</h2>
-    </div>
+<section class="section shell shell-wide">
+  <div class="section-head">
+    <h2>Currently advertised opportunities</h2>
+    <a class="text-link" href="{{ url_for('tenders_page') }}">Open tender intelligence</a>
   </div>
 
-  <div class="filters-row">
-    <select id="province_filter">
-      <option value="">All provinces</option>
-      <option>Gauteng</option>
-      <option>Western Cape</option>
-      <option>Eastern Cape</option>
-      <option>KwaZulu-Natal</option>
-      <option>Free State</option>
-      <option>Limpopo</option>
-      <option>Mpumalanga</option>
-      <option>North West</option>
-      <option>Northern Cape</option>
-    </select>
+  <div class="tender-grid">
+    {% for tender in tenders %}
+      <article class="card tender-card">
+        <div class="meta-row">
+          <span class="meta-pill">{{ tender.status or "Open" }}</span>
+          {% if tender.province %}
+            <span class="meta-muted">{{ tender.province }}</span>
+          {% endif %}
+        </div>
 
-    <select id="industry_filter">
-      <option value="">All industries</option>
-      <option value="works">Works</option>
-      <option value="services">Services</option>
-      <option value="goods">Goods</option>
-      <option value="construction">Construction</option>
-      <option value="electrical">Electrical</option>
-      <option value="maintenance">Maintenance</option>
-    </select>
+        <h3>{{ tender.title or "Untitled tender" }}</h3>
 
-    <button id="loadInsightsBtn" class="secondary-btn" type="button">Refresh</button>
-  </div>
+        <p class="card-copy">
+          {{ tender.description[:220] ~ ("..." if tender.description and tender.description|length > 220 else "") }}
+        </p>
 
-  <div id="liveTenderList" class="tender-table">
-    <div class="empty-state">Loading live tenders…</div>
+        <div class="card-foot">
+          <span>{{ tender.buyer_name or "Unknown buyer" }}</span>
+          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid) }}">View</a>
+        </div>
+      </article>
+    {% else %}
+      <div class="card empty-card">
+        <h3>No live opportunities loaded</h3>
+        <p>Check the API connection and deployment version.</p>
+      </div>
+    {% endfor %}
   </div>
 </section>
-{% endblock %}
-
-{% block scripts %}
-<script>
-  let activeProfileId = localStorage.getItem("tenderai_active_profile") || "";
-  let profilesCache = [];
-
-  async function loadProfilesForHome() {
-    const res = await fetch("/api/profiles");
-    const data = await res.json();
-    const select = document.getElementById("home_profile_select");
-    profilesCache = data.profiles || [];
-
-    if (!profilesCache.length) {
-      activeProfileId = "";
-      localStorage.removeItem("tenderai_active_profile");
-      select.innerHTML = '<option value="">No profile uploaded</option>';
-      return;
-    }
-
-    if (!profilesCache.find(p => p.id === activeProfileId)) {
-      activeProfileId = profilesCache[0].id;
-      localStorage.setItem("tenderai_active_profile", activeProfileId);
-    }
-
-    select.innerHTML = profilesCache.map(profile => `
-      <option value="${profile.id}" ${profile.id === activeProfileId ? "selected" : ""}>
-        ${profile.name}
-      </option>
-    `).join("");
-
-    select.onchange = (e) => {
-      activeProfileId = e.target.value;
-      localStorage.setItem("tenderai_active_profile", activeProfileId);
-    };
-  }
-
-  function renderLiveTenderRow(t) {
-    return `
-      <div class="tender-row">
-        <div class="tender-main">
-          <div class="tender-title">${t.title || "Untitled tender"}</div>
-          <div class="tender-meta">
-            ${t.organ_of_state || "Unknown organ of state"} · ${t.province || "Unspecified"} · closes ${t.close_date || "N/A"}
-          </div>
-        </div>
-        <div class="tender-side">
-          <div class="tender-number">${t.tender_number || "N/A"}</div>
-          <button class="text-btn" type="button" onclick="window.location='/tender/${t.id}'">Open Tender Detail</button>
-        </div>
-      </div>
-    `;
-  }
-
-  async function loadLiveTenders() {
-    try {
-      const province = document.getElementById("province_filter").value;
-      const industry = document.getElementById("industry_filter").value;
-
-      const qs = new URLSearchParams({
-        date_from: "2026-01-01",
-        date_to: "2026-03-17",
-        page_number: "1",
-        page_size: "20",
-        province: province,
-        industry: industry
-      });
-
-      const res = await fetch(`/api/tenders?${qs.toString()}`);
-      const data = await res.json();
-
-      const list = document.getElementById("liveTenderList");
-      if (data.status !== "ok" || !(data.tenders || []).length) {
-        list.innerHTML = '<div class="empty-state">No tenders found for the current filters.</div>';
-        return;
-      }
-
-      list.innerHTML = data.tenders.map(renderLiveTenderRow).join("");
-    } catch (e) {
-      document.getElementById("liveTenderList").innerHTML = '<div class="empty-state">Unable to load live tenders.</div>';
-    }
-  }
-
-  async function runAnalysis() {
-    await loadProfilesForHome();
-
-    const prompt = document.getElementById("home_prompt").value.trim();
-    const profileId = document.getElementById("home_profile_select").value;
-
-    if (!profilesCache.length || !profileId) {
-      localStorage.removeItem("tenderai_active_profile");
-      window.location = "/profiles";
-      return;
-    }
-
-    setLoading(true, "TenderAI is analyzing your prompt...");
-
-    try {
-      const res = await fetch("/api/score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profile_id: profileId,
-          prompt: prompt,
-          date_from: document.getElementById("home_date_from").value,
-          date_to: document.getElementById("home_date_to").value,
-          page_number: 1,
-          page_size: 10
-        })
-      });
-
-      const data = await res.json();
-
-      if (data.status !== "ok") {
-        if ((data.error || "").toLowerCase().includes("profile not found")) {
-          localStorage.removeItem("tenderai_active_profile");
-          alert("Your uploaded profile is no longer available. Please upload it again.");
-          window.location = "/profiles";
-          return;
-        }
-        alert(data.error || "Analysis failed");
-        return;
-      }
-
-      sessionStorage.setItem("tenderai_latest_scan", JSON.stringify(data));
-      window.location = "/tenders";
-    } catch (e) {
-      alert("Analysis could not start.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  document.getElementById("runPromptBtn").addEventListener("click", runAnalysis);
-  document.getElementById("loadInsightsBtn").addEventListener("click", loadLiveTenders);
-
-  document.getElementById("home_prompt").addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      runAnalysis();
-    }
-  });
-
-  document.querySelectorAll(".example-chip").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.getElementById("home_prompt").value = btn.dataset.prompt;
-    });
-  });
-
-  loadProfilesForHome();
-  loadLiveTenders();
-</script>
 {% endblock %}
