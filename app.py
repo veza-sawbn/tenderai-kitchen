@@ -1,3 +1,6 @@
+print("=== TenderAI Boot Starting ===")
+print(f"APP_VERSION: {APP_VERSION}")
+print(f"OPENAI KEY PRESENT: {bool(OPENAI_API_KEY)}")
 import io
 import json
 import os
