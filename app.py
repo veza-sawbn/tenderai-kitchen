@@ -1337,4 +1337,11 @@ def api_service_request():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), debug=True)
+    port = int(os.getenv("PORT", "8080"))
+    print(f"Starting TenderAI on port {port}...")
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False
+    )
