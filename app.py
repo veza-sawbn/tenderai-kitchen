@@ -1,1407 +1,1445 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for
 import io
+import json
+import os
 import re
 import uuid
-from datetime import datetime, timezone
-from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+from urllib.parse import urljoin
 
 import requests
+from flask import (
+    Flask,
+    abort,
+    flash,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from pypdf import PdfReader
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    select,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from werkzeug.utils import secure_filename
+
+try:
+    import boto3
+except Exception:  # pragma: no cover
+    boto3 = None
+
+
+# -----------------------------------------------------------------------------
+# Config
+# -----------------------------------------------------------------------------
+
+APP_VERSION <- os.getenv("APP_VERSION", "20260319-1")
+ETENDERS_BASE_URL = os.getenv(
+    "ETENDERS_BASE_URL",
+    "https://ocds-api.etenders.gov.za",
+)
+ETENDERS_RELEASES_PATH = os.getenv(
+    "ETENDERS_RELEASES_PATH",
+    "/api/OCDSReleases",
+)
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
+MAX_TENDERS = int(os.getenv("MAX_TENDERS", "30"))
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///tenderai.db")
+S3_BUCKET = os.getenv("S3_BUCKET", "").strip()
+AWS_REGION = os.getenv("AWS_REGION", "af-south-1")
+LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "uploads")
+MAX_CONTENT_LENGTH = 20 * 1024 * 1024  # 20MB
+
+ALLOWED_PROFILE_EXTENSIONS = {"pdf"}
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-secret")
 
-PROFILE_STORE = {}
-TENDER_CACHE = {}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 
-def tokenize(text):
-    if not text:
-        return []
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
 
-    words = re.findall(r"[a-zA-Z0-9]+", text.lower())
-    stopwords = {
-        "the", "and", "for", "with", "from", "that", "this", "are", "was",
-        "your", "you", "our", "have", "has", "will", "not", "all", "can",
-        "services", "service", "company", "business", "profile", "south",
-        "africa", "of", "to", "in", "on", "by", "at", "is", "as", "or",
-        "an", "be", "we", "it", "their", "its", "pty", "ltd", "cc",
-        "supplier", "summary", "report", "registration", "database",
-        "government"
-    }
-    return [w for w in words if len(w) > 2 and w not in stopwords]
+class Base(DeclarativeBase):
+    pass
 
 
-def extract_pdf_text(file_storage):
-    pdf_bytes = file_storage.read()
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    pages = []
+class Profile(Base):
+    __tablename__ = "profiles"
 
-    for page in reader.pages:
-        pages.append(page.extract_text() or "")
-
-    return "\n".join(pages)
-
-
-def extract_company_name(text):
-    patterns = [
-        r"Legal Name\s*:?\s*(.+)",
-        r"Company Name\s*:?\s*(.+)",
-        r"Trading Name\s*:?\s*(.+)"
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).split("\n")[0].strip()[:120]
-
-    for line in text.splitlines():
-        clean = line.strip()
-        if 4 <= len(clean) <= 90 and not re.search(
-            r"(summary|registration|supplier|report|database)",
-            clean,
-            re.IGNORECASE
-        ):
-            return clean
-
-    return "Unknown company"
-
-
-def extract_yes_no(text, patterns):
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            value = match.group(1).strip().lower()
-            if value in {"yes", "no"}:
-                return value.title()
-    return "Unknown"
-
-
-def extract_field(text, patterns, default_value="Unknown"):
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).split("\n")[0].strip()[:180]
-    return default_value
-
-
-def dedupe_keep_order(items):
-    seen = set()
-    output = []
-    for item in items:
-        key = str(item).lower()
-        if key not in seen:
-            output.append(item)
-            seen.add(key)
-    return output
-
-
-def parse_bbbee_information(text):
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    collected = []
-
-    bbbee_keywords = [
-        "b-bbee", "bbbee", "bbee", "status level", "eme", "qse",
-        "black ownership", "black woman ownership", "procurement recognition"
-    ]
-
-    for line in lines:
-        lower = line.lower()
-        if any(k in lower for k in bbbee_keywords):
-            collected.append(line[:180])
-
-    level = extract_field(
-        text,
-        [
-            r"B-?B?BEE(?: Status Level)?\s*:?\s*(.+)",
-            r"B-BBEE(?: Status Level)?\s*:?\s*(.+)"
-        ]
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    file_name: Mapped[str] = mapped_column(String(255))
+    storage_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    profile_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parsed_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
     )
 
-    return {
-        "level": level,
-        "details": dedupe_keep_order(collected)[:12]
-    }
+
+engine = create_engine(DATABASE_URL, future=True)
+Base.metadata.create_all(engine)
 
 
-def parse_industry_classes(text):
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    main_groups = []
-    divisions = []
+# -----------------------------------------------------------------------------
+# Storage helpers
+# -----------------------------------------------------------------------------
 
-    for line in lines:
-        lower = line.lower()
+def ensure_local_upload_dir() -> None:
+    os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
 
-        if "main group" in lower:
-            main_groups.append(line[:180])
 
-        if "division" in lower:
-            divisions.append(line[:180])
+def get_s3_client():
+    if not S3_BUCKET or boto3 is None:
+        return None
+    return boto3.client("s3", region_name=AWS_REGION)
 
-        if re.search(r"\bmain\s+group\b", lower):
-            main_groups.append(line[:180])
 
-        if re.search(r"\bdivisions?\b", lower):
-            divisions.append(line[:180])
+def save_profile_file(file_storage, profile_id: str) -> str:
+    file_name = secure_filename(file_storage.filename or "profile.pdf")
+    storage_key = f"profiles/{profile_id}/{file_name}"
 
-    if not main_groups:
-        main_group_field = extract_field(
-            text,
-            [
-                r"Main Group\s*:?\s*(.+)",
-                r"Industry Classification Main Group\s*:?\s*(.+)"
-            ],
-            default_value=""
+    s3 = get_s3_client()
+    if s3 is not None:
+        s3.upload_fileobj(
+            Fileobj=file_storage.stream,
+            Bucket=S3_BUCKET,
+            Key=storage_key,
+            ExtraArgs={"ContentType": "application/pdf"},
         )
-        if main_group_field:
-            main_groups.append(main_group_field)
+        return storage_key
 
-    if not divisions:
-        division_field = extract_field(
-            text,
-            [
-                r"Division\s*:?\s*(.+)",
-                r"Industry Classification Division\s*:?\s*(.+)"
-            ],
-            default_value=""
-        )
-        if division_field:
-            divisions.append(division_field)
+    ensure_local_upload_dir()
+    local_path = os.path.join(LOCAL_UPLOAD_DIR, f"{profile_id}__{file_name}")
+    file_storage.save(local_path)
+    return local_path
 
+
+def read_profile_file_bytes(storage_key: str) -> bytes:
+    s3 = get_s3_client()
+    if s3 is not None and storage_key.startswith("profiles/"):
+        output = io.BytesIO()
+        s3.download_fileobj(S3_BUCKET, storage_key, output)
+        return output.getvalue()
+
+    with open(storage_key, "rb") as file:
+        return file.read()
+
+
+# -----------------------------------------------------------------------------
+# General helpers
+# -----------------------------------------------------------------------------
+
+def json_loads_safe(value: Optional[str], default: Any) -> Any:
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def normalize_whitespace(text: str) -> str:
+    text = text.replace("\x00", " ")
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def chunk_lines(text: str) -> list[str]:
+    return [line.strip() for line in normalize_whitespace(text).splitlines() if line.strip()]
+
+
+def first_match(patterns: list[str], text: str, flags: int = re.IGNORECASE) -> Optional[str]:
+    for pattern in patterns:
+        match = re.search(pattern, text, flags)
+        if match:
+            for group in match.groups():
+                if group:
+                    return group.strip()
+    return None
+
+
+def allowed_profile(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_PROFILE_EXTENSIONS
+
+
+def render_json_response(payload: Any, status: int = 200):
+    response = make_response(jsonify(payload), status)
+    response.headers["X-App-Version"] = APP_VERSION
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.context_processor
+def inject_globals():
     return {
-        "main_groups": dedupe_keep_order([x for x in main_groups if x])[:10],
-        "divisions": dedupe_keep_order([x for x in divisions if x])[:14]
+        "app_version": APP_VERSION,
     }
 
 
-def parse_accreditations(text):
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    records = []
-    current = None
-
-    for line in lines:
-        lower = line.lower()
-
-        if "accreditation" in lower and current is None:
-            current = {
-                "status": "Unknown",
-                "description": line[:180],
-                "expiration_date": "Unknown"
-            }
-
-        if current is not None:
-            if "status" in lower and current["status"] == "Unknown":
-                status_match = re.search(r"status\s*:?\s*(.+)", line, re.IGNORECASE)
-                if status_match:
-                    current["status"] = status_match.group(1).strip()[:120]
-
-            if any(k in lower for k in ["description", "accreditation", "certificate", "registration"]):
-                if len(line) > len(current["description"]):
-                    current["description"] = line[:180]
-
-            date_match = re.search(
-                r"((?:\d{4}[-/]\d{2}[-/]\d{2})|(?:\d{2}[-/]\d{2}[-/]\d{4}))",
-                line
-            )
-            if date_match:
-                current["expiration_date"] = date_match.group(1)
-
-            if any(k in lower for k in ["expires", "expiry", "expiration"]):
-                exp_match = re.search(r"(expires|expiry|expiration)\s*:?\s*(.+)", line, re.IGNORECASE)
-                if exp_match:
-                    current["expiration_date"] = exp_match.group(2).strip()[:120]
-
-            if current and (
-                "expiration" in lower
-                or "expiry" in lower
-                or "expires" in lower
-                or "status" in lower
-            ):
-                records.append(current)
-                current = None
-
-    fallback = []
-    for line in lines:
-        lower = line.lower()
-        if any(k in lower for k in ["accreditation", "certificate", "iso", "cidb", "registered with"]):
-            fallback.append({
-                "status": "Unknown",
-                "description": line[:180],
-                "expiration_date": "Unknown"
-            })
-
-    records = records if records else fallback
-    unique = []
-    seen = set()
-    for record in records:
-        key = f'{record["status"]}|{record["description"]}|{record["expiration_date"]}'.lower()
-        if key not in seen:
-            unique.append(record)
-            seen.add(key)
-
-    return unique[:12]
+@app.after_request
+def add_headers(response):
+    response.headers["X-App-Version"] = APP_VERSION
+    if response.content_type and "text/html" in response.content_type:
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
-def extract_list_by_keywords(text, keywords, max_items=12):
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    found = []
+# -----------------------------------------------------------------------------
+# PDF parsing
+# -----------------------------------------------------------------------------
 
-    for line in lines:
-        lower = line.lower()
-        if any(keyword in lower for keyword in keywords):
-            found.append(line[:180])
-
-    return dedupe_keep_order(found)[:max_items]
-
-
-def infer_province(text):
-    mapping = [
-        ("Gauteng", ["gauteng", "johannesburg", "tshwane", "ekurhuleni"]),
-        ("Western Cape", ["western cape", "cape town"]),
-        ("Eastern Cape", ["eastern cape", "gqeberha", "east london", "mthatha"]),
-        ("KwaZulu-Natal", ["kwazulu", "kzn", "durban", "pietermaritzburg"]),
-        ("Free State", ["free state", "bloemfontein"]),
-        ("Limpopo", ["limpopo", "polokwane", "vhembe"]),
-        ("Mpumalanga", ["mpumalanga", "mbombela"]),
-        ("North West", ["north west", "mahikeng", "potchefstroom"]),
-        ("Northern Cape", ["northern cape", "kimberley"]),
-    ]
-
-    lower = text.lower()
-    for province, keys in mapping:
-        if any(key in lower for key in keys):
-            return province
-
-    return "Unspecified"
+def extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text:
+                pages.append(text)
+        return normalize_whitespace("\n\n".join(pages))
+    except Exception:
+        return ""
 
 
-def parse_profile_metadata(text):
-    bbbee = parse_bbbee_information(text)
-    industry = parse_industry_classes(text)
-    accreditations = parse_accreditations(text)
+def download_pdf_text_from_url(url: str) -> str:
+    if not url:
+        return ""
 
-    supplier_number = extract_field(text, [r"Supplier Number\s*:?\s*(.+)", r"MAAA\d+"], "")
-    if not supplier_number:
-        match = re.search(r"\bMAAA\d+\b", text)
-        supplier_number = match.group(0) if match else "Unknown"
+    try:
+        response = requests.get(url, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
 
-    legal_name = extract_field(
-        text,
-        [r"Legal Name\s*:?\s*(.+)", r"Company Name\s*:?\s*(.+)"],
-        extract_company_name(text)
-    )
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if "pdf" in content_type or url.lower().endswith(".pdf"):
+            return extract_pdf_text_from_bytes(response.content)
 
-    trading_name = extract_field(text, [r"Trading Name\s*:?\s*(.+)"], "")
-    registration_number = extract_field(text, [r"Registration Number\s*:?\s*(.+)"], "")
-    supplier_type = extract_field(text, [r"Supplier Type\s*:?\s*(.+)"], "")
-    supplier_sub_type = extract_field(text, [r"Supplier Sub-?Type\s*:?\s*(.+)"], "")
-    registration_date = extract_field(text, [r"Registration Date\s*:?\s*(.+)"], "")
-    financial_year_start = extract_field(text, [r"Financial Year Start\s*:?\s*(.+)"], "")
-    business_status = extract_field(text, [r"Business Status\s*:?\s*(.+)"], "")
-    country_of_origin = extract_field(text, [r"Country of Origin\s*:?\s*(.+)"], "South Africa")
-    annual_turnover_band = extract_field(text, [r"Annual Turnover Band\s*:?\s*(.+)"], "")
+        return normalize_whitespace(response.text)
+    except Exception:
+        return ""
 
-    is_active = extract_yes_no(text, [r"Supplier Active Status\s*:?\s*(Yes|No)"]) == "Yes"
-    government_employee = extract_yes_no(text, [r"Government Employee\s*:?\s*(Yes|No)"]) == "Yes"
-    allow_associates = extract_yes_no(text, [r"Allow Associates\s*:?\s*(Yes|No)"]) == "Yes"
 
-    email = extract_field(text, [r"Email\s*:?\s*(.+)"], "")
-    phone = extract_field(text, [r"Telephone\s*:?\s*(.+)", r"Phone\s*:?\s*(.+)"], "")
-    website = extract_field(text, [r"Website\s*:?\s*(.+)"], "")
-    contact_name = extract_field(text, [r"Contact Person\s*:?\s*(.+)", r"Name\s*:?\s*(.+)"], "")
+# -----------------------------------------------------------------------------
+# CSD-style profile parsing
+# -----------------------------------------------------------------------------
 
-    address_line_1 = extract_field(
-        text,
-        [r"Address Line 1\s*:?\s*(.+)", r"Physical Address\s*:?\s*(.+)"],
-        ""
-    )
-    address_line_2 = extract_field(text, [r"Address Line 2\s*:?\s*(.+)"], "")
-    suburb = extract_field(text, [r"Suburb\s*:?\s*(.+)"], "")
-    city = extract_field(text, [r"City\s*:?\s*(.+)", r"Locality\s*:?\s*(.+)"], "")
-    municipality = extract_field(text, [r"Municipality\s*:?\s*(.+)"], "")
-    province = extract_field(text, [r"Province\s*:?\s*(.+)"], infer_province(text))
-    postal_code = extract_field(text, [r"Postal Code\s*:?\s*(.+)"], "")
-    ward_number = extract_field(text, [r"Ward Number\s*:?\s*(.+)"], "")
-
-    bank_verification_status = extract_field(text, [r"Bank Verification Status\s*:?\s*(.+)"], "")
-    bank_verification_response = extract_field(text, [r"Bank Verification Response\s*:?\s*(.+)"], "")
-
-    income_tax_number = extract_field(text, [r"Income Tax Number\s*:?\s*(.+)"], "")
-    is_vat_vendor = extract_yes_no(text, [r"VAT Vendor\s*:?\s*(Yes|No)"]) == "Yes"
-    is_registered_with_sars = (
-        extract_yes_no(
-            text,
-            [r"SARS Registration Status\s*:?\s*(Yes|No)", r"Registered with SARS\s*:?\s*(Yes|No)"]
-        ) == "Yes"
-    )
-    tax_compliance_status = extract_field(
-        text,
-        [r"Overall Tax Status\s*:?\s*(.+)", r"Tax Compliance Status\s*:?\s*(.+)"],
-        "Unknown"
-    )
-    last_validation_date = extract_field(text, [r"Last Validation Date\s*:?\s*(.+)"], "")
-
-    bbbee_certificate_number = extract_field(text, [r"Certificate Number\s*:?\s*(.+)"], "")
-    bbbee_issue_date = extract_field(text, [r"Issue Date\s*:?\s*(.+)"], "")
-    bbbee_expiry_date = extract_field(text, [r"Expiry Date\s*:?\s*(.+)", r"Expiration Date\s*:?\s*(.+)"], "")
-    bbbee_verification_status = extract_field(text, [r"Verification Status\s*:?\s*(.+)"], bbbee["level"])
-
-    accreditation_records = []
-    for item in accreditations:
-        accreditation_records.append({
-            "body": item.get("description", ""),
-            "description": item.get("description", ""),
-            "accreditation_number": "",
-            "issue_date": "",
-            "expiry_date": item.get("expiration_date", ""),
-            "status": item.get("status", "Unknown"),
-            "verification_status": "Manual verification required"
-        })
-
-    industry_rows = []
-    for mg in industry["main_groups"]:
-        industry_rows.append({
-            "main_group": mg,
-            "division": "",
-            "core_industry": None,
-            "turnover_percentage": None
-        })
-    for div in industry["divisions"]:
-        industry_rows.append({
-            "main_group": "",
-            "division": div,
-            "core_industry": None,
-            "turnover_percentage": None
-        })
-
+def build_empty_profile_schema() -> dict[str, Any]:
     return {
         "metadata": {
-            "source": "CSD",
-            "document_type": "CSD Registration Report",
-            "report_date": datetime.now().isoformat(),
-            "generated_by": "Unknown",
-            "pages": max(1, text.count("\f") + 1)
+            "source_type": "uploaded_pdf",
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
+            "parser_version": APP_VERSION,
         },
         "supplier_identification": {
-            "supplier_number": supplier_number,
-            "legal_name": legal_name,
-            "trading_name": trading_name,
-            "registration_number": registration_number,
-            "supplier_type": supplier_type,
-            "supplier_sub_type": supplier_sub_type,
-            "registration_date": registration_date,
-            "financial_year_start": financial_year_start,
-            "is_active": is_active,
-            "has_bank_account": "bank" in text.lower(),
-            "restricted_supplier": extract_yes_no(text, [r"Restricted Supplier\s*:?\s*(Yes|No)"]) == "Yes",
-            "business_status": business_status,
-            "country_of_origin": country_of_origin,
-            "government_employee": government_employee,
-            "allow_associates": allow_associates,
-            "annual_turnover_band": annual_turnover_band
+            "supplier_number": None,
+            "legal_name": None,
+            "trading_name": None,
+            "registration_number": None,
+            "supplier_type": None,
+            "supplier_sub_type": None,
+            "registration_date": None,
+            "financial_year_start": None,
+            "is_active": None,
+            "has_bank_account": None,
+            "restricted_supplier": None,
+            "business_status": None,
+            "country_of_origin": None,
+            "government_employee": None,
+            "allow_associates": None,
+            "annual_turnover_band": None,
         },
-        "industry_classification": industry_rows,
-        "contact_information": [
-            {
-                "contact_type": "Primary",
-                "is_preferred": True,
-                "name": contact_name,
-                "surname": "",
-                "phone": phone,
-                "email": email,
-                "website": website,
-                "communication_preference": "email",
-                "is_csd_user": True
-            }
-        ],
-        "address_information": [
-            {
-                "is_preferred": True,
-                "address_line_1": address_line_1,
-                "address_line_2": address_line_2,
-                "suburb": suburb,
-                "city": city,
-                "municipality": municipality,
-                "province": province,
-                "country": country_of_origin or "South Africa",
-                "postal_code": postal_code,
-                "ward_number": ward_number
-            }
-        ],
-        "bank_information": [
-            {
-                "is_preferred": True,
-                "verification_status": bank_verification_status,
-                "verification_response": bank_verification_response,
-                "is_foreign_account": False,
-                "is_shared_account": False,
-                "identifier_linked": True,
-                "last_updated_days": None
-            }
-        ],
+        "industry_classification": {
+            "main_group": [],
+            "division": [],
+            "core_industry": [],
+            "turnover_percentage": [],
+        },
+        "contact_information": [],
+        "address_information": [],
+        "bank_information": {
+            "verification_status": None,
+            "verification_response": None,
+        },
         "tax_information": {
-            "income_tax_number": income_tax_number,
-            "is_vat_vendor": is_vat_vendor,
-            "is_registered_with_sars": is_registered_with_sars,
-            "tax_compliance_status": tax_compliance_status,
-            "compliance_pin_provided": "pin" in text.lower(),
-            "last_validation_date": last_validation_date
+            "income_tax_number": None,
+            "is_vat_vendor": None,
+            "is_registered_with_sars": None,
+            "tax_compliance_status": None,
+            "compliance_pin_provided": None,
+            "last_validation_date": None,
         },
         "bbbbee_information": {
-            "certificate_number": bbbee_certificate_number,
-            "issue_date": bbbee_issue_date,
-            "expiry_date": bbbee_expiry_date,
-            "verification_status": bbbee_verification_status,
-            "ownership": {
-                "black_owned_percentage": None,
-                "black_women_owned_percentage": None,
-                "black_youth_owned_percentage": None,
-                "black_disabled_owned_percentage": None,
-                "black_unemployed_owned_percentage": None,
-                "black_rural_owned_percentage": None,
-                "military_veteran_owned_percentage": None
-            }
+            "certificate_number": None,
+            "issue_date": None,
+            "expiry_date": None,
+            "verification_status": None,
+            "black_ownership_percent": None,
+            "women_ownership_percent": None,
+            "youth_ownership_percent": None,
         },
-        "accreditations": accreditation_records,
-        "directors": [
-            {
-                "name": item,
-                "id_number": "",
-                "country": "South Africa",
-                "is_active": True,
-                "is_owner": True,
-                "ownership_percentage": None,
-                "is_youth": False,
-                "is_disabled": False,
-                "is_military_veteran": False,
-                "is_government_employee": False,
-                "verification_status": "Unknown"
-            }
-            for item in extract_list_by_keywords(text, ["director", "member", "owner"], 10)
-        ],
+        "accreditations": [],
+        "directors": [],
         "ownership_summary": {
-            "total_ownership_percentage": None,
-            "black_owned": "100" in " ".join(bbbee["details"]),
-            "youth_owned": "youth" in text.lower(),
-            "township_based": "township" in text.lower(),
-            "rural_based": "rural" in text.lower()
+            "black_owned": None,
+            "youth_owned": None,
+            "township_based": None,
+            "rural_based": None,
         },
+        "commodities": [],
+        "provinces": [],
+        "keywords": [],
         "ai_enrichment": {
-            "risk_flags": [],
-            "compliance_score": 0,
-            "bbbbee_strength_score": 0,
-            "operational_readiness_score": 0,
-            "tender_competitiveness_score": 0,
-            "recommended_actions": []
+            "summary": None,
+            "capability_keywords": [],
+            "compliance_flags": [],
+            "risk_notes": [],
         },
-        "keywords": tokenize(text)[:30]
     }
 
 
-def extract_releases(payload):
+def extract_date(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+
+    patterns = [
+        r"(\d{4}-\d{2}-\d{2})",
+        r"(\d{2}/\d{2}/\d{4})",
+        r"(\d{2}-\d{2}-\d{4})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value)
+        if match:
+            return match.group(1)
+    return value.strip()[:25]
+
+
+def detect_yes_no(text: str) -> Optional[bool]:
+    text_lower = text.lower()
+    if any(token in text_lower for token in ["yes", "active", "valid", "compliant"]):
+        return True
+    if any(token in text_lower for token in ["no", "inactive", "invalid", "non-compliant"]):
+        return False
+    return None
+
+
+def parse_profile_pdf_text(text: str) -> dict[str, Any]:
+    profile = build_empty_profile_schema()
+    lines = chunk_lines(text)
+    text_lower = text.lower()
+
+    supplier = profile["supplier_identification"]
+    tax_info = profile["tax_information"]
+    bbbee = profile["bbbbee_information"]
+
+    supplier["supplier_number"] = first_match(
+        [
+            r"supplier\s*(?:number|no\.?)\s*[:\-]\s*([A-Z0-9\-\/]+)",
+            r"\bMAAA\s*([0-9]{6,})\b",
+        ],
+        text,
+    )
+
+    supplier["legal_name"] = first_match(
+        [
+            r"(?:legal\s*name|supplier\s*name|enterprise\s*name)\s*[:\-]\s*(.+)",
+            r"registered\s*name\s*[:\-]\s*(.+)",
+        ],
+        text,
+    )
+
+    supplier["trading_name"] = first_match(
+        [r"(?:trading\s*name|business\s*name)\s*[:\-]\s*(.+)"],
+        text,
+    )
+
+    supplier["registration_number"] = first_match(
+        [r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"],
+        text,
+    )
+
+    supplier["supplier_type"] = first_match(
+        [r"supplier\s*type\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["supplier_sub_type"] = first_match(
+        [r"supplier\s*sub[\-\s]*type\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["country_of_origin"] = first_match(
+        [r"country\s*of\s*origin\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["annual_turnover_band"] = first_match(
+        [r"(?:annual\s*turnover|turnover\s*band)\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["business_status"] = first_match(
+        [r"business\s*status\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["registration_date"] = extract_date(
+        first_match([r"registration\s*date\s*[:\-]\s*(.+)"], text)
+    )
+    supplier["financial_year_start"] = extract_date(
+        first_match([r"financial\s*year\s*start\s*[:\-]\s*(.+)"], text)
+    )
+
+    active_field = first_match([r"(?:supplier\s*active\s*status|active)\s*[:\-]\s*(.+)"], text)
+    supplier["is_active"] = detect_yes_no(active_field or "")
+
+    government_employee = first_match(
+        [r"government\s*employee\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["government_employee"] = detect_yes_no(government_employee or "")
+
+    restricted_supplier = first_match(
+        [r"restricted\s*supplier\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["restricted_supplier"] = detect_yes_no(restricted_supplier or "")
+
+    has_bank_account = first_match(
+        [r"has\s*bank\s*account\s*[:\-]\s*(.+)"],
+        text,
+    )
+    supplier["has_bank_account"] = detect_yes_no(has_bank_account or "")
+
+    tax_info["income_tax_number"] = first_match(
+        [r"(?:income\s*tax\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\-]+)"],
+        text,
+    )
+    tax_info["tax_compliance_status"] = first_match(
+        [r"tax\s*compliance\s*status\s*[:\-]\s*(.+)"],
+        text,
+    )
+    tax_info["is_registered_with_sars"] = detect_yes_no(
+        first_match([r"(?:registered\s*with\s*SARS)\s*[:\-]\s*(.+)"], text) or ""
+    )
+    tax_info["is_vat_vendor"] = detect_yes_no(
+        first_match([r"(?:VAT\s*vendor|is\s*vat\s*vendor)\s*[:\-]\s*(.+)"], text) or ""
+    )
+    tax_info["compliance_pin_provided"] = detect_yes_no(
+        "yes" if re.search(r"\b(?:TCS|PIN)\b", text, re.IGNORECASE) else ""
+    )
+    tax_info["last_validation_date"] = extract_date(
+        first_match([r"(?:last\s*validation\s*date)\s*[:\-]\s*(.+)"], text)
+    )
+
+    bbbee["certificate_number"] = first_match(
+        [r"(?:B[\-\s]*BBEE|BBBEE).{0,40}(?:certificate\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\-\/]+)"],
+        text,
+    )
+    bbbee["issue_date"] = extract_date(
+        first_match([r"(?:B[\-\s]*BBEE|BBBEE).{0,30}issue\s*date\s*[:\-]\s*(.+)"], text)
+    )
+    bbbee["expiry_date"] = extract_date(
+        first_match([r"(?:B[\-\s]*BBEE|BBBEE).{0,30}expiry\s*date\s*[:\-]\s*(.+)"], text)
+    )
+    bbbee["verification_status"] = first_match(
+        [r"(?:B[\-\s]*BBEE|BBBEE).{0,30}verification\s*status\s*[:\-]\s*(.+)"],
+        text,
+    )
+    bbbee["black_ownership_percent"] = first_match(
+        [r"black\s*ownership\s*[:\-]\s*([0-9]{1,3}(?:\.[0-9]+)?\s*%)"],
+        text,
+    )
+    bbbee["women_ownership_percent"] = first_match(
+        [r"women\s*ownership\s*[:\-]\s*([0-9]{1,3}(?:\.[0-9]+)?\s*%)"],
+        text,
+    )
+    bbbee["youth_ownership_percent"] = first_match(
+        [r"youth\s*ownership\s*[:\-]\s*([0-9]{1,3}(?:\.[0-9]+)?\s*%)"],
+        text,
+    )
+
+    verification_status = first_match(
+        [r"bank\s*verification\s*status\s*[:\-]\s*(.+)"],
+        text,
+    )
+    profile["bank_information"]["verification_status"] = verification_status
+    profile["bank_information"]["verification_response"] = first_match(
+        [r"bank\s*verification\s*response\s*[:\-]\s*(.+)"],
+        text,
+    )
+
+    # Contact parsing
+    email_matches = sorted(set(re.findall(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", text, re.IGNORECASE)))
+    phone_matches = sorted(
+        set(
+            re.findall(
+                r"(?:\+27|0)[0-9][0-9\s\-]{7,}",
+                text,
+                re.IGNORECASE,
+            )
+        )
+    )
+    website_match = first_match(
+        [r"(https?://[^\s]+)", r"(www\.[^\s]+)"],
+        text,
+    )
+
+    if email_matches or phone_matches or website_match:
+        profile["contact_information"].append(
+            {
+                "contact_type": "primary",
+                "is_preferred": True,
+                "name": None,
+                "surname": None,
+                "phone": phone_matches[0] if phone_matches else None,
+                "email": email_matches[0] if email_matches else None,
+                "website": website_match,
+                "communication_preference": None,
+                "is_csd_user": None,
+            }
+        )
+
+    provinces = [
+        "Eastern Cape",
+        "Free State",
+        "Gauteng",
+        "KwaZulu-Natal",
+        "Limpopo",
+        "Mpumalanga",
+        "Northern Cape",
+        "North West",
+        "Western Cape",
+    ]
+    found_provinces = [province for province in provinces if province.lower() in text_lower]
+    profile["provinces"] = found_provinces
+
+    for province in found_provinces[:1]:
+        profile["address_information"].append(
+            {
+                "address_line_1": None,
+                "address_line_2": None,
+                "suburb": None,
+                "city": None,
+                "municipality": None,
+                "province": province,
+                "country": supplier["country_of_origin"] or "South Africa",
+                "postal_code": None,
+                "ward_number": None,
+            }
+        )
+
+    industry_patterns = [
+        r"industry\s*classification\s*[:\-]\s*(.+)",
+        r"main\s*group\s*[:\-]\s*(.+)",
+        r"division\s*[:\-]\s*(.+)",
+        r"commodity\s*[:\-]\s*(.+)",
+    ]
+    extracted_industry = []
+    for pattern in industry_patterns:
+        extracted_industry.extend(re.findall(pattern, text, re.IGNORECASE))
+
+    cleaned_industry = []
+    for item in extracted_industry:
+        cleaned = item.strip()
+        if cleaned and len(cleaned) < 140:
+            cleaned_industry.append(cleaned)
+
+    profile["industry_classification"]["main_group"] = cleaned_industry[:3]
+    profile["industry_classification"]["division"] = cleaned_industry[3:6]
+
+    accredit_lines = []
+    for line in lines:
+        if re.search(
+            r"(accredit|iso|cidb|sacec|sacpcmp|nhbrc|saqa|qtco|qcto)",
+            line,
+            re.IGNORECASE,
+        ):
+            accredit_lines.append(line)
+
+    for line in accredit_lines[:10]:
+        profile["accreditations"].append(
+            {
+                "body": first_match(
+                    [r"(CIDB|ISO|SACEC|SACPCMP|NHBRC|SAQA|QCTO|QTCO)"],
+                    line,
+                ),
+                "description": line[:250],
+                "accreditation_number": first_match(
+                    [r"(?:number|no\.?)\s*[:\-]?\s*([A-Z0-9\-\/]+)"],
+                    line,
+                ),
+                "issue_date": extract_date(line),
+                "expiry_date": extract_date(line),
+                "status": "detected",
+                "verification_status": None,
+            }
+        )
+
+    directors = []
+    director_candidates = re.findall(
+        r"(?:director|member|owner|trustee)\s*[:\-]\s*([A-Z][A-Za-z ,.'\-]{3,60})",
+        text,
+        re.IGNORECASE,
+    )
+    for candidate in director_candidates[:10]:
+        directors.append(
+            {
+                "name": candidate.strip(),
+                "ownership_flags": [],
+                "youth_flag": None,
+                "disability_flag": None,
+                "veteran_flag": None,
+                "government_employee_flag": None,
+            }
+        )
+    profile["directors"] = directors
+
+    ownership = profile["ownership_summary"]
+    ownership["black_owned"] = detect_yes_no(
+        "yes" if bbbee.get("black_ownership_percent") else ""
+    )
+    ownership["youth_owned"] = detect_yes_no(
+        "yes" if bbbee.get("youth_ownership_percent") else ""
+    )
+    ownership["township_based"] = detect_yes_no(
+        "yes" if "township" in text_lower else ""
+    )
+    ownership["rural_based"] = detect_yes_no(
+        "yes" if "rural" in text_lower else ""
+    )
+
+    keyword_candidates = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z&/\-]{3,}", text):
+        token_clean = token.strip().lower()
+        if token_clean not in {
+            "south", "africa", "supplier", "enterprise", "certificate",
+            "registration", "verification", "contact", "number", "status",
+        } and len(token_clean) <= 30:
+            keyword_candidates.add(token_clean)
+
+    profile["keywords"] = sorted(keyword_candidates)[:50]
+
+    profile["ai_enrichment"]["summary"] = build_profile_summary_text(profile)
+    profile["ai_enrichment"]["capability_keywords"] = (
+        profile["industry_classification"]["main_group"]
+        + profile["industry_classification"]["division"]
+        + profile["commodities"]
+    )[:15]
+
+    if tax_info["tax_compliance_status"]:
+        profile["ai_enrichment"]["compliance_flags"].append(
+            f"Tax: {tax_info['tax_compliance_status']}"
+        )
+    if bbbee["verification_status"]:
+        profile["ai_enrichment"]["compliance_flags"].append(
+            f"B-BBEE: {bbbee['verification_status']}"
+        )
+
+    return profile
+
+
+def build_profile_summary_text(profile: dict[str, Any]) -> str:
+    supplier = profile.get("supplier_identification", {})
+    industry = profile.get("industry_classification", {})
+    tax_info = profile.get("tax_information", {})
+    bbbee = profile.get("bbbbee_information", {})
+
+    bits = []
+    if supplier.get("legal_name"):
+        bits.append(f"Legal name: {supplier['legal_name']}")
+    if supplier.get("supplier_sub_type"):
+        bits.append(f"Supplier subtype: {supplier['supplier_sub_type']}")
+    if industry.get("main_group"):
+        bits.append(f"Main groups: {', '.join(industry['main_group'][:3])}")
+    if industry.get("division"):
+        bits.append(f"Divisions: {', '.join(industry['division'][:3])}")
+    if tax_info.get("tax_compliance_status"):
+        bits.append(f"Tax status: {tax_info['tax_compliance_status']}")
+    if bbbee.get("verification_status"):
+        bits.append(f"B-BBEE: {bbbee['verification_status']}")
+    return " | ".join(bits)
+
+
+def profile_summary_for_ui(profile_data: dict[str, Any]) -> dict[str, Any]:
+    supplier = profile_data.get("supplier_identification", {})
+    industry = profile_data.get("industry_classification", {})
+    tax_info = profile_data.get("tax_information", {})
+    bbbee = profile_data.get("bbbbee_information", {})
+
+    return {
+        "company_name": supplier.get("legal_name") or supplier.get("trading_name"),
+        "supplier_active_status": supplier.get("is_active"),
+        "supplier_sub_type": supplier.get("supplier_sub_type"),
+        "country_of_origin": supplier.get("country_of_origin"),
+        "government_employee": supplier.get("government_employee"),
+        "overall_tax_status": tax_info.get("tax_compliance_status"),
+        "sars_registration_status": tax_info.get("is_registered_with_sars"),
+        "industry_classification": industry,
+        "industry_main_groups": industry.get("main_group", []),
+        "industry_divisions": industry.get("division", []),
+        "address_information": profile_data.get("address_information", []),
+        "bbbee_information": bbbee,
+        "bbbee_details": bbbee,
+        "ownership_information": profile_data.get("ownership_summary", {}),
+        "directors_members_owners": profile_data.get("directors", []),
+        "accreditations": profile_data.get("accreditations", []),
+        "commodities": profile_data.get("commodities", []),
+        "provinces": profile_data.get("provinces", []),
+        "keywords": profile_data.get("keywords", []),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Tender API helpers
+# -----------------------------------------------------------------------------
+
+def extract_releases(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        releases = payload.get("releases")
+        if isinstance(releases, list):
+            return releases
+
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("releases"), list):
+            return data["releases"]
+
+        if isinstance(payload.get("value"), list):
+            return payload["value"]
+
     if isinstance(payload, list):
         return payload
-
-    if not isinstance(payload, dict):
-        return []
-
-    for key in ["releases", "data", "value", "results", "items"]:
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-
-    if "ocid" in payload or "tender" in payload or "buyer" in payload:
-        return [payload]
 
     return []
 
 
-def fetch_tenders(date_from, date_to, page_number, page_size):
-    url = "https://ocds-api.etenders.gov.za/api/OCDSReleases"
-    params = {
-        "PageNumber": page_number,
-        "PageSize": page_size,
-        "dateFrom": date_from,
-        "dateTo": date_to
-    }
+def fetch_tenders(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page_number: int = 1,
+    page_size: int = 20,
+) -> list[dict[str, Any]]:
+    url = urljoin(ETENDERS_BASE_URL, ETENDERS_RELEASES_PATH)
 
-    response = requests.get(url, params=params, timeout=30)
+    params = {
+        "pageNumber": page_number,
+        "pageSize": page_size,
+    }
+    if date_from:
+        params["dateFrom"] = date_from
+    if date_to:
+        params["dateTo"] = date_to
+
+    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
-    releases = extract_releases(payload)
-    return releases, params
+    return extract_releases(payload)
 
 
-def pick_best_tender_document(documents):
+def document_url(doc: dict[str, Any]) -> Optional[str]:
+    for key in ["url", "downloadUrl", "uri", "href"]:
+        if doc.get(key):
+            return doc[key]
+    return None
+
+
+def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not documents:
         return None
 
-    preferred_types = [
-        "tenderNotice",
-        "biddingDocuments",
-        "technicalSpecifications",
-        "evaluationCriteria",
-        "billOfQuantity"
-    ]
-
     scored = []
     for doc in documents:
+        title = " ".join(
+            str(doc.get(key, "")) for key in ["title", "description", "documentType"]
+        ).lower()
+        url = (document_url(doc) or "").lower()
+
         score = 0
-        doc_type = (doc.get("documentType") or "").lower()
-        title = (doc.get("title") or "").lower()
-        url = (doc.get("url") or "").lower()
-        fmt = (doc.get("format") or "").lower()
-
-        if "pdf" in fmt or url.endswith(".pdf"):
+        if "pdf" in url or url.endswith(".pdf"):
             score += 10
-
-        for idx, value in enumerate(preferred_types[::-1]):
-            if value.lower() in doc_type:
-                score += (idx + 1) * 10
-
-        if any(k in title for k in [
-            "bid document", "tender document", "specification",
-            "terms of reference", "scope of work", "rfq", "rfp"
-        ]):
-            score += 20
+        if "tender" in title:
+            score += 8
+        if "bid" in title:
+            score += 7
+        if "rfq" in title or "rfp" in title:
+            score += 6
+        if "document" in title:
+            score += 5
+        if "specification" in title or "terms of reference" in title:
+            score += 5
+        if "advert" in title:
+            score -= 2
+        if "notice" in title:
+            score -= 1
 
         scored.append((score, doc))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda item: item[0], reverse=True)
     return scored[0][1]
 
 
-def download_pdf_text_from_url(url):
-    if not url:
-        return ""
+def extract_section(text: str, headings: list[str], next_headings: list[str]) -> list[str]:
+    if not text:
+        return []
 
-    response = requests.get(url, timeout=40)
-    response.raise_for_status()
+    pattern_headings = "|".join(re.escape(item) for item in headings)
+    pattern_next = "|".join(re.escape(item) for item in next_headings)
 
-    content_type = response.headers.get("Content-Type", "").lower()
-    if "pdf" not in content_type and not url.lower().endswith(".pdf"):
-        return ""
+    pattern = (
+        rf"(?is)\b(?:{pattern_headings})\b[:\s\-]*"
+        rf"(.*?)"
+        rf"(?=(?:\n[A-Z][A-Z0-9 /()\-]{{3,}})|(?:\b(?:{pattern_next})\b)|\Z)"
+    )
+    matches = re.findall(pattern, text)
+    results = []
 
-    reader = PdfReader(io.BytesIO(response.content))
-    pages = []
-    for page in reader.pages:
-        pages.append(page.extract_text() or "")
+    for match in matches[:3]:
+        lines = chunk_lines(match)
+        for line in lines[:20]:
+            if 4 < len(line) < 300:
+                results.append(line)
 
-    return "\n".join(pages)
-
-
-def parse_tender_document_text(text):
-    scoring_criteria = []
-    specifications = []
-    requirements = []
-    special_conditions = []
-    briefing = {
-        "compulsory": False,
-        "date": "",
-        "venue": ""
-    }
-
-    for line in [x.strip() for x in text.splitlines() if x.strip()]:
-        ll = line.lower()
-
-        if any(k in ll for k in [
-            "80/20", "90/10", "preference point", "specific goals",
-            "evaluation criteria", "functionality", "price and specific goals"
-        ]):
-            scoring_criteria.append(line[:240])
-
-        if any(k in ll for k in [
-            "scope of work", "specification", "technical requirement",
-            "minimum requirement", "deliverables", "works required"
-        ]):
-            specifications.append(line[:240])
-
-        if any(k in ll for k in [
-            "csd", "tax", "bbbee", "cidb", "ecsa", "sacpcmp",
-            "local content", "compulsory briefing", "mandatory"
-        ]):
-            requirements.append(line[:240])
-
-        if any(k in ll for k in [
-            "special condition", "special conditions"
-        ]):
-            special_conditions.append(line[:240])
-
-        if "briefing" in ll or "site meeting" in ll:
-            if "compulsory" in ll:
-                briefing["compulsory"] = True
-            if not briefing["date"]:
-                date_match = re.search(
-                    r"((?:\d{4}[-/]\d{2}[-/]\d{2})|(?:\d{2}[-/]\d{2}[-/]\d{4}))",
-                    line
-                )
-                if date_match:
-                    briefing["date"] = date_match.group(1)
-            if not briefing["venue"] and ":" in line:
-                briefing["venue"] = line.split(":", 1)[1].strip()[:180]
-
-    return {
-        "scoring_criteria": dedupe_keep_order(scoring_criteria)[:20],
-        "specifications": dedupe_keep_order(specifications)[:20],
-        "requirements": dedupe_keep_order(requirements)[:25],
-        "special_conditions_parsed": dedupe_keep_order(special_conditions)[:12],
-        "briefing_parsed": briefing
-    }
+    return list(dict.fromkeys(results))[:12]
 
 
-def estimate_tender_value(title, description, category):
-    text = f"{title} {description}".lower()
+def find_keyword_lines(text: str, keywords: list[str], limit: int = 12) -> list[str]:
+    results = []
+    for line in chunk_lines(text):
+        line_lower = line.lower()
+        if any(keyword.lower() in line_lower for keyword in keywords):
+            results.append(line)
+        if len(results) >= limit:
+            break
+    return results
 
-    low = 50000
-    high = 300000
-    confidence = "Low"
-    reason = "Generic service estimate based on tender wording."
 
-    if "generator" in text:
-        low, high = 800000, 3000000
-        confidence = "Medium"
-        reason = "Generator installations typically fall within this range."
-    elif any(k in text for k in ["construction", "building", "infrastructure"]):
-        low, high = 500000, 5000000
-        confidence = "Medium"
-        reason = "Construction and infrastructure tenders are usually medium to high value."
-    elif any(k in text for k in ["maintenance", "repair", "servicing"]):
-        low, high = 100000, 1000000
-        confidence = "Medium"
-        reason = "Maintenance and repair contracts vary with scope and contract term."
-    elif any(k in text for k in ["truck", "vehicle", "fire truck"]):
-        low, high = 1000000, 8000000
-        confidence = "High"
-        reason = "Specialized vehicles are typically high-value procurements."
-    elif any(k in text for k in ["server", "hardware", "storage", "backup appliance"]):
-        low, high = 200000, 2000000
-        confidence = "Medium"
-        reason = "IT infrastructure procurement depends on scale and specification."
-    elif category and category.lower() == "goods":
-        low, high = 50000, 1000000
-        confidence = "Low"
-        reason = "General goods procurement estimate."
+def parse_tender_document_text(text: str) -> dict[str, Any]:
+    if not text:
+        return {
+            "scoring_criteria": [],
+            "mandatory_requirements": [],
+            "specifications_scope": [],
+            "special_conditions": [],
+            "briefing_details": [],
+            "compliance_cues": [],
+            "evaluation_cues": [],
+        }
+
+    scoring = find_keyword_lines(
+        text,
+        [
+            "80/20", "90/10", "preference point", "specific goals", "bbbee",
+            "functionality", "evaluation criteria", "score", "points",
+            "minimum threshold", "technical evaluation",
+        ],
+    )
+
+    mandatory = find_keyword_lines(
+        text,
+        [
+            "must submit", "mandatory", "compulsory", "required", "failure to",
+            "tax clearance", "csd", "cidb", "proof", "attach", "submit",
+            "non-responsive",
+        ],
+    )
+
+    specifications = extract_section(
+        text,
+        ["scope of work", "specification", "specifications", "terms of reference", "deliverables"],
+        ["special conditions", "evaluation", "briefing", "contact person", "closing date"],
+    )
+
+    special_conditions = extract_section(
+        text,
+        ["special conditions", "general conditions", "conditions of tender", "conditions"],
+        ["evaluation", "briefing", "scope of work", "specification", "contact person"],
+    )
+
+    briefing = find_keyword_lines(
+        text,
+        [
+            "briefing", "compulsory briefing", "briefing session",
+            "site inspection", "site briefing", "clarification meeting",
+        ],
+    )
+
+    compliance = find_keyword_lines(
+        text,
+        [
+            "tax compliance", "csd", "pin", "sbd", "declaration", "proof of registration",
+            "bank", "iso", "cidb", "letter of good standing",
+        ],
+    )
+
+    evaluation = find_keyword_lines(
+        text,
+        [
+            "pppfa", "80/20", "90/10", "specific goals", "functionality",
+            "threshold", "minimum score", "price and preference",
+        ],
+    )
 
     return {
-        "value_display": f"R{low:,.0f} - R{high:,.0f}",
-        "value_source": "estimated",
-        "estimation_confidence": confidence,
-        "estimation_reason": reason,
-        "estimated_value_low": low,
-        "estimated_value_high": high,
-        "estimated_value_mid": round((low + high) / 2, 0)
+        "scoring_criteria": scoring,
+        "mandatory_requirements": mandatory,
+        "specifications_scope": specifications,
+        "special_conditions": special_conditions,
+        "briefing_details": briefing,
+        "compliance_cues": compliance,
+        "evaluation_cues": evaluation,
     }
 
 
-def estimate_execution_investment(title, description, category, estimated_low, estimated_high):
-    text = f"{title} {description}".lower()
+# -----------------------------------------------------------------------------
+# Tender enrichment and fit scoring
+# -----------------------------------------------------------------------------
 
-    ratio_low = 0.35
-    ratio_high = 0.70
-    reason = "Typical execution readiness, procurement, mobilisation, and delivery costs were applied."
-
-    if "generator" in text:
-        ratio_low, ratio_high = 0.55, 0.82
-        reason = "Generator supply and installation usually require significant equipment, transport, and technical delivery spend."
-    elif any(k in text for k in ["construction", "building", "infrastructure"]):
-        ratio_low, ratio_high = 0.60, 0.85
-        reason = "Construction and infrastructure work generally requires substantial materials, labour, and site mobilisation."
-    elif any(k in text for k in ["maintenance", "repair", "servicing"]):
-        ratio_low, ratio_high = 0.40, 0.70
-        reason = "Maintenance and repair contracts usually carry labour, tools, materials, and travel costs."
-    elif any(k in text for k in ["truck", "vehicle", "fire truck"]):
-        ratio_low, ratio_high = 0.70, 0.92
-        reason = "Vehicle and specialized equipment tenders often require high capital outlay before delivery."
-    elif any(k in text for k in ["server", "hardware", "storage", "backup appliance"]):
-        ratio_low, ratio_high = 0.65, 0.88
-        reason = "Hardware and IT supply contracts typically need significant procurement capital and logistics."
-    elif category and category.lower() == "services":
-        ratio_low, ratio_high = 0.30, 0.60
-        reason = "Service tenders usually need less equipment spend, but still require staffing, compliance, and delivery overhead."
-
-    low = round(estimated_low * ratio_low, 0)
-    high = round(estimated_high * ratio_high, 0)
-    mid = round((low + high) / 2, 0)
-
-    return {
-        "execution_investment_low": low,
-        "execution_investment_high": high,
-        "execution_investment_mid": mid,
-        "execution_investment_display": f"R{low:,.0f} - R{high:,.0f}",
-        "execution_investment_reason": reason
-    }
+def infer_profile_keywords(profile_data: dict[str, Any]) -> set[str]:
+    tokens = set()
+    for key in ["industry_classification", "keywords", "commodities", "provinces"]:
+        value = profile_data.get(key)
+        if isinstance(value, dict):
+            for nested in value.values():
+                if isinstance(nested, list):
+                    for item in nested:
+                        if item:
+                            tokens.update(re.findall(r"[A-Za-z][A-Za-z&/\-]{2,}", str(item).lower()))
+        elif isinstance(value, list):
+            for item in value:
+                if item:
+                    tokens.update(re.findall(r"[A-Za-z][A-Za-z&/\-]{2,}", str(item).lower()))
+    return tokens
 
 
-def infer_requirements(tender_text, profile_text):
-    checks = []
-    text = tender_text.lower()
-    profile = profile_text.lower()
-
-    rules = [
-        ("CSD registration", ["csd"]),
-        ("Tax compliance", ["tax"]),
-        ("B-BBEE evidence", ["b-bbee", "bbbee"]),
-        ("CIDB", ["cidb"]),
-        ("Compulsory briefing", ["briefing", "site meeting"]),
-        ("Local content forms", ["local content", "sbd 6.2"]),
-        ("Professional registration", ["professional registration", "sacpcmp", "ecsa", "preng"]),
-        ("Health and safety", ["safety", "ohs", "health and safety"])
+def score_fit(
+    tender: dict[str, Any],
+    parsed_doc: dict[str, Any],
+    profile_data: Optional[dict[str, Any]],
+    prompt: str,
+) -> dict[str, Any]:
+    tender_text_parts = [
+        tender.get("title") or "",
+        tender.get("description") or "",
+        tender.get("eligibility_criteria") or "",
+        tender.get("special_conditions") or "",
+        " ".join(parsed_doc.get("mandatory_requirements", [])),
+        " ".join(parsed_doc.get("specifications_scope", [])),
+        " ".join(parsed_doc.get("evaluation_cues", [])),
+        prompt or "",
     ]
+    tender_text = " ".join(tender_text_parts).lower()
 
-    for name, keys in rules:
-        if any(k in text for k in keys):
-            if any(k in profile for k in keys if k not in ["briefing", "site meeting", "local content", "sbd 6.2"]):
-                status = "Likely met"
-                comment = "Related evidence appears in the profile."
-            elif name in ["Compulsory briefing", "Local content forms"]:
-                status = "Action required"
-                comment = "TenderAI detected this in the tender. Confirm attendance/forms during bid preparation."
-            else:
-                status = "Check"
-                comment = "TenderAI detected the requirement but could not confirm evidence from the profile."
+    fit_score = 40
+    reasons = []
+    risks = []
+    readiness = []
+    competitiveness = "Unknown"
 
-            checks.append({
-                "name": name,
-                "status": status,
-                "comment": comment
-            })
-
-    return checks[:8]
-
-
-def infer_preference_model(value_mid, profile_text):
-    model = "Estimated 80/20" if value_mid <= 50000000 else "Estimated 90/10"
-
-    if "bbbee" in profile_text.lower() or "b-bbee" in profile_text.lower():
-        comment = "Profile appears to include B-BBEE-related evidence, which may support specific-goal scoring if the tender documents allow it."
-    else:
-        comment = "TenderAI could not confirm B-BBEE-specific evidence from the profile. Confirm the tender's specific goals and proof rules."
-
-    return model, comment
-
-
-def calculate_fit(profile_keywords, prompt_keywords, tender_text, category, requirement_checks, document_parse=None):
-    tokens = set(tokenize(tender_text))
-    combined = list(dict.fromkeys((profile_keywords or []) + (prompt_keywords or [])))
-    matched = sorted(set(combined).intersection(tokens))
-
-    base_score = (len(matched) / max(len(set(combined)), 1)) * 100
-    bonus = 0
-
-    if category and category.lower() in ["works", "services"]:
-        bonus += 10
-
-    intent_keywords = [
-        "installation", "maintenance", "repair", "construction",
-        "electrical", "generator", "supply"
-    ]
-    bonus += sum(1 for k in intent_keywords if k in tokens) * 4
-
-    if len(requirement_checks) >= 3:
-        bonus += 4
-
-    document_parse = document_parse or {}
-    if document_parse.get("scoring_criteria"):
-        bonus += 6
-    if document_parse.get("specifications"):
-        bonus += 6
-    if document_parse.get("requirements"):
-        bonus += 6
-
-    score = round(min(base_score + bonus, 100), 1)
-
-    if score >= 70:
-        band = "High fit"
-    elif score >= 40:
-        band = "Medium fit"
-    else:
-        band = "Low fit"
-
-    return score, band, matched
-
-
-def compute_bid_readiness(requirement_checks):
-    if not requirement_checks:
-        return (
-            "Early-stage",
-            "Limited tender-document requirements were detected from the available notice text."
+    if profile_data:
+        profile_keywords = infer_profile_keywords(profile_data)
+        overlap = sorted(
+            {
+                token for token in profile_keywords
+                if len(token) > 3 and token in tender_text
+            }
         )
+        fit_score += min(len(overlap) * 4, 24)
+        if overlap:
+            reasons.append(f"Capability overlap: {', '.join(overlap[:6])}")
 
-    action_required = sum(1 for r in requirement_checks if r["status"] == "Action required")
-    checks = sum(1 for r in requirement_checks if r["status"] == "Check")
+        tax_status = (
+            profile_data.get("tax_information", {}).get("tax_compliance_status") or ""
+        ).lower()
+        if "compliant" in tax_status or "valid" in tax_status:
+            fit_score += 8
+            readiness.append("Tax compliance signal detected")
+        else:
+            risks.append("Tax compliance status not clearly confirmed in profile")
 
-    if action_required == 0 and checks <= 1:
-        return "Strong", "The profile appears broadly aligned with the detected requirement set."
-    if action_required <= 1 and checks <= 3:
-        return "Moderate", "Some requirements need confirmation or bid preparation work."
-    return "Needs work", "Several requirements or actions need attention before submission."
+        bbbee_status = (
+            profile_data.get("bbbbee_information", {}).get("verification_status") or ""
+        ).lower()
+        if bbbee_status:
+            readiness.append(f"B-BBEE signal: {bbbee_status}")
 
+        profile_provinces = set(profile_data.get("provinces", []))
+        tender_province = tender.get("province")
+        if tender_province and tender_province in profile_provinces:
+            fit_score += 6
+            reasons.append(f"Province match: {tender_province}")
 
-def infer_risk_and_difficulty(description, requirement_checks):
-    text = (description or "").lower()
-    risk_score = 0
-    diff_score = 0
+    mandatory_requirements = parsed_doc.get("mandatory_requirements", [])
+    if mandatory_requirements:
+        risks.append("Mandatory submission items detected in tender document")
 
-    if any(k in text for k in ["compulsory briefing", "site meeting", "mandatory", "compulsory"]):
-        risk_score += 2
-        diff_score += 1
-    if any(k in text for k in ["cidb", "local content", "electrical", "generator", "specialized", "specialised"]):
-        risk_score += 2
-        diff_score += 2
-    if any(k in text for k in ["construction", "infrastructure", "server", "hardware", "truck"]):
-        diff_score += 2
-    if len(requirement_checks) >= 4:
-        risk_score += 1
-        diff_score += 1
+    evaluation_cues = " ".join(parsed_doc.get("evaluation_cues", [])).lower()
+    if "90/10" in evaluation_cues:
+        competitiveness = "Likely stronger weight on price, with preference contribution"
+    elif "80/20" in evaluation_cues:
+        competitiveness = "Likely balanced SME-accessible preference framework"
+    elif "functionality" in evaluation_cues:
+        competitiveness = "Likely prequalification through functionality threshold"
 
-    if risk_score >= 4:
-        risk_level = "High"
-        risk_reason = "The tender appears to include multiple conditions, specialized requirements, or mandatory bid risks."
-    elif risk_score >= 2:
-        risk_level = "Medium"
-        risk_reason = "The tender has some conditions that may increase compliance or delivery risk."
+    if "compulsory briefing" in " ".join(parsed_doc.get("briefing_details", [])).lower():
+        risks.append("Compulsory briefing cue detected")
+
+    if "cidb" in tender_text:
+        risks.append("CIDB or construction-class compliance may be required")
+    if "csd" in tender_text:
+        readiness.append("CSD alignment likely relevant")
+    if "sbd" in tender_text:
+        risks.append("Standard bidding documents likely required")
+
+    fit_score = max(5, min(95, fit_score))
+
+    if fit_score >= 75:
+        fit_band = "High fit"
+    elif fit_score >= 55:
+        fit_band = "Medium fit"
     else:
-        risk_level = "Low"
-        risk_reason = "The tender appears relatively straightforward based on the available notice content."
+        fit_band = "Low fit"
 
-    if diff_score >= 4:
-        difficulty_level = "High"
-        difficulty_reason = "The tender likely requires stronger capability proof and tighter delivery planning."
-    elif diff_score >= 2:
-        difficulty_level = "Medium"
-        difficulty_reason = "The tender seems achievable but may require stronger documentation and positioning."
-    else:
-        difficulty_level = "Low"
-        difficulty_reason = "The tender appears comparatively accessible based on the available text."
+    investment = "Medium"
+    if len(mandatory_requirements) >= 8:
+        investment = "High"
+    elif len(mandatory_requirements) <= 2:
+        investment = "Low"
 
-    return risk_level, risk_reason, difficulty_level, difficulty_reason
-
-
-def build_ai_summary(title, description, buyer, category):
-    desc = (description or "").strip()
-    if desc:
-        short_desc = desc[:240] + ("..." if len(desc) > 240 else "")
-        return f"{title} issued by {buyer} appears to be a {category.lower() if category else 'procurement'} opportunity focused on: {short_desc}"
-    return f"{title} issued by {buyer} appears to be a {category.lower() if category else 'procurement'} opportunity with limited public description."
-
-
-def enrich_tender(item, profile=None, prompt=""):
-    tender = item.get("tender", {}) if isinstance(item, dict) else {}
-    buyer = item.get("buyer", {}) if isinstance(item, dict) else {}
-    tender_period = tender.get("tenderPeriod", {}) if isinstance(tender, dict) else {}
-    value = tender.get("value", {}) if isinstance(tender, dict) else {}
-
-    description = tender.get("description", "") or ""
-    title = tender.get("title", "") or ""
-    buyer_name = buyer.get("name", "") or ""
-    category = tender.get("mainProcurementCategory", "") or ""
-    province = infer_province(f"{buyer_name} {description}")
-    combined_text = f"{title} {description} {buyer_name} {category}"
-
-    documents = tender.get("documents", []) or []
-    best_document = pick_best_tender_document(documents)
-    best_document_url = best_document.get("url", "") if best_document else ""
-    best_document_title = best_document.get("title", "") if best_document else ""
-
-    document_text = ""
-    document_parse = {
-        "scoring_criteria": [],
-        "specifications": [],
-        "requirements": [],
-        "special_conditions_parsed": [],
-        "briefing_parsed": {"compulsory": False, "date": "", "venue": ""}
-    }
-
-    try:
-        if best_document_url:
-            document_text = download_pdf_text_from_url(best_document_url)
-            if document_text:
-                document_parse = parse_tender_document_text(document_text)
-    except Exception:
-        pass
-
-    profile_text = profile["text"] if profile else ""
-    profile_keywords = profile["meta"]["keywords"] if profile else []
-    prompt_keywords = tokenize(prompt)[:10]
-    requirement_checks = infer_requirements(combined_text + " " + document_text, profile_text)
-
-    fit_score, fit_band, matched_keywords = calculate_fit(
-        profile_keywords=profile_keywords,
-        prompt_keywords=prompt_keywords,
-        tender_text=combined_text + " " + document_text,
-        category=category,
-        requirement_checks=requirement_checks,
-        document_parse=document_parse
-    )
-
-    published_value = value.get("amount")
-    published_currency = value.get("currency")
-    estimation = estimate_tender_value(title, description + " " + document_text[:1500], category)
-
-    if published_value and published_value > 0:
-        value_display = f"R{published_value:,.0f}"
-        value_source = "published"
-        estimation_confidence = "High"
-        estimation_reason = "Published by tender source."
-        estimated_value_low = published_value
-        estimated_value_high = published_value
-        estimated_value_mid = published_value
-    else:
-        value_display = estimation["value_display"]
-        value_source = estimation["value_source"]
-        estimation_confidence = estimation["estimation_confidence"]
-        estimation_reason = estimation["estimation_reason"]
-        estimated_value_low = estimation["estimated_value_low"]
-        estimated_value_high = estimation["estimated_value_high"]
-        estimated_value_mid = estimation["estimated_value_mid"]
-
-    execution = estimate_execution_investment(
-        title=title,
-        description=description + " " + document_text[:1500],
-        category=category,
-        estimated_low=estimated_value_low,
-        estimated_high=estimated_value_high
-    )
-
-    ai_summary = build_ai_summary(title, description or document_text[:350], buyer_name, category)
-    risk_level, risk_reason, difficulty_level, difficulty_reason = infer_risk_and_difficulty(
-        description + " " + document_text[:1500],
-        requirement_checks
-    )
-    preferential_model, preference_comment = infer_preference_model(
-        estimated_value_mid,
-        profile_text
-    )
-    bid_readiness, bid_readiness_comment = compute_bid_readiness(requirement_checks)
-
-    win_probability = max(
-        10,
-        min(
-            92,
-            round(
-                fit_score
-                - (5 if risk_level == "High" else 0)
-                + (4 if bid_readiness == "Strong" else 0),
-                0
-            )
-        )
-    )
-
-    tender_id = item.get("ocid") or str(uuid.uuid4())
-
-    enriched = {
-        "id": tender_id,
-        "ocid": item.get("ocid") if isinstance(item, dict) else None,
-        "title": title,
-        "buyer": buyer_name,
-        "description": description,
-        "status": tender.get("status"),
-        "category": category,
-        "province": province,
-        "close_date": tender_period.get("endDate"),
-        "date_published": item.get("date"),
-        "value_amount": published_value,
-        "value_currency": published_currency,
-        "value_display": value_display,
-        "value_source": value_source,
-        "estimation_confidence": estimation_confidence,
-        "estimation_reason": estimation_reason,
-        "estimated_value_low": estimated_value_low,
-        "estimated_value_high": estimated_value_high,
-        "estimated_value_mid": estimated_value_mid,
+    return {
         "fit_score": fit_score,
         "fit_band": fit_band,
-        "win_probability": win_probability,
-        "matched_keywords": matched_keywords,
-        "execution_investment_low": execution["execution_investment_low"],
-        "execution_investment_high": execution["execution_investment_high"],
-        "execution_investment_mid": execution["execution_investment_mid"],
-        "execution_investment_display": execution["execution_investment_display"],
-        "execution_investment_reason": execution["execution_investment_reason"],
-        "ai_summary": ai_summary,
-        "key_requirements": [r["name"] for r in requirement_checks],
-        "requirement_checks": requirement_checks,
-        "risk_level": risk_level,
-        "risk_reason": risk_reason,
-        "difficulty_level": difficulty_level,
-        "difficulty_reason": difficulty_reason,
-        "preferential_model": preferential_model,
-        "preference_comment": preference_comment,
-        "bid_readiness": bid_readiness,
-        "bid_readiness_comment": bid_readiness_comment,
-        "tender_number": tender.get("id") or title,
-        "organ_of_state": buyer_name,
-        "tender_type": category or "Unspecified",
-        "location_of_service_delivery": tender.get("deliveryLocation") or province,
-        "special_conditions": " | ".join(document_parse["special_conditions_parsed"][:4]) or "Review full tender documents for mandatory conditions and returnable schedules.",
-        "contact_person": (tender.get("contactPerson") or {}).get("name", "Not provided in current API notice"),
-        "contact_email": (tender.get("contactPerson") or {}).get("email", "Not provided in current API notice"),
-        "contact_phone": (tender.get("contactPerson") or {}).get("telephoneNumber", "Not provided in current API notice"),
-        "briefing_session_details": (
-            f'Compulsory: {"Yes" if document_parse["briefing_parsed"]["compulsory"] else "Unknown"}; '
-            f'Date: {document_parse["briefing_parsed"]["date"] or "Not detected"}; '
-            f'Venue: {document_parse["briefing_parsed"]["venue"] or "Not detected"}'
-        ),
-        "tender_document_url": best_document_url,
-        "documents": documents,
-        "best_document_url": best_document_url,
-        "best_document_title": best_document_title,
-        "parsed_scoring_criteria": document_parse["scoring_criteria"],
-        "parsed_specifications": document_parse["specifications"],
-        "parsed_requirements": document_parse["requirements"],
-        "parsed_special_conditions": document_parse["special_conditions_parsed"],
-        "parsed_briefing": document_parse["briefing_parsed"],
+        "fit_reasons": reasons[:5],
+        "risk_flags": risks[:6],
+        "competitiveness": competitiveness,
+        "execution_investment": investment,
+        "strategic_readiness": readiness[:6],
     }
 
-    TENDER_CACHE[tender_id] = enriched
-    return enriched
 
-
-def build_analytics(tenders):
-    sector_counter = Counter([t.get("category") or "Unspecified" for t in tenders])
-    province_counter = Counter([t.get("province") or "Unspecified" for t in tenders])
-
-    by_sector = [{"label": k, "value": v} for k, v in sector_counter.most_common(6)]
-    by_province = [{"label": k, "value": v} for k, v in province_counter.most_common(6)]
-
-    avg_value = round(
-        sum(t.get("estimated_value_mid", 0) for t in tenders) / max(len(tenders), 1),
-        0
-    )
-
-    top_category = by_sector[0]["label"] if by_sector else "No dominant sector"
-    top_category_share = round((by_sector[0]["value"] / max(len(tenders), 1)) * 100, 0) if by_sector else 0
-
-    top_province = by_province[0]["label"] if by_province else "No dominant province"
-    top_province_share = round((by_province[0]["value"] / max(len(tenders), 1)) * 100, 0) if by_province else 0
+def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
+    tender = item.get("tender", {}) or {}
+    buyer = item.get("buyer", {}) or {}
+    documents = tender.get("documents", []) or []
+    tender_period = tender.get("tenderPeriod", {}) or {}
+    value = tender.get("value", {}) or {}
 
     return {
-        "by_sector": by_sector,
-        "by_province": by_province,
-        "trend_insights": {
-            "top_category_insight": f"{top_category} accounts for roughly {top_category_share}% of the current opportunity set.",
-            "top_province_insight": f"{top_province} contributes roughly {top_province_share}% of the observed opportunities.",
-            "value_insight": f"The average estimated contract value in the current scan is about R{avg_value:,.0f}."
-        }
+        "ocid": item.get("ocid"),
+        "release_id": item.get("id"),
+        "tender_id": tender.get("id"),
+        "title": tender.get("title"),
+        "status": tender.get("status"),
+        "province": tender.get("province"),
+        "delivery_location": tender.get("deliveryLocation"),
+        "special_conditions": tender.get("specialConditions"),
+        "main_procurement_category": tender.get("mainProcurementCategory"),
+        "description": tender.get("description"),
+        "eligibility_criteria": tender.get("eligibilityCriteria"),
+        "selection_criteria": tender.get("selectionCriteria"),
+        "briefing_session": tender.get("briefingSession"),
+        "contact_person": tender.get("contactPerson"),
+        "buyer_name": buyer.get("name"),
+        "tender_period": tender_period,
+        "tender_value": value,
+        "documents": documents,
+        "lots": tender.get("lots", []),
+        "parties": item.get("parties", []),
+        "awards": item.get("awards", []),
+        "contracts": item.get("contracts", []),
+        "related_processes": item.get("relatedProcesses", []),
     }
 
 
-def count_closing_soon(tenders):
-    count = 0
-    now = datetime.now(timezone.utc)
+def enrich_tender(
+    item: dict[str, Any],
+    profile: Optional[dict[str, Any]] = None,
+    prompt: str = "",
+) -> dict[str, Any]:
+    tender = normalize_tender_release(item)
+    best_doc = pick_best_tender_document(tender.get("documents", []))
+    best_doc_url = document_url(best_doc or {})
+    parsed_text = download_pdf_text_from_url(best_doc_url) if best_doc_url else ""
+    parsed_doc = parse_tender_document_text(parsed_text)
+    fit = score_fit(tender, parsed_doc, profile, prompt)
 
-    for t in tenders:
-        close_date = t.get("close_date")
-        if not close_date:
-            continue
-        try:
-            dt = datetime.fromisoformat(close_date.replace("Z", "+00:00"))
-            delta_days = (dt - now).days
-            if 0 <= delta_days <= 7:
-                count += 1
-        except Exception:
-            pass
+    tender["document_url"] = best_doc_url
+    tender["document_title"] = (best_doc or {}).get("title")
+    tender["parsed_document"] = parsed_doc
+    tender["analysis"] = fit
+    return tender
 
-    return count
 
+def get_profile_record(profile_id: str) -> Optional[Profile]:
+    with Session(engine) as session:
+        return session.get(Profile, profile_id)
+
+
+def get_active_profile_record() -> Optional[Profile]:
+    with Session(engine) as session:
+        statement = select(Profile).where(Profile.is_active.is_(True)).order_by(Profile.uploaded_at.desc())
+        return session.scalar(statement)
+
+
+def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
+    if profile_id:
+        record = get_profile_record(profile_id)
+    else:
+        record = get_active_profile_record()
+
+    if not record:
+        return None
+
+    return json_loads_safe(record.parsed_json, {})
+
+
+# -----------------------------------------------------------------------------
+# HTML routes
+# -----------------------------------------------------------------------------
 
 @app.get("/")
 def home():
-    return render_template("home.html")
+    today = datetime.now(timezone.utc).date()
+    date_from = (today - timedelta(days=7)).isoformat()
+    date_to = (today + timedelta(days=30)).isoformat()
+
+    tenders = []
+    try:
+        releases = fetch_tenders(date_from=date_from, date_to=date_to, page_number=1, page_size=10)
+        for item in releases[:8]:
+            tender = normalize_tender_release(item)
+            tenders.append(tender)
+    except Exception:
+        tenders = []
+
+    with Session(engine) as session:
+        profiles = session.scalars(
+            select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
+        ).all()
+
+    return render_template(
+        "home.html",
+        tenders=tenders,
+        profiles=profiles,
+    )
 
 
 @app.get("/profiles")
 def profiles_page():
-    return render_template("profiles.html")
+    with Session(engine) as session:
+        profiles = session.scalars(
+            select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
+        ).all()
+
+    parsed_profiles = []
+    for profile in profiles:
+        parsed_profiles.append(
+            {
+                "id": profile.id,
+                "file_name": profile.file_name,
+                "is_active": profile.is_active,
+                "uploaded_at": profile.uploaded_at.isoformat(),
+                "summary": json_loads_safe(profile.summary_json, {}),
+            }
+        )
+
+    return render_template("profiles.html", profiles=parsed_profiles)
 
 
 @app.get("/tenders")
 def tenders_page():
-    return render_template("feed.html")
+    prompt = request.args.get("prompt", "").strip()
+    profile_id = request.args.get("profile_id", "").strip() or None
+
+    profile_data = get_profile_data(profile_id)
+    if profile_id and not profile_data:
+        flash("Selected profile was not found. Please activate or upload a profile again.", "error")
+        return redirect(url_for("profiles_page"))
+
+    today = datetime.now(timezone.utc).date()
+    date_from = request.args.get("date_from", (today - timedelta(days=7)).isoformat())
+    date_to = request.args.get("date_to", (today + timedelta(days=30)).isoformat())
+
+    enriched = []
+    error_message = None
+
+    try:
+        releases = fetch_tenders(date_from=date_from, date_to=date_to, page_number=1, page_size=MAX_TENDERS)
+        for item in releases[:MAX_TENDERS]:
+            enriched.append(enrich_tender(item, profile=profile_data, prompt=prompt))
+    except Exception as exc:
+        error_message = str(exc)
+
+    return render_template(
+        "feed.html",
+        tenders=enriched,
+        prompt=prompt,
+        profile_id=profile_id,
+        error_message=error_message,
+    )
 
 
-@app.get("/tender/<tender_id>")
-def tender_detail_page(tender_id):
-    tender = TENDER_CACHE.get(tender_id)
-    if not tender:
-        return redirect(url_for("tenders_page"))
-    return render_template("tender_detail.html", tender=tender)
+@app.get("/tender/<path:tender_id>")
+def tender_detail_page(tender_id: str):
+    today = datetime.now(timezone.utc).date()
+    releases = fetch_tenders(
+        date_from=(today - timedelta(days=30)).isoformat(),
+        date_to=(today + timedelta(days=60)).isoformat(),
+        page_number=1,
+        page_size=MAX_TENDERS,
+    )
 
+    matched = None
+    for item in releases:
+        tender = normalize_tender_release(item)
+        if str(tender.get("tender_id")) == tender_id or str(tender.get("ocid")) == tender_id:
+            matched = item
+            break
+
+    if not matched:
+        abort(404)
+
+    enriched = enrich_tender(matched)
+    return render_template("tender_detail.html", tender=enriched)
+
+
+@app.get("/health")
+def health():
+    return render_json_response(
+        {
+            "status": "ok",
+            "app_version": APP_VERSION,
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# API routes
+# -----------------------------------------------------------------------------
 
 @app.get("/api/profiles")
-def api_profiles():
-    profiles = list(PROFILE_STORE.values())
+def api_profiles_list():
+    with Session(engine) as session:
+        profiles = session.scalars(
+            select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
+        ).all()
 
-    def get_main_groups(meta):
-        return [
-            x.get("main_group", "")
-            for x in meta.get("industry_classification", [])
-            if x.get("main_group")
-        ]
-
-    def get_divisions(meta):
-        return [
-            x.get("division", "")
-            for x in meta.get("industry_classification", [])
-            if x.get("division")
-        ]
-
-    return jsonify({
-        "status": "ok",
-        "profiles": [
+    payload = []
+    for profile in profiles:
+        payload.append(
             {
-                "id": p["id"],
-                "name": p["name"],
-                "company_name": p["meta"]["supplier_identification"].get("legal_name", "Unknown"),
-                "supplier_active_status": "Yes" if p["meta"]["supplier_identification"].get("is_active") else "No",
-                "supplier_sub_type": p["meta"]["supplier_identification"].get("supplier_sub_type", "Unknown"),
-                "country_of_origin": p["meta"]["supplier_identification"].get("country_of_origin", "Unknown"),
-                "government_employee": "Yes" if p["meta"]["supplier_identification"].get("government_employee") else "No",
-                "overall_tax_status": p["meta"]["tax_information"].get("tax_compliance_status", "Unknown"),
-                "sars_registration_status": "Yes" if p["meta"]["tax_information"].get("is_registered_with_sars") else "No",
-                "industry_classification": ", ".join(get_main_groups(p["meta"])[:3]) or "Unknown",
-                "industry_main_groups": get_main_groups(p["meta"]),
-                "industry_divisions": get_divisions(p["meta"]),
-                "address_information": (
-                    p["meta"]["address_information"][0].get("address_line_1", "Unknown")
-                    if p["meta"].get("address_information") else "Unknown"
-                ),
-                "bbbee_information": (
-                    p["meta"]["bbbbee_information"].get("verification_status")
-                    or p["meta"]["bbbbee_information"].get("certificate_number")
-                    or "Unknown"
-                ),
-                "bbbee_details": [
-                    f'Certificate: {p["meta"]["bbbbee_information"].get("certificate_number", "Unknown")}',
-                    f'Issue: {p["meta"]["bbbbee_information"].get("issue_date", "Unknown")}',
-                    f'Expiry: {p["meta"]["bbbbee_information"].get("expiry_date", "Unknown")}'
-                ],
-                "ownership_information": str(p["meta"].get("ownership_summary", {})),
-                "directors_members_owners": [x.get("name", "") for x in p["meta"].get("directors", []) if x.get("name")],
-                "accreditations": [
-                    {
-                        "status": x.get("status", "Unknown"),
-                        "description": x.get("description", "Unknown"),
-                        "expiration_date": x.get("expiry_date", "Unknown")
-                    }
-                    for x in p["meta"].get("accreditations", [])
-                ],
-                "associations": [],
-                "commodities": p["meta"].get("keywords", [])[:8],
-                "provinces": [
-                    x.get("province", "")
-                    for x in p["meta"].get("address_information", [])
-                    if x.get("province")
-                ],
-                "keywords": p["meta"].get("keywords", [])[:12],
-                "uploaded_at": p["uploaded_at"]
+                "id": profile.id,
+                "file_name": profile.file_name,
+                "is_active": profile.is_active,
+                "uploaded_at": profile.uploaded_at.isoformat(),
+                **json_loads_safe(profile.summary_json, {}),
             }
-            for p in profiles
-        ]
-    })
+        )
+
+    return render_json_response(payload)
 
 
 @app.post("/api/profiles")
-def api_upload_profile():
-    if "profile_pdf" not in request.files:
-        return jsonify({"status": "error", "error": "No PDF uploaded"}), 400
+def api_profiles_upload():
+    if "file" not in request.files:
+        return render_json_response({"error": "No file uploaded"}, 400)
 
-    file = request.files["profile_pdf"]
-    if not file.filename.lower().endswith(".pdf"):
-        return jsonify({"status": "error", "error": "Upload a PDF file"}), 400
+    file = request.files["file"]
+    if not file or not file.filename:
+        return render_json_response({"error": "No file selected"}, 400)
 
-    text = extract_pdf_text(file)
-    meta = parse_profile_metadata(text)
+    if not allowed_profile(file.filename):
+        return render_json_response({"error": "Only PDF profile uploads are supported"}, 400)
 
     profile_id = str(uuid.uuid4())
-    PROFILE_STORE[profile_id] = {
-        "id": profile_id,
-        "name": file.filename,
-        "text": text,
-        "meta": meta,
-        "uploaded_at": datetime.now(timezone.utc).isoformat()
-    }
+    storage_key = save_profile_file(file, profile_id)
+    pdf_bytes = read_profile_file_bytes(storage_key)
+    profile_text = extract_pdf_text_from_bytes(pdf_bytes)
 
-    return jsonify({"status": "ok", "profile_id": profile_id})
+    parsed = parse_profile_pdf_text(profile_text)
+    summary = profile_summary_for_ui(parsed)
+
+    with Session(engine) as session:
+        has_any_profile = session.scalar(select(Profile.id).limit(1)) is not None
+
+        record = Profile(
+            id=profile_id,
+            file_name=secure_filename(file.filename),
+            storage_key=storage_key,
+            company_name=summary.get("company_name"),
+            profile_text=profile_text,
+            parsed_json=json.dumps(parsed),
+            summary_json=json.dumps(summary),
+            is_active=not has_any_profile,
+        )
+        session.add(record)
+        session.commit()
+
+    return render_json_response(
+        {
+            "id": profile_id,
+            "file_name": secure_filename(file.filename),
+            "is_active": not has_any_profile,
+            **summary,
+        },
+        201,
+    )
+
+
+@app.post("/api/profiles/<profile_id>/activate")
+def api_profiles_activate(profile_id: str):
+    with Session(engine) as session:
+        target = session.get(Profile, profile_id)
+        if not target:
+            return render_json_response({"error": "Profile not found"}, 404)
+
+        all_profiles = session.scalars(select(Profile)).all()
+        for profile in all_profiles:
+            profile.is_active = profile.id == profile_id
+
+        session.commit()
+
+    return render_json_response({"status": "ok", "active_profile_id": profile_id})
 
 
 @app.delete("/api/profiles/<profile_id>")
-def api_delete_profile(profile_id):
-    PROFILE_STORE.pop(profile_id, None)
-    return jsonify({"status": "ok"})
+def api_profiles_delete(profile_id: str):
+    with Session(engine) as session:
+        target = session.get(Profile, profile_id)
+        if not target:
+            return render_json_response({"error": "Profile not found"}, 404)
 
+        was_active = target.is_active
+        session.delete(target)
+        session.commit()
 
-@app.post("/api/score")
-def api_score():
-    body = request.get_json(silent=True) or {}
-    profile_id = body.get("profile_id")
-    prompt = body.get("prompt", "")
-    date_from = body.get("date_from", "2026-01-01")
-    date_to = body.get("date_to", "2026-03-17")
-    page_number = int(body.get("page_number", 1))
-    page_size = int(body.get("page_size", 10))
+        if was_active:
+            next_profile = session.scalar(
+                select(Profile).order_by(Profile.uploaded_at.desc())
+            )
+            if next_profile:
+                next_profile.is_active = True
+                session.commit()
 
-    profile = PROFILE_STORE.get(profile_id)
-    if not profile:
-        return jsonify({"status": "error", "error": "Profile not found"}), 404
-
-    try:
-        releases, _ = fetch_tenders(date_from, date_to, page_number, page_size)
-        tenders = [enrich_tender(item, profile=profile, prompt=prompt) for item in releases]
-        tenders = sorted(
-            tenders,
-            key=lambda x: (x["fit_score"], x["win_probability"]),
-            reverse=True
-        )
-
-        analytics = build_analytics(tenders)
-
-        return jsonify({
-            "status": "ok",
-            "profile_name": profile["name"],
-            "prompt": prompt,
-            "summary": {
-                "returned_tenders": len(tenders),
-                "high_fit": sum(1 for t in tenders if t["fit_band"] == "High fit"),
-                "medium_fit": sum(1 for t in tenders if t["fit_band"] == "Medium fit"),
-                "low_fit": sum(1 for t in tenders if t["fit_band"] == "Low fit"),
-                "closing_soon": count_closing_soon(tenders),
-                "average_estimated_value_mid": round(
-                    sum(t["estimated_value_mid"] for t in tenders) / max(len(tenders), 1),
-                    0
-                )
-            },
-            "analytics": analytics,
-            "tenders": tenders
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+    return render_json_response({"status": "deleted", "id": profile_id})
 
 
 @app.get("/api/tenders")
 def api_tenders():
-    date_from = request.args.get("date_from", "2026-01-01")
-    date_to = request.args.get("date_to", "2026-03-17")
-    page_number = int(request.args.get("page_number", 1))
-    page_size = int(request.args.get("page_size", 20))
-    province_filter = request.args.get("province", "").strip().lower()
-    industry_filter = request.args.get("industry", "").strip().lower()
+    today = datetime.now(timezone.utc).date()
+    date_from = request.args.get("date_from", (today - timedelta(days=7)).isoformat())
+    date_to = request.args.get("date_to", (today + timedelta(days=30)).isoformat())
+    page_number = int(request.args.get("page_number", "1"))
+    page_size = int(request.args.get("page_size", "20"))
 
-    try:
-        releases, _ = fetch_tenders(date_from, date_to, page_number, page_size)
-        tenders = [enrich_tender(item, profile=None, prompt="") for item in releases]
-
-        if province_filter:
-            tenders = [t for t in tenders if province_filter in t.get("province", "").lower()]
-
-        if industry_filter:
-            tenders = [
-                t for t in tenders
-                if industry_filter in t.get("category", "").lower()
-                or industry_filter in t.get("description", "").lower()
-            ]
-
-        return jsonify({
-            "status": "ok",
-            "tenders": tenders
-        })
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+    releases = fetch_tenders(
+        date_from=date_from,
+        date_to=date_to,
+        page_number=page_number,
+        page_size=page_size,
+    )
+    payload = [normalize_tender_release(item) for item in releases]
+    return render_json_response(payload)
 
 
-@app.get("/api/tender/<tender_id>")
-def api_tender_detail(tender_id):
-    tender = TENDER_CACHE.get(tender_id)
-    if not tender:
-        return jsonify({"status": "error", "error": "Tender not found"}), 404
-    return jsonify({"status": "ok", "tender": tender})
+@app.get("/api/tender/<path:tender_id>")
+def api_tender_detail(tender_id: str):
+    today = datetime.now(timezone.utc).date()
+    releases = fetch_tenders(
+        date_from=(today - timedelta(days=30)).isoformat(),
+        date_to=(today + timedelta(days=60)).isoformat(),
+        page_number=1,
+        page_size=MAX_TENDERS,
+    )
+
+    matched = None
+    for item in releases:
+        tender = normalize_tender_release(item)
+        if str(tender.get("tender_id")) == tender_id or str(tender.get("ocid")) == tender_id:
+            matched = item
+            break
+
+    if not matched:
+        return render_json_response({"error": "Tender not found"}, 404)
+
+    return render_json_response(enrich_tender(matched))
+
+
+@app.post("/api/score")
+def api_score():
+    payload = request.get_json(silent=True) or {}
+    prompt = (payload.get("prompt") or "").strip()
+    profile_id = (payload.get("profile_id") or "").strip() or None
+
+    profile_data = get_profile_data(profile_id)
+    if profile_id and not profile_data:
+        return render_json_response({"error": "Profile not found"}, 404)
+
+    today = datetime.now(timezone.utc).date()
+    releases = fetch_tenders(
+        date_from=(today - timedelta(days=7)).isoformat(),
+        date_to=(today + timedelta(days=30)).isoformat(),
+        page_number=1,
+        page_size=MAX_TENDERS,
+    )
+
+    enriched = [enrich_tender(item, profile=profile_data, prompt=prompt) for item in releases[:MAX_TENDERS]]
+    return render_json_response(enriched)
 
 
 @app.post("/api/advise")
 def api_advise():
-    body = request.get_json(silent=True) or {}
-    tender = body.get("tender", {}) or {}
-    profile_id = body.get("profile_id")
-    profile = PROFILE_STORE.get(profile_id)
+    payload = request.get_json(silent=True) or {}
+    tender = payload.get("tender") or {}
+    profile = payload.get("profile") or {}
+    parsed_doc = tender.get("parsed_document") or {}
 
-    profile_text = profile["text"] if profile else ""
-    title = str(tender.get("title", ""))
-    description = str(tender.get("description", ""))
-    category = str(tender.get("category", ""))
-    matched_keywords = tender.get("matched_keywords", []) or []
-
-    advice = []
-    required_capabilities = tender.get("key_requirements", []) or []
-
-    if not matched_keywords:
-        advice.append("Sharpen your capability statement so it mirrors the exact tender language more directly.")
-    else:
-        advice.append("Reflect the strongest matched keywords in your executive summary, methodology, and pricing narrative.")
-
-    if "generator" in f"{title} {description}".lower():
-        advice.append("Include generator-specific references, electrical compliance evidence, and technical delivery capability.")
-        required_capabilities.extend([
-            "Electrical compliance certificate",
-            "Generator installation references",
-            "Technical methodology"
-        ])
-
-    if category.lower() == "works":
-        advice.append("Show site methodology, supervision structure, safety planning, and mobilisation readiness.")
-        required_capabilities.extend([
-            "Health and safety file",
-            "Construction methodology",
-            "Site mobilisation plan"
-        ])
-
-    if category.lower() == "services":
-        advice.append("Show turnaround times, staffing depth, response processes, and geographic operating capacity.")
-        required_capabilities.extend([
-            "Service delivery plan",
-            "Team CVs",
-            "Operational response plan"
-        ])
-
-    if "bbbee" not in profile_text.lower() and "b-bbee" not in profile_text.lower():
-        advice.append("Confirm whether you have current B-BBEE evidence available if the tender allocates points to specific goals.")
-
-    if tender.get("bid_readiness") == "Needs work":
-        advice.append("Do not treat this as submission-ready yet. Close the missing evidence gaps before committing bid resources.")
-
-    should_apply = (
-        "Apply if you can close the highlighted compliance and documentation gaps quickly."
-        if tender.get("fit_score", 0) >= 55
-        else "Monitor rather than apply immediately unless you have stronger supporting evidence than TenderAI could detect."
-    )
-    risk_comment = f"Current risk view: {tender.get('risk_level', 'Unknown')} risk. {tender.get('risk_reason', '')}"
-    competitor_assumption = "Expect competition from suppliers with stronger reference portfolios, complete compliance packs, and closer scope alignment."
-
-    required_capabilities = dedupe_keep_order(required_capabilities)[:10]
-
-    return jsonify({
-        "status": "ok",
-        "should_apply": should_apply,
-        "risk_comment": risk_comment,
-        "competitor_assumption": competitor_assumption,
-        "advice": advice,
-        "required_capabilities": required_capabilities
-    })
+    advice = {
+        "summary": "Prioritize compliance completeness, capability proof, and evaluation-fit evidence.",
+        "actions": [
+            "Validate all mandatory submission items against the tender document.",
+            "Prepare a response structure aligned to specifications and scope headings.",
+            "Surface tax, CSD, and B-BBEE evidence early in the submission pack.",
+            "Address functionality thresholds and scoring cues explicitly where detected.",
+            "Confirm briefing attendance requirements and date constraints before bid/no-bid.",
+        ],
+        "profile_signals": profile.get("ai_enrichment", {}).get("compliance_flags", []),
+        "tender_signals": parsed_doc.get("evaluation_cues", []),
+    }
+    return render_json_response(advice)
 
 
 @app.post("/api/service-request")
 def api_service_request():
-    body = request.get_json(silent=True) or {}
-    name = body.get("name", "Unknown")
-    company = body.get("company", "Unknown")
-    tender = body.get("tender", {}) or {}
+    payload = request.get_json(silent=True) or {}
+    return render_json_response(
+        {
+            "status": "received",
+            "message": "Service request stub recorded",
+            "payload": payload,
+        },
+        202,
+    )
 
-    reference = f"TAI-{abs(hash((name, company, tender.get('ocid', 'NA')))) % 1000000:06d}"
 
-    return jsonify({
-        "status": "ok",
-        "reference": reference
-    })
+# -----------------------------------------------------------------------------
+# Entrypoint
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), debug=True)
