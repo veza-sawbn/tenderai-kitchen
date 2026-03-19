@@ -26,7 +26,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-11")
+APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-12")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
@@ -87,9 +87,13 @@ def configure_database() -> None:
             os.makedirs("/tmp", exist_ok=True)
 
         connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-        engine = create_engine(DATABASE_URL, future=True, connect_args=connect_args)
-        SessionLocal = sessionmaker(bind=engine, future=True)
-        Base.metadata.create_all(engine)
+        local_engine = create_engine(DATABASE_URL, future=True, connect_args=connect_args)
+        local_session = sessionmaker(bind=local_engine, future=True)
+
+        Base.metadata.create_all(local_engine)
+
+        engine = local_engine
+        SessionLocal = local_session
         DB_INIT_ERROR = None
         print("Database initialized successfully")
     except Exception as exc:
@@ -533,7 +537,6 @@ def build_profile_summary_text(profile: dict[str, Any]) -> str:
 
 def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
     profile = build_empty_profile_schema()
-    lines = chunk_lines(text)
     text_lower = text.lower()
 
     supplier = profile["supplier_identification"]
@@ -582,33 +585,12 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
         text,
     )
 
-    email_matches = sorted(set(re.findall(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", text, re.IGNORECASE)))
-    phone_matches = sorted(set(re.findall(r"(?:\+27|0)[0-9][0-9\s\-]{7,}", text, re.IGNORECASE)))
-
-    if email_matches or phone_matches:
-        profile["contact_information"].append(
-            {
-                "contact_type": "primary",
-                "is_preferred": True,
-                "name": None,
-                "surname": None,
-                "phone": phone_matches[0] if phone_matches else None,
-                "email": email_matches[0] if email_matches else None,
-                "website": None,
-                "communication_preference": None,
-                "is_csd_user": None,
-            }
-        )
-
     provinces = [
         "Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo",
         "Mpumalanga", "Northern Cape", "North West", "Western Cape",
     ]
     profile["provinces"] = [province for province in provinces if province.lower() in text_lower]
     profile["ai_enrichment"]["summary"] = build_profile_summary_text(profile)
-    profile["ai_enrichment"]["capability_keywords"] = []
-    profile["ai_enrichment"]["compliance_flags"] = []
-    profile["ai_enrichment"]["risk_notes"] = []
     return profile
 
 
@@ -655,17 +637,13 @@ def extract_releases(payload: dict[str, Any]) -> list[dict[str, Any]]:
         releases = payload.get("releases")
         if isinstance(releases, list):
             return releases
-
         data = payload.get("data")
         if isinstance(data, dict) and isinstance(data.get("releases"), list):
             return data["releases"]
-
         if isinstance(payload.get("value"), list):
             return payload["value"]
-
     if isinstance(payload, list):
         return payload
-
     return []
 
 
@@ -677,10 +655,7 @@ def fetch_tenders(
 ) -> list[dict[str, Any]]:
     url = urljoin(ETENDERS_BASE_URL, ETENDERS_RELEASES_PATH)
 
-    params = {
-        "pageNumber": page_number,
-        "pageSize": page_size,
-    }
+    params = {"pageNumber": page_number, "pageSize": page_size}
     if date_from:
         params["dateFrom"] = date_from
     if date_to:
@@ -844,7 +819,6 @@ def score_fit(
     reasons = []
     risks = []
     readiness = []
-    competitiveness = "Unknown"
 
     if profile_data:
         profile_keywords = infer_profile_keywords(profile_data)
@@ -875,7 +849,7 @@ def score_fit(
         "fit_band": fit_band,
         "fit_reasons": reasons[:5],
         "risk_flags": risks[:6],
-        "competitiveness": competitiveness,
+        "competitiveness": "Unknown",
         "execution_investment": "Medium",
         "strategic_readiness": readiness[:6],
     }
@@ -884,9 +858,9 @@ def score_fit(
 def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
     tender = item.get("tender", {}) or {}
     buyer = item.get("buyer", {}) or {}
-    documents = tender.get("documents", []) or {}
-    tender_period = tender.get("tenderPeriod", {}) or {}
-    value = tender.get("value", {}) or {}
+    documents = tender.get("documents", [])
+    if not isinstance(documents, list):
+        documents = []
 
     return {
         "ocid": item.get("ocid"),
@@ -904,9 +878,7 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
         "briefing_session": tender.get("briefingSession"),
         "contact_person": tender.get("contactPerson"),
         "buyer_name": buyer.get("name"),
-        "tender_period": tender_period,
-        "tender_value": value,
-        "documents": documents if isinstance(documents, list) else [],
+        "documents": documents,
     }
 
 
