@@ -3,7 +3,6 @@ import json
 import os
 import re
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urljoin
@@ -21,44 +20,22 @@ from flask import (
     url_for,
 )
 from pypdf import PdfReader
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Integer,
-    String,
-    Text,
-    create_engine,
-    select,
-)
+from sqlalchemy import Boolean, DateTime, String, Text, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from werkzeug.utils import secure_filename
 
-try:
-    import boto3
-except Exception:  # pragma: no cover
-    boto3 = None
 
-
-# -----------------------------------------------------------------------------
-# Config
-# -----------------------------------------------------------------------------
-
-APP_VERSION = os.getenv("APP_VERSION", "20260319-2")
-ETENDERS_BASE_URL = os.getenv(
-    "ETENDERS_BASE_URL",
-    "https://ocds-api.etenders.gov.za",
-)
-ETENDERS_RELEASES_PATH = os.getenv(
-    "ETENDERS_RELEASES_PATH",
-    "/api/OCDSReleases",
-)
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
-MAX_TENDERS = int(os.getenv("MAX_TENDERS", "30"))
+APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-1")
+ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
+ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
+MAX_TENDERS = int(os.getenv("MAX_TENDERS", "24"))
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///tenderai.db")
-S3_BUCKET = os.getenv("S3_BUCKET", "").strip()
-AWS_REGION = os.getenv("AWS_REGION", "af-south-1")
 LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "uploads")
-MAX_CONTENT_LENGTH = 20 * 1024 * 1024  # 20MB
+MAX_CONTENT_LENGTH = 20 * 1024 * 1024
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_PARSER_MODEL = os.getenv("OPENAI_PARSER_MODEL", "gpt-4o-mini").strip()
+PARSER_MODE = os.getenv("PARSER_MODE", "auto").strip().lower()
 
 ALLOWED_PROFILE_EXTENSIONS = {"pdf"}
 
@@ -70,10 +47,6 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 
-# -----------------------------------------------------------------------------
-# Database
-# -----------------------------------------------------------------------------
-
 class Base(DeclarativeBase):
     pass
 
@@ -83,7 +56,6 @@ class Profile(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     file_name: Mapped[str] = mapped_column(String(255))
-    storage_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     profile_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     parsed_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -99,54 +71,9 @@ engine = create_engine(DATABASE_URL, future=True)
 Base.metadata.create_all(engine)
 
 
-# -----------------------------------------------------------------------------
-# Storage helpers
-# -----------------------------------------------------------------------------
-
 def ensure_local_upload_dir() -> None:
     os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
 
-
-def get_s3_client():
-    if not S3_BUCKET or boto3 is None:
-        return None
-    return boto3.client("s3", region_name=AWS_REGION)
-
-
-def save_profile_file(file_storage, profile_id: str) -> str:
-    file_name = secure_filename(file_storage.filename or "profile.pdf")
-    storage_key = f"profiles/{profile_id}/{file_name}"
-
-    s3 = get_s3_client()
-    if s3 is not None:
-        s3.upload_fileobj(
-            Fileobj=file_storage.stream,
-            Bucket=S3_BUCKET,
-            Key=storage_key,
-            ExtraArgs={"ContentType": "application/pdf"},
-        )
-        return storage_key
-
-    ensure_local_upload_dir()
-    local_path = os.path.join(LOCAL_UPLOAD_DIR, f"{profile_id}__{file_name}")
-    file_storage.save(local_path)
-    return local_path
-
-
-def read_profile_file_bytes(storage_key: str) -> bytes:
-    s3 = get_s3_client()
-    if s3 is not None and storage_key.startswith("profiles/"):
-        output = io.BytesIO()
-        s3.download_fileobj(S3_BUCKET, storage_key, output)
-        return output.getvalue()
-
-    with open(storage_key, "rb") as file:
-        return file.read()
-
-
-# -----------------------------------------------------------------------------
-# General helpers
-# -----------------------------------------------------------------------------
 
 def json_loads_safe(value: Optional[str], default: Any) -> Any:
     if not value:
@@ -179,6 +106,15 @@ def first_match(patterns: list[str], text: str, flags: int = re.IGNORECASE) -> O
     return None
 
 
+def detect_yes_no(text: str) -> Optional[bool]:
+    text_lower = text.lower()
+    if any(token in text_lower for token in ["yes", "active", "valid", "compliant"]):
+        return True
+    if any(token in text_lower for token in ["no", "inactive", "invalid", "non-compliant"]):
+        return False
+    return None
+
+
 def allowed_profile(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_PROFILE_EXTENSIONS
 
@@ -192,9 +128,7 @@ def render_json_response(payload: Any, status: int = 200):
 
 @app.context_processor
 def inject_globals():
-    return {
-        "app_version": APP_VERSION,
-    }
+    return {"app_version": APP_VERSION}
 
 
 @app.after_request
@@ -204,10 +138,6 @@ def add_headers(response):
         response.headers["Cache-Control"] = "no-store"
     return response
 
-
-# -----------------------------------------------------------------------------
-# PDF parsing
-# -----------------------------------------------------------------------------
 
 def extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
     try:
@@ -239,14 +169,60 @@ def download_pdf_text_from_url(url: str) -> str:
         return ""
 
 
-# -----------------------------------------------------------------------------
-# CSD-style profile parsing
-# -----------------------------------------------------------------------------
+def openai_chat_json_schema(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    schema_name: str,
+    schema: dict[str, Any],
+    temperature: float = 0.1,
+) -> Optional[dict[str, Any]]:
+    if not OPENAI_API_KEY:
+        return None
+
+    payload = {
+        "model": OPENAI_PARSER_MODEL,
+        "temperature": temperature,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            },
+        },
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=90,
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+        return json.loads(content)
+    except Exception:
+        return None
+
 
 def build_empty_profile_schema() -> dict[str, Any]:
     return {
         "metadata": {
             "source_type": "uploaded_pdf",
+            "parser_mode": "heuristic",
+            "confidence": 0.45,
             "parsed_at": datetime.now(timezone.utc).isoformat(),
             "parser_version": APP_VERSION,
         },
@@ -317,340 +293,308 @@ def build_empty_profile_schema() -> dict[str, Any]:
     }
 
 
-def extract_date(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-
-    patterns = [
-        r"(\d{4}-\d{2}-\d{2})",
-        r"(\d{2}/\d{2}/\d{4})",
-        r"(\d{2}-\d{2}-\d{4})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, value)
-        if match:
-            return match.group(1)
-    return value.strip()[:25]
-
-
-def detect_yes_no(text: str) -> Optional[bool]:
-    text_lower = text.lower()
-    if any(token in text_lower for token in ["yes", "active", "valid", "compliant"]):
-        return True
-    if any(token in text_lower for token in ["no", "inactive", "invalid", "non-compliant"]):
-        return False
-    return None
-
-
-def parse_profile_pdf_text(text: str) -> dict[str, Any]:
-    profile = build_empty_profile_schema()
-    lines = chunk_lines(text)
-    text_lower = text.lower()
-
-    supplier = profile["supplier_identification"]
-    tax_info = profile["tax_information"]
-    bbbee = profile["bbbbee_information"]
-
-    supplier["supplier_number"] = first_match(
-        [
-            r"supplier\s*(?:number|no\.?)\s*[:\-]\s*([A-Z0-9\-\/]+)",
-            r"\bMAAA\s*([0-9]{6,})\b",
+def profile_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "metadata": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "source_type": {"type": ["string", "null"]},
+                    "parser_mode": {"type": ["string", "null"]},
+                    "confidence": {"type": ["number", "null"]},
+                },
+                "required": ["source_type", "parser_mode", "confidence"],
+            },
+            "supplier_identification": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "supplier_number": {"type": ["string", "null"]},
+                    "legal_name": {"type": ["string", "null"]},
+                    "trading_name": {"type": ["string", "null"]},
+                    "registration_number": {"type": ["string", "null"]},
+                    "supplier_type": {"type": ["string", "null"]},
+                    "supplier_sub_type": {"type": ["string", "null"]},
+                    "registration_date": {"type": ["string", "null"]},
+                    "financial_year_start": {"type": ["string", "null"]},
+                    "is_active": {"type": ["boolean", "null"]},
+                    "has_bank_account": {"type": ["boolean", "null"]},
+                    "restricted_supplier": {"type": ["boolean", "null"]},
+                    "business_status": {"type": ["string", "null"]},
+                    "country_of_origin": {"type": ["string", "null"]},
+                    "government_employee": {"type": ["boolean", "null"]},
+                    "allow_associates": {"type": ["boolean", "null"]},
+                    "annual_turnover_band": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "supplier_number", "legal_name", "trading_name", "registration_number",
+                    "supplier_type", "supplier_sub_type", "registration_date",
+                    "financial_year_start", "is_active", "has_bank_account",
+                    "restricted_supplier", "business_status", "country_of_origin",
+                    "government_employee", "allow_associates", "annual_turnover_band",
+                ],
+            },
+            "industry_classification": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "main_group": {"type": "array", "items": {"type": "string"}},
+                    "division": {"type": "array", "items": {"type": "string"}},
+                    "core_industry": {"type": "array", "items": {"type": "string"}},
+                    "turnover_percentage": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["main_group", "division", "core_industry", "turnover_percentage"],
+            },
+            "contact_information": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "contact_type": {"type": ["string", "null"]},
+                        "is_preferred": {"type": ["boolean", "null"]},
+                        "name": {"type": ["string", "null"]},
+                        "surname": {"type": ["string", "null"]},
+                        "phone": {"type": ["string", "null"]},
+                        "email": {"type": ["string", "null"]},
+                        "website": {"type": ["string", "null"]},
+                        "communication_preference": {"type": ["string", "null"]},
+                        "is_csd_user": {"type": ["boolean", "null"]},
+                    },
+                    "required": [
+                        "contact_type", "is_preferred", "name", "surname", "phone",
+                        "email", "website", "communication_preference", "is_csd_user",
+                    ],
+                },
+            },
+            "address_information": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "address_line_1": {"type": ["string", "null"]},
+                        "address_line_2": {"type": ["string", "null"]},
+                        "suburb": {"type": ["string", "null"]},
+                        "city": {"type": ["string", "null"]},
+                        "municipality": {"type": ["string", "null"]},
+                        "province": {"type": ["string", "null"]},
+                        "country": {"type": ["string", "null"]},
+                        "postal_code": {"type": ["string", "null"]},
+                        "ward_number": {"type": ["string", "null"]},
+                    },
+                    "required": [
+                        "address_line_1", "address_line_2", "suburb", "city", "municipality",
+                        "province", "country", "postal_code", "ward_number",
+                    ],
+                },
+            },
+            "bank_information": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "verification_status": {"type": ["string", "null"]},
+                    "verification_response": {"type": ["string", "null"]},
+                },
+                "required": ["verification_status", "verification_response"],
+            },
+            "tax_information": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "income_tax_number": {"type": ["string", "null"]},
+                    "is_vat_vendor": {"type": ["boolean", "null"]},
+                    "is_registered_with_sars": {"type": ["boolean", "null"]},
+                    "tax_compliance_status": {"type": ["string", "null"]},
+                    "compliance_pin_provided": {"type": ["boolean", "null"]},
+                    "last_validation_date": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "income_tax_number", "is_vat_vendor", "is_registered_with_sars",
+                    "tax_compliance_status", "compliance_pin_provided", "last_validation_date",
+                ],
+            },
+            "bbbbee_information": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "certificate_number": {"type": ["string", "null"]},
+                    "issue_date": {"type": ["string", "null"]},
+                    "expiry_date": {"type": ["string", "null"]},
+                    "verification_status": {"type": ["string", "null"]},
+                    "black_ownership_percent": {"type": ["string", "null"]},
+                    "women_ownership_percent": {"type": ["string", "null"]},
+                    "youth_ownership_percent": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "certificate_number", "issue_date", "expiry_date", "verification_status",
+                    "black_ownership_percent", "women_ownership_percent", "youth_ownership_percent",
+                ],
+            },
+            "accreditations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "body": {"type": ["string", "null"]},
+                        "description": {"type": ["string", "null"]},
+                        "accreditation_number": {"type": ["string", "null"]},
+                        "issue_date": {"type": ["string", "null"]},
+                        "expiry_date": {"type": ["string", "null"]},
+                        "status": {"type": ["string", "null"]},
+                        "verification_status": {"type": ["string", "null"]},
+                    },
+                    "required": [
+                        "body", "description", "accreditation_number", "issue_date",
+                        "expiry_date", "status", "verification_status",
+                    ],
+                },
+            },
+            "directors": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": ["string", "null"]},
+                        "ownership_flags": {"type": "array", "items": {"type": "string"}},
+                        "youth_flag": {"type": ["boolean", "null"]},
+                        "disability_flag": {"type": ["boolean", "null"]},
+                        "veteran_flag": {"type": ["boolean", "null"]},
+                        "government_employee_flag": {"type": ["boolean", "null"]},
+                    },
+                    "required": [
+                        "name", "ownership_flags", "youth_flag", "disability_flag",
+                        "veteran_flag", "government_employee_flag",
+                    ],
+                },
+            },
+            "ownership_summary": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "black_owned": {"type": ["boolean", "null"]},
+                    "youth_owned": {"type": ["boolean", "null"]},
+                    "township_based": {"type": ["boolean", "null"]},
+                    "rural_based": {"type": ["boolean", "null"]},
+                },
+                "required": ["black_owned", "youth_owned", "township_based", "rural_based"],
+            },
+            "commodities": {"type": "array", "items": {"type": "string"}},
+            "provinces": {"type": "array", "items": {"type": "string"}},
+            "keywords": {"type": "array", "items": {"type": "string"}},
+            "ai_enrichment": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "summary": {"type": ["string", "null"]},
+                    "capability_keywords": {"type": "array", "items": {"type": "string"}},
+                    "compliance_flags": {"type": "array", "items": {"type": "string"}},
+                    "risk_notes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["summary", "capability_keywords", "compliance_flags", "risk_notes"],
+            },
+        },
+        "required": [
+            "metadata", "supplier_identification", "industry_classification",
+            "contact_information", "address_information", "bank_information",
+            "tax_information", "bbbbee_information", "accreditations",
+            "directors", "ownership_summary", "commodities", "provinces",
+            "keywords", "ai_enrichment",
         ],
-        text,
-    )
+    }
 
-    supplier["legal_name"] = first_match(
-        [
-            r"(?:legal\s*name|supplier\s*name|enterprise\s*name)\s*[:\-]\s*(.+)",
-            r"registered\s*name\s*[:\-]\s*(.+)",
+
+def tender_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "scoring_criteria": {"type": "array", "items": {"type": "string"}},
+            "mandatory_requirements": {"type": "array", "items": {"type": "string"}},
+            "specifications_scope": {"type": "array", "items": {"type": "string"}},
+            "special_conditions": {"type": "array", "items": {"type": "string"}},
+            "briefing_details": {"type": "array", "items": {"type": "string"}},
+            "compliance_cues": {"type": "array", "items": {"type": "string"}},
+            "evaluation_cues": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": ["number", "null"]},
+        },
+        "required": [
+            "scoring_criteria", "mandatory_requirements", "specifications_scope",
+            "special_conditions", "briefing_details", "compliance_cues",
+            "evaluation_cues", "confidence",
         ],
-        text,
+    }
+
+
+def llm_parse_profile_pdf_text(text: str) -> Optional[dict[str, Any]]:
+    doc_text = normalize_whitespace(text)[:24000]
+
+    system_prompt = """
+You extract structured supplier profile data from South African business profile or CSD-style documents.
+Return only facts supported by the document.
+Do not guess.
+Use null when unknown.
+"""
+
+    user_prompt = f"""
+Extract this supplier profile into the required JSON schema.
+
+Document text:
+{doc_text}
+"""
+
+    parsed = openai_chat_json_schema(
+        system_prompt=system_prompt.strip(),
+        user_prompt=user_prompt.strip(),
+        schema_name="supplier_profile",
+        schema=profile_schema(),
+        temperature=0.1,
     )
 
-    supplier["trading_name"] = first_match(
-        [r"(?:trading\s*name|business\s*name)\s*[:\-]\s*(.+)"],
-        text,
+    if parsed:
+        parsed.setdefault("metadata", {})
+        parsed["metadata"]["source_type"] = "uploaded_pdf"
+        parsed["metadata"]["parser_mode"] = "llm"
+        parsed["metadata"]["confidence"] = parsed["metadata"].get("confidence", 0.86)
+
+    return parsed
+
+
+def llm_parse_tender_document_text(text: str) -> Optional[dict[str, Any]]:
+    doc_text = normalize_whitespace(text)[:24000]
+
+    system_prompt = """
+You extract procurement intelligence from South African tender documents.
+Return only facts supported by the document.
+Focus on requirements, scope, special conditions, briefing details, compliance obligations,
+and evaluation or scoring cues such as functionality, 80/20, 90/10, preference points,
+specific goals, B-BBEE, and mandatory submission items.
+"""
+
+    user_prompt = f"""
+Extract this tender document into the required JSON schema.
+
+Document text:
+{doc_text}
+"""
+
+    parsed = openai_chat_json_schema(
+        system_prompt=system_prompt.strip(),
+        user_prompt=user_prompt.strip(),
+        schema_name="tender_document",
+        schema=tender_schema(),
+        temperature=0.1,
     )
 
-    supplier["registration_number"] = first_match(
-        [r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"],
-        text,
-    )
+    if parsed and parsed.get("confidence") is None:
+        parsed["confidence"] = 0.84
 
-    supplier["supplier_type"] = first_match(
-        [r"supplier\s*type\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["supplier_sub_type"] = first_match(
-        [r"supplier\s*sub[\-\s]*type\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["country_of_origin"] = first_match(
-        [r"country\s*of\s*origin\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["annual_turnover_band"] = first_match(
-        [r"(?:annual\s*turnover|turnover\s*band)\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["business_status"] = first_match(
-        [r"business\s*status\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["registration_date"] = extract_date(
-        first_match([r"registration\s*date\s*[:\-]\s*(.+)"], text)
-    )
-    supplier["financial_year_start"] = extract_date(
-        first_match([r"financial\s*year\s*start\s*[:\-]\s*(.+)"], text)
-    )
-
-    active_field = first_match([r"(?:supplier\s*active\s*status|active)\s*[:\-]\s*(.+)"], text)
-    supplier["is_active"] = detect_yes_no(active_field or "")
-
-    government_employee = first_match(
-        [r"government\s*employee\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["government_employee"] = detect_yes_no(government_employee or "")
-
-    restricted_supplier = first_match(
-        [r"restricted\s*supplier\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["restricted_supplier"] = detect_yes_no(restricted_supplier or "")
-
-    has_bank_account = first_match(
-        [r"has\s*bank\s*account\s*[:\-]\s*(.+)"],
-        text,
-    )
-    supplier["has_bank_account"] = detect_yes_no(has_bank_account or "")
-
-    tax_info["income_tax_number"] = first_match(
-        [r"(?:income\s*tax\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\-]+)"],
-        text,
-    )
-    tax_info["tax_compliance_status"] = first_match(
-        [r"tax\s*compliance\s*status\s*[:\-]\s*(.+)"],
-        text,
-    )
-    tax_info["is_registered_with_sars"] = detect_yes_no(
-        first_match([r"(?:registered\s*with\s*SARS)\s*[:\-]\s*(.+)"], text) or ""
-    )
-    tax_info["is_vat_vendor"] = detect_yes_no(
-        first_match([r"(?:VAT\s*vendor|is\s*vat\s*vendor)\s*[:\-]\s*(.+)"], text) or ""
-    )
-    tax_info["compliance_pin_provided"] = detect_yes_no(
-        "yes" if re.search(r"\b(?:TCS|PIN)\b", text, re.IGNORECASE) else ""
-    )
-    tax_info["last_validation_date"] = extract_date(
-        first_match([r"(?:last\s*validation\s*date)\s*[:\-]\s*(.+)"], text)
-    )
-
-    bbbee["certificate_number"] = first_match(
-        [r"(?:B[\-\s]*BBEE|BBBEE).{0,40}(?:certificate\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\-\/]+)"],
-        text,
-    )
-    bbbee["issue_date"] = extract_date(
-        first_match([r"(?:B[\-\s]*BBEE|BBBEE).{0,30}issue\s*date\s*[:\-]\s*(.+)"], text)
-    )
-    bbbee["expiry_date"] = extract_date(
-        first_match([r"(?:B[\-\s]*BBEE|BBBEE).{0,30}expiry\s*date\s*[:\-]\s*(.+)"], text)
-    )
-    bbbee["verification_status"] = first_match(
-        [r"(?:B[\-\s]*BBEE|BBBEE).{0,30}verification\s*status\s*[:\-]\s*(.+)"],
-        text,
-    )
-    bbbee["black_ownership_percent"] = first_match(
-        [r"black\s*ownership\s*[:\-]\s*([0-9]{1,3}(?:\.[0-9]+)?\s*%)"],
-        text,
-    )
-    bbbee["women_ownership_percent"] = first_match(
-        [r"women\s*ownership\s*[:\-]\s*([0-9]{1,3}(?:\.[0-9]+)?\s*%)"],
-        text,
-    )
-    bbbee["youth_ownership_percent"] = first_match(
-        [r"youth\s*ownership\s*[:\-]\s*([0-9]{1,3}(?:\.[0-9]+)?\s*%)"],
-        text,
-    )
-
-    verification_status = first_match(
-        [r"bank\s*verification\s*status\s*[:\-]\s*(.+)"],
-        text,
-    )
-    profile["bank_information"]["verification_status"] = verification_status
-    profile["bank_information"]["verification_response"] = first_match(
-        [r"bank\s*verification\s*response\s*[:\-]\s*(.+)"],
-        text,
-    )
-
-    # Contact parsing
-    email_matches = sorted(set(re.findall(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", text, re.IGNORECASE)))
-    phone_matches = sorted(
-        set(
-            re.findall(
-                r"(?:\+27|0)[0-9][0-9\s\-]{7,}",
-                text,
-                re.IGNORECASE,
-            )
-        )
-    )
-    website_match = first_match(
-        [r"(https?://[^\s]+)", r"(www\.[^\s]+)"],
-        text,
-    )
-
-    if email_matches or phone_matches or website_match:
-        profile["contact_information"].append(
-            {
-                "contact_type": "primary",
-                "is_preferred": True,
-                "name": None,
-                "surname": None,
-                "phone": phone_matches[0] if phone_matches else None,
-                "email": email_matches[0] if email_matches else None,
-                "website": website_match,
-                "communication_preference": None,
-                "is_csd_user": None,
-            }
-        )
-
-    provinces = [
-        "Eastern Cape",
-        "Free State",
-        "Gauteng",
-        "KwaZulu-Natal",
-        "Limpopo",
-        "Mpumalanga",
-        "Northern Cape",
-        "North West",
-        "Western Cape",
-    ]
-    found_provinces = [province for province in provinces if province.lower() in text_lower]
-    profile["provinces"] = found_provinces
-
-    for province in found_provinces[:1]:
-        profile["address_information"].append(
-            {
-                "address_line_1": None,
-                "address_line_2": None,
-                "suburb": None,
-                "city": None,
-                "municipality": None,
-                "province": province,
-                "country": supplier["country_of_origin"] or "South Africa",
-                "postal_code": None,
-                "ward_number": None,
-            }
-        )
-
-    industry_patterns = [
-        r"industry\s*classification\s*[:\-]\s*(.+)",
-        r"main\s*group\s*[:\-]\s*(.+)",
-        r"division\s*[:\-]\s*(.+)",
-        r"commodity\s*[:\-]\s*(.+)",
-    ]
-    extracted_industry = []
-    for pattern in industry_patterns:
-        extracted_industry.extend(re.findall(pattern, text, re.IGNORECASE))
-
-    cleaned_industry = []
-    for item in extracted_industry:
-        cleaned = item.strip()
-        if cleaned and len(cleaned) < 140:
-            cleaned_industry.append(cleaned)
-
-    profile["industry_classification"]["main_group"] = cleaned_industry[:3]
-    profile["industry_classification"]["division"] = cleaned_industry[3:6]
-
-    accredit_lines = []
-    for line in lines:
-        if re.search(
-            r"(accredit|iso|cidb|sacec|sacpcmp|nhbrc|saqa|qtco|qcto)",
-            line,
-            re.IGNORECASE,
-        ):
-            accredit_lines.append(line)
-
-    for line in accredit_lines[:10]:
-        profile["accreditations"].append(
-            {
-                "body": first_match(
-                    [r"(CIDB|ISO|SACEC|SACPCMP|NHBRC|SAQA|QCTO|QTCO)"],
-                    line,
-                ),
-                "description": line[:250],
-                "accreditation_number": first_match(
-                    [r"(?:number|no\.?)\s*[:\-]?\s*([A-Z0-9\-\/]+)"],
-                    line,
-                ),
-                "issue_date": extract_date(line),
-                "expiry_date": extract_date(line),
-                "status": "detected",
-                "verification_status": None,
-            }
-        )
-
-    directors = []
-    director_candidates = re.findall(
-        r"(?:director|member|owner|trustee)\s*[:\-]\s*([A-Z][A-Za-z ,.'\-]{3,60})",
-        text,
-        re.IGNORECASE,
-    )
-    for candidate in director_candidates[:10]:
-        directors.append(
-            {
-                "name": candidate.strip(),
-                "ownership_flags": [],
-                "youth_flag": None,
-                "disability_flag": None,
-                "veteran_flag": None,
-                "government_employee_flag": None,
-            }
-        )
-    profile["directors"] = directors
-
-    ownership = profile["ownership_summary"]
-    ownership["black_owned"] = detect_yes_no(
-        "yes" if bbbee.get("black_ownership_percent") else ""
-    )
-    ownership["youth_owned"] = detect_yes_no(
-        "yes" if bbbee.get("youth_ownership_percent") else ""
-    )
-    ownership["township_based"] = detect_yes_no(
-        "yes" if "township" in text_lower else ""
-    )
-    ownership["rural_based"] = detect_yes_no(
-        "yes" if "rural" in text_lower else ""
-    )
-
-    keyword_candidates = set()
-    for token in re.findall(r"[A-Za-z][A-Za-z&/\-]{3,}", text):
-        token_clean = token.strip().lower()
-        if token_clean not in {
-            "south", "africa", "supplier", "enterprise", "certificate",
-            "registration", "verification", "contact", "number", "status",
-        } and len(token_clean) <= 30:
-            keyword_candidates.add(token_clean)
-
-    profile["keywords"] = sorted(keyword_candidates)[:50]
-
-    profile["ai_enrichment"]["summary"] = build_profile_summary_text(profile)
-    profile["ai_enrichment"]["capability_keywords"] = (
-        profile["industry_classification"]["main_group"]
-        + profile["industry_classification"]["division"]
-        + profile["commodities"]
-    )[:15]
-
-    if tax_info["tax_compliance_status"]:
-        profile["ai_enrichment"]["compliance_flags"].append(
-            f"Tax: {tax_info['tax_compliance_status']}"
-        )
-    if bbbee["verification_status"]:
-        profile["ai_enrichment"]["compliance_flags"].append(
-            f"B-BBEE: {bbbee['verification_status']}"
-        )
-
-    return profile
+    return parsed
 
 
 def build_profile_summary_text(profile: dict[str, Any]) -> str:
@@ -673,6 +617,115 @@ def build_profile_summary_text(profile: dict[str, Any]) -> str:
     if bbbee.get("verification_status"):
         bits.append(f"B-BBEE: {bbbee['verification_status']}")
     return " | ".join(bits)
+
+
+def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
+    profile = build_empty_profile_schema()
+    lines = chunk_lines(text)
+    text_lower = text.lower()
+
+    supplier = profile["supplier_identification"]
+    tax_info = profile["tax_information"]
+    bbbee = profile["bbbbee_information"]
+
+    supplier["supplier_number"] = first_match(
+        [
+            r"supplier\s*(?:number|no\.?)\s*[:\-]\s*([A-Z0-9\-\/]+)",
+            r"\bMAAA\s*([0-9]{6,})\b",
+        ],
+        text,
+    )
+    supplier["legal_name"] = first_match(
+        [
+            r"(?:legal\s*name|supplier\s*name|enterprise\s*name)\s*[:\-]\s*(.+)",
+            r"registered\s*name\s*[:\-]\s*(.+)",
+        ],
+        text,
+    )
+    supplier["trading_name"] = first_match([r"(?:trading\s*name|business\s*name)\s*[:\-]\s*(.+)"], text)
+    supplier["registration_number"] = first_match([r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"], text)
+    supplier["supplier_type"] = first_match([r"supplier\s*type\s*[:\-]\s*(.+)"], text)
+    supplier["supplier_sub_type"] = first_match([r"supplier\s*sub[\-\s]*type\s*[:\-]\s*(.+)"], text)
+    supplier["country_of_origin"] = first_match([r"country\s*of\s*origin\s*[:\-]\s*(.+)"], text)
+    supplier["annual_turnover_band"] = first_match([r"(?:annual\s*turnover|turnover\s*band)\s*[:\-]\s*(.+)"], text)
+    supplier["business_status"] = first_match([r"business\s*status\s*[:\-]\s*(.+)"], text)
+
+    active_field = first_match([r"(?:supplier\s*active\s*status|active)\s*[:\-]\s*(.+)"], text)
+    supplier["is_active"] = detect_yes_no(active_field or "")
+
+    tax_info["tax_compliance_status"] = first_match([r"tax\s*compliance\s*status\s*[:\-]\s*(.+)"], text)
+    tax_info["is_registered_with_sars"] = detect_yes_no(
+        first_match([r"(?:registered\s*with\s*SARS)\s*[:\-]\s*(.+)"], text) or ""
+    )
+    tax_info["is_vat_vendor"] = detect_yes_no(
+        first_match([r"(?:VAT\s*vendor|is\s*vat\s*vendor)\s*[:\-]\s*(.+)"], text) or ""
+    )
+
+    bbbee["verification_status"] = first_match(
+        [r"(?:B[\-\s]*BBEE|BBBEE).{0,30}verification\s*status\s*[:\-]\s*(.+)"],
+        text,
+    )
+    bbbee["certificate_number"] = first_match(
+        [r"(?:B[\-\s]*BBEE|BBBEE).{0,40}(?:certificate\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\-\/]+)"],
+        text,
+    )
+
+    email_matches = sorted(set(re.findall(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", text, re.IGNORECASE)))
+    phone_matches = sorted(set(re.findall(r"(?:\+27|0)[0-9][0-9\s\-]{7,}", text, re.IGNORECASE)))
+
+    if email_matches or phone_matches:
+        profile["contact_information"].append(
+            {
+                "contact_type": "primary",
+                "is_preferred": True,
+                "name": None,
+                "surname": None,
+                "phone": phone_matches[0] if phone_matches else None,
+                "email": email_matches[0] if email_matches else None,
+                "website": None,
+                "communication_preference": None,
+                "is_csd_user": None,
+            }
+        )
+
+    provinces = [
+        "Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo",
+        "Mpumalanga", "Northern Cape", "North West", "Western Cape",
+    ]
+    profile["provinces"] = [province for province in provinces if province.lower() in text_lower]
+
+    accreditation_lines = []
+    for line in lines:
+        if re.search(r"(accredit|iso|cidb|sacec|sacpcmp|nhbrc|saqa|qcto)", line, re.IGNORECASE):
+            accreditation_lines.append(line)
+
+    for line in accreditation_lines[:8]:
+        profile["accreditations"].append(
+            {
+                "body": first_match([r"(CIDB|ISO|SACEC|SACPCMP|NHBRC|SAQA|QCTO)"], line),
+                "description": line[:250],
+                "accreditation_number": first_match([r"(?:number|no\.?)\s*[:\-]?\s*([A-Z0-9\-\/]+)"], line),
+                "issue_date": None,
+                "expiry_date": None,
+                "status": "detected",
+                "verification_status": None,
+            }
+        )
+
+    profile["ai_enrichment"]["summary"] = build_profile_summary_text(profile)
+    profile["ai_enrichment"]["capability_keywords"] = []
+    profile["ai_enrichment"]["compliance_flags"] = []
+    profile["ai_enrichment"]["risk_notes"] = []
+    return profile
+
+
+def parse_profile_pdf_text(text: str) -> dict[str, Any]:
+    if PARSER_MODE in {"auto", "llm"} and OPENAI_API_KEY:
+        parsed = llm_parse_profile_pdf_text(text)
+        if parsed:
+            return parsed
+
+    return parse_profile_pdf_text_heuristic(text)
 
 
 def profile_summary_for_ui(profile_data: dict[str, Any]) -> dict[str, Any]:
@@ -704,10 +757,6 @@ def profile_summary_for_ui(profile_data: dict[str, Any]) -> dict[str, Any]:
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
 
-
-# -----------------------------------------------------------------------------
-# Tender API helpers
-# -----------------------------------------------------------------------------
 
 def extract_releases(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
@@ -764,9 +813,7 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
 
     scored = []
     for doc in documents:
-        title = " ".join(
-            str(doc.get(key, "")) for key in ["title", "description", "documentType"]
-        ).lower()
+        title = " ".join(str(doc.get(key, "")) for key in ["title", "description", "documentType"]).lower()
         url = (document_url(doc) or "").lower()
 
         score = 0
@@ -828,34 +875,15 @@ def find_keyword_lines(text: str, keywords: list[str], limit: int = 12) -> list[
     return results
 
 
-def parse_tender_document_text(text: str) -> dict[str, Any]:
-    if not text:
-        return {
-            "scoring_criteria": [],
-            "mandatory_requirements": [],
-            "specifications_scope": [],
-            "special_conditions": [],
-            "briefing_details": [],
-            "compliance_cues": [],
-            "evaluation_cues": [],
-        }
-
+def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
     scoring = find_keyword_lines(
         text,
-        [
-            "80/20", "90/10", "preference point", "specific goals", "bbbee",
-            "functionality", "evaluation criteria", "score", "points",
-            "minimum threshold", "technical evaluation",
-        ],
+        ["80/20", "90/10", "preference point", "specific goals", "bbbee", "functionality", "evaluation criteria", "score", "points"],
     )
 
     mandatory = find_keyword_lines(
         text,
-        [
-            "must submit", "mandatory", "compulsory", "required", "failure to",
-            "tax clearance", "csd", "cidb", "proof", "attach", "submit",
-            "non-responsive",
-        ],
+        ["must submit", "mandatory", "compulsory", "required", "failure to", "tax clearance", "csd", "cidb", "proof", "attach", "non-responsive"],
     )
 
     specifications = extract_section(
@@ -872,26 +900,17 @@ def parse_tender_document_text(text: str) -> dict[str, Any]:
 
     briefing = find_keyword_lines(
         text,
-        [
-            "briefing", "compulsory briefing", "briefing session",
-            "site inspection", "site briefing", "clarification meeting",
-        ],
+        ["briefing", "compulsory briefing", "briefing session", "site inspection", "site briefing", "clarification meeting"],
     )
 
     compliance = find_keyword_lines(
         text,
-        [
-            "tax compliance", "csd", "pin", "sbd", "declaration", "proof of registration",
-            "bank", "iso", "cidb", "letter of good standing",
-        ],
+        ["tax compliance", "csd", "pin", "sbd", "declaration", "proof of registration", "bank", "iso", "cidb", "good standing"],
     )
 
     evaluation = find_keyword_lines(
         text,
-        [
-            "pppfa", "80/20", "90/10", "specific goals", "functionality",
-            "threshold", "minimum score", "price and preference",
-        ],
+        ["pppfa", "80/20", "90/10", "specific goals", "functionality", "threshold", "minimum score", "price and preference"],
     )
 
     return {
@@ -902,12 +921,30 @@ def parse_tender_document_text(text: str) -> dict[str, Any]:
         "briefing_details": briefing,
         "compliance_cues": compliance,
         "evaluation_cues": evaluation,
+        "confidence": 0.46,
     }
 
 
-# -----------------------------------------------------------------------------
-# Tender enrichment and fit scoring
-# -----------------------------------------------------------------------------
+def parse_tender_document_text(text: str) -> dict[str, Any]:
+    if not text:
+        return {
+            "scoring_criteria": [],
+            "mandatory_requirements": [],
+            "specifications_scope": [],
+            "special_conditions": [],
+            "briefing_details": [],
+            "compliance_cues": [],
+            "evaluation_cues": [],
+            "confidence": 0.0,
+        }
+
+    if PARSER_MODE in {"auto", "llm"} and OPENAI_API_KEY:
+        parsed = llm_parse_tender_document_text(text)
+        if parsed:
+            return parsed
+
+    return parse_tender_document_text_heuristic(text)
+
 
 def infer_profile_keywords(profile_data: dict[str, Any]) -> set[str]:
     tokens = set()
@@ -952,28 +989,19 @@ def score_fit(
 
     if profile_data:
         profile_keywords = infer_profile_keywords(profile_data)
-        overlap = sorted(
-            {
-                token for token in profile_keywords
-                if len(token) > 3 and token in tender_text
-            }
-        )
+        overlap = sorted({token for token in profile_keywords if len(token) > 3 and token in tender_text})
         fit_score += min(len(overlap) * 4, 24)
         if overlap:
             reasons.append(f"Capability overlap: {', '.join(overlap[:6])}")
 
-        tax_status = (
-            profile_data.get("tax_information", {}).get("tax_compliance_status") or ""
-        ).lower()
+        tax_status = (profile_data.get("tax_information", {}).get("tax_compliance_status") or "").lower()
         if "compliant" in tax_status or "valid" in tax_status:
             fit_score += 8
             readiness.append("Tax compliance signal detected")
         else:
             risks.append("Tax compliance status not clearly confirmed in profile")
 
-        bbbee_status = (
-            profile_data.get("bbbbee_information", {}).get("verification_status") or ""
-        ).lower()
+        bbbee_status = (profile_data.get("bbbbee_information", {}).get("verification_status") or "").lower()
         if bbbee_status:
             readiness.append(f"B-BBEE signal: {bbbee_status}")
 
@@ -1080,6 +1108,7 @@ def enrich_tender(
     tender["document_url"] = best_doc_url
     tender["document_title"] = (best_doc or {}).get("title")
     tender["parsed_document"] = parsed_doc
+    tender["document_parser_confidence"] = parsed_doc.get("confidence")
     tender["analysis"] = fit
     return tender
 
@@ -1096,20 +1125,11 @@ def get_active_profile_record() -> Optional[Profile]:
 
 
 def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
-    if profile_id:
-        record = get_profile_record(profile_id)
-    else:
-        record = get_active_profile_record()
-
+    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
     if not record:
         return None
-
     return json_loads_safe(record.parsed_json, {})
 
-
-# -----------------------------------------------------------------------------
-# HTML routes
-# -----------------------------------------------------------------------------
 
 @app.get("/")
 def home():
@@ -1121,29 +1141,20 @@ def home():
     try:
         releases = fetch_tenders(date_from=date_from, date_to=date_to, page_number=1, page_size=10)
         for item in releases[:8]:
-            tender = normalize_tender_release(item)
-            tenders.append(tender)
+            tenders.append(normalize_tender_release(item))
     except Exception:
         tenders = []
 
     with Session(engine) as session:
-        profiles = session.scalars(
-            select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
-        ).all()
+        profiles = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
 
-    return render_template(
-        "home.html",
-        tenders=tenders,
-        profiles=profiles,
-    )
+    return render_template("home.html", tenders=tenders, profiles=profiles)
 
 
 @app.get("/profiles")
 def profiles_page():
     with Session(engine) as session:
-        profiles = session.scalars(
-            select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
-        ).all()
+        profiles = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
 
     parsed_profiles = []
     for profile in profiles:
@@ -1223,21 +1234,17 @@ def health():
         {
             "status": "ok",
             "app_version": APP_VERSION,
+            "openai_configured": bool(OPENAI_API_KEY),
+            "parser_mode": PARSER_MODE,
             "time": datetime.now(timezone.utc).isoformat(),
         }
     )
 
 
-# -----------------------------------------------------------------------------
-# API routes
-# -----------------------------------------------------------------------------
-
 @app.get("/api/profiles")
 def api_profiles_list():
     with Session(engine) as session:
-        profiles = session.scalars(
-            select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
-        ).all()
+        profiles = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
 
     payload = []
     for profile in profiles:
@@ -1266,11 +1273,16 @@ def api_profiles_upload():
     if not allowed_profile(file.filename):
         return render_json_response({"error": "Only PDF profile uploads are supported"}, 400)
 
+    ensure_local_upload_dir()
     profile_id = str(uuid.uuid4())
-    storage_key = save_profile_file(file, profile_id)
-    pdf_bytes = read_profile_file_bytes(storage_key)
-    profile_text = extract_pdf_text_from_bytes(pdf_bytes)
+    safe_name = secure_filename(file.filename)
+    local_path = os.path.join(LOCAL_UPLOAD_DIR, f"{profile_id}__{safe_name}")
+    file.save(local_path)
 
+    with open(local_path, "rb") as handle:
+        pdf_bytes = handle.read()
+
+    profile_text = extract_pdf_text_from_bytes(pdf_bytes)
     parsed = parse_profile_pdf_text(profile_text)
     summary = profile_summary_for_ui(parsed)
 
@@ -1279,8 +1291,7 @@ def api_profiles_upload():
 
         record = Profile(
             id=profile_id,
-            file_name=secure_filename(file.filename),
-            storage_key=storage_key,
+            file_name=safe_name,
             company_name=summary.get("company_name"),
             profile_text=profile_text,
             parsed_json=json.dumps(parsed),
@@ -1293,8 +1304,10 @@ def api_profiles_upload():
     return render_json_response(
         {
             "id": profile_id,
-            "file_name": secure_filename(file.filename),
+            "file_name": safe_name,
             "is_active": not has_any_profile,
+            "parser_mode": parsed.get("metadata", {}).get("parser_mode"),
+            "parser_confidence": parsed.get("metadata", {}).get("confidence"),
             **summary,
         },
         201,
@@ -1329,9 +1342,7 @@ def api_profiles_delete(profile_id: str):
         session.commit()
 
         if was_active:
-            next_profile = session.scalar(
-                select(Profile).order_by(Profile.uploaded_at.desc())
-            )
+            next_profile = session.scalar(select(Profile).order_by(Profile.uploaded_at.desc()))
             if next_profile:
                 next_profile.is_active = True
                 session.commit()
@@ -1436,10 +1447,6 @@ def api_service_request():
         202,
     )
 
-
-# -----------------------------------------------------------------------------
-# Entrypoint
-# -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), debug=True)
