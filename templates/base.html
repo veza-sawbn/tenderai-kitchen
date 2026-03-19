@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>{{ title or "TenderAI V3" }}</title>
+    <title>{{ title or "TenderAI Beta" }}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#070b14">
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ app_version }}">
@@ -13,8 +13,7 @@
 
     <header class="site-header">
       <a class="brand" href="{{ url_for('home') }}">
-        <span class="brand-mark"></span>
-        <span>TenderAI V3</span>
+        <span>TenderAI Beta</span>
       </a>
 
       <nav class="site-nav">
@@ -38,9 +37,40 @@
       {% block content %}{% endblock %}
     </main>
 
+    <div id="processing-overlay" class="processing-overlay" hidden>
+      <div class="processing-panel">
+        <div class="processing-orb" aria-hidden="true"></div>
+        <h2 id="processing-title">Processing…</h2>
+        <p id="processing-copy">Please wait while TenderAI processes your request.</p>
+      </div>
+    </div>
+
     <footer class="site-footer shell">
       <div>Build {{ app_version }}</div>
-      <div>/health available</div>
+      <div>TenderAI Beta</div>
     </footer>
+
+    <script>
+      window.TenderAI = {
+        showProcessing(title, copy) {
+          const overlay = document.getElementById("processing-overlay");
+          const titleEl = document.getElementById("processing-title");
+          const copyEl = document.getElementById("processing-copy");
+
+          if (titleEl && title) titleEl.textContent = title;
+          if (copyEl && copy) copyEl.textContent = copy;
+
+          if (overlay) {
+            overlay.hidden = false;
+            document.body.classList.add("is-processing");
+          }
+        },
+        hideProcessing() {
+          const overlay = document.getElementById("processing-overlay");
+          if (overlay) overlay.hidden = true;
+          document.body.classList.remove("is-processing");
+        }
+      };
+    </script>
   </body>
 </html>
