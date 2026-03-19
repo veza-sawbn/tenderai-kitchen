@@ -22,7 +22,7 @@ run:
     - name: FLASK_SECRET_KEY
       value: "replace-this-with-a-real-secret"
     - name: DATABASE_URL
-      value: "sqlite:////tmp/tenderai.db"
+  value: "sqlite:////tmp/tenderai.db"
     - name: PORT
       value: "8080"
   secrets:
