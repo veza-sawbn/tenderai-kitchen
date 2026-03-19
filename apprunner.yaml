@@ -3,8 +3,9 @@ runtime: python311
 
 build:
   commands:
-    - python3 -m pip install --upgrade pip
-    - python3 -m pip install -r requirements.txt
+    build:
+      - python3 -m pip install --upgrade pip
+      - python3 -m pip install -r requirements.txt
 
 run:
   runtime-version: 3.11
@@ -17,7 +18,7 @@ run:
     - name: PARSER_MODE
       value: "auto"
     - name: APP_VERSION
-      value: "20260319-beta-9"
+      value: "20260319-beta-10"
     - name: FLASK_SECRET_KEY
       value: "replace-this-with-a-real-secret"
     - name: DATABASE_URL
