@@ -25,7 +25,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-1")
+APP_VERSION = os.getenv("APP_VERSION", "20260319-beta-5")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
@@ -33,6 +33,7 @@ MAX_TENDERS = int(os.getenv("MAX_TENDERS", "24"))
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///tenderai.db")
 LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "uploads")
 MAX_CONTENT_LENGTH = 20 * 1024 * 1024
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_PARSER_MODEL = os.getenv("OPENAI_PARSER_MODEL", "gpt-4o-mini").strip()
 PARSER_MODE = os.getenv("PARSER_MODE", "auto").strip().lower()
@@ -159,8 +160,8 @@ def download_pdf_text_from_url(url: str) -> str:
     try:
         response = requests.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-
         content_type = (response.headers.get("Content-Type") or "").lower()
+
         if "pdf" in content_type or url.lower().endswith(".pdf"):
             return extract_pdf_text_from_bytes(response.content)
 
