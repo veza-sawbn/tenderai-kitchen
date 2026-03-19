@@ -1,76 +1,28 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <title>{{ title or "TenderAI Beta" }}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#070b14">
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ app_version }}">
-  </head>
-  <body>
-    <div class="ambient ambient-cyan"></div>
-    <div class="ambient ambient-purple"></div>
-
-    <header class="site-header">
-      <a class="brand" href="{{ url_for('home') }}">
-        <span>TenderAI Beta</span>
-      </a>
-
-      <nav class="site-nav">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TenderAI Beta</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header-inner">
+      <div class="brand-wrap">
+        <a href="{{ url_for('home') }}" class="brand">TenderAI</a>
+        <span class="build-badge">Beta</span>
+      </div>
+      <nav class="main-nav">
         <a href="{{ url_for('home') }}">Home</a>
         <a href="{{ url_for('profiles_page') }}">Profiles</a>
         <a href="{{ url_for('tenders_page') }}">Tenders</a>
       </nav>
-    </header>
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <section class="flash-stack shell">
-          {% for category, message in messages %}
-            <div class="flash flash-{{ category }}">{{ message }}</div>
-          {% endfor %}
-        </section>
-      {% endif %}
-    {% endwith %}
-
-    <main>
-      {% block content %}{% endblock %}
-    </main>
-
-    <div id="processing-overlay" class="processing-overlay" hidden>
-      <div class="processing-panel">
-        <div class="processing-orb" aria-hidden="true"></div>
-        <h2 id="processing-title">Processing…</h2>
-        <p id="processing-copy">Please wait while TenderAI processes your request.</p>
-      </div>
     </div>
+  </header>
 
-    <footer class="site-footer shell">
-      <div>Build {{ app_version }}</div>
-      <div>TenderAI Beta</div>
-    </footer>
-
-    <script>
-      window.TenderAI = {
-        showProcessing(title, copy) {
-          const overlay = document.getElementById("processing-overlay");
-          const titleEl = document.getElementById("processing-title");
-          const copyEl = document.getElementById("processing-copy");
-
-          if (titleEl && title) titleEl.textContent = title;
-          if (copyEl && copy) copyEl.textContent = copy;
-
-          if (overlay) {
-            overlay.hidden = false;
-            document.body.classList.add("is-processing");
-          }
-        },
-        hideProcessing() {
-          const overlay = document.getElementById("processing-overlay");
-          if (overlay) overlay.hidden = true;
-          document.body.classList.remove("is-processing");
-        }
-      };
-    </script>
-  </body>
+  <main class="page-shell">
+    {% block content %}{% endblock %}
+  </main>
+</body>
 </html>
