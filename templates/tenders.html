@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="content-section">
+  <div class="section-head">
+    <h1>Live Tender Intelligence</h1>
+    <p>Browse live tenders and run supplier-fit analysis.</p>
+  </div>
+
+  <div id="tendersList" class="results-grid"></div>
+  <div id="tendersLoading" class="page-loading">Loading tenders...</div>
+  <div id="tendersError" class="page-error hidden"></div>
+</section>
+
+<script>
+const tendersList = document.getElementById("tendersList");
+const tendersLoading = document.getElementById("tendersLoading");
+const tendersError = document.getElementById("tendersError");
+
+async function loadTenders() {
+  tendersLoading.classList.remove("hidden");
+  tendersError.classList.add("hidden");
+  tendersError.textContent = "";
+
+  try {
+    const res = await fetch("/api/tenders");
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to load tenders");
+    }
+
+    tendersList.innerHTML = data.map(item => `
+      <article class="result-card">
+        <div class="result-card-top">
+          <div>
+            <p class="result-buyer">${item.buyer_name || "Unknown buyer"}</p>
+            <h3 class="result-title">${item.title || "Untitled tender"}</h3>
+          </div>
+          <div class="fit-badge">Analyze</div>
+        </div>
+        <p class="result-description">${item.description || ""}</p>
+        <div class="result-actions">
+          <a class="btn btn-secondary" href="/tender/${encodeURIComponent(item.ocid)}">Open Tender</a>
+        </div>
+      </article>
+    `).join("");
+  } catch (err) {
+    tendersError.textContent = err.message || "Failed to load tenders";
+    tendersError.classList.remove("hidden");
+  } finally {
+    tendersLoading.classList.add("hidden");
+  }
+}
+
+loadTenders();
+</script>
+{% endblock %}
