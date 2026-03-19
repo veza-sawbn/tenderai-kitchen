@@ -9,7 +9,7 @@ build:
 
 run:
   runtime-version: 3.11
-  command: python3 -m gunicorn app:app --bind 0.0.0.0:8080
+  command: python3 -m gunicorn app:app --bind 0.0.0.0:8080 --workers 1 --threads 4 --timeout 120
   network:
     port: 8080
   env:
@@ -18,11 +18,11 @@ run:
     - name: PARSER_MODE
       value: "auto"
     - name: APP_VERSION
-      value: "20260319-beta-5"
+      value: "20260319-beta-6"
     - name: FLASK_SECRET_KEY
       value: "replace-this-with-a-real-secret"
     - name: DATABASE_URL
-      value: "sqlite:///tenderai.db"
+      value: "sqlite:////tmp/tenderai.db"
   secrets:
     - name: OPENAI_API_KEY
       value-from: "arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ"
