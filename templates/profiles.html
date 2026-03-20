@@ -2,61 +2,85 @@
 {% set title = "Supplier profiles · TenderAI Beta" %}
 
 {% block content %}
-<section class="section shell">
+<section class="section shell shell-wide">
   <div class="section-head">
     <h1>Supplier profiles</h1>
-    <p>Upload and manage CSD-style supplier profiles for TenderAI analysis.</p>
+    <p>Upload a profile, set it active, then browse tenders with that profile.</p>
   </div>
 
-  <form id="upload-form" class="card upload-card" enctype="multipart/form-data">
-    <div class="upload-input">
-      <label for="file">Profile PDF</label>
-      <input id="file" name="file" type="file" accept=".pdf" required>
+  {% if active_profile %}
+    <div class="flash flash-success">
+      Active profile: <strong>{{ active_profile.company_name or active_profile.file_name }}</strong>
+      · <a class="text-link" href="{{ url_for('tenders_page', profile_id=active_profile.id) }}">Browse tenders with this profile</a>
     </div>
+  {% endif %}
 
-    <div class="card-actions">
-      <button id="upload-button" class="btn btn-primary" type="submit">Upload profile</button>
-      <p id="upload-status" class="meta-muted"></p>
-    </div>
-  </form>
+  <div class="upload-card card">
+    <form id="upload-form" enctype="multipart/form-data">
+      <label class="upload-input">
+        <span>Upload profile PDF</span>
+        <input id="profile-file-input" type="file" name="file" accept="application/pdf" required>
+      </label>
+
+      <button id="upload-button" class="btn btn-primary" type="submit">
+        Upload profile
+      </button>
+    </form>
+
+    <div id="upload-status" class="upload-status"></div>
+  </div>
 
   <div class="analysis-grid">
     {% for profile in profiles %}
       <article class="card profile-card">
-        <div class="card-top">
-          <div>
-            <div class="meta-row">
-              {% if profile.is_active %}
-                <span class="meta-pill">Active</span>
-              {% endif %}
-              <span class="meta-muted">{{ profile.uploaded_at }}</span>
-            </div>
-            <h2>{{ profile.company_name or profile.file_name }}</h2>
-          </div>
+        <div class="meta-row">
+          {% if profile.is_active %}
+            <span class="meta-pill active">Active</span>
+          {% else %}
+            <span class="meta-pill">Stored</span>
+          {% endif %}
+          <span class="meta-muted">{{ profile.uploaded_at[:10] }}</span>
         </div>
 
+        <h2>{{ profile.company_name or profile.file_name }}</h2>
         <p class="card-copy">{{ profile.summary_text or "Profile processed and stored." }}</p>
 
         <div class="detail-stack">
           <div>
             <strong>Capabilities</strong>
-            <p>{{ (profile.keywords or [])[:5] | join(", ") or "No structured keywords yet" }}</p>
+            <p>{{ (profile.keywords or [])[:5] | join(", ") or "Not clearly detected" }}</p>
           </div>
+
           <div>
             <strong>Coverage</strong>
-            <p>{{ (profile.provinces or [])[:5] | join(", ") or "Not detected" }}</p>
+            <p>{{ (profile.provinces or [])[:5] | join(", ") or "Not clearly detected" }}</p>
+          </div>
+
+          <div>
+            <strong>Accreditations</strong>
+            <p>{{ (profile.accreditations or [])[:4] | join(", ") or "Not clearly detected" }}</p>
           </div>
         </div>
 
         <div class="card-actions">
-          <button class="btn btn-secondary activate-profile" data-profile-id="{{ profile.id }}">Set active</button>
-          <button class="btn btn-ghost delete-profile" data-profile-id="{{ profile.id }}">Delete</button>
+          {% if not profile.is_active %}
+            <button class="btn btn-secondary activate-profile" data-profile-id="{{ profile.id }}">
+              Set active
+            </button>
+          {% else %}
+            <a class="btn btn-primary" href="{{ url_for('tenders_page', profile_id=profile.id) }}">
+              Browse tenders
+            </a>
+          {% endif %}
+          <button class="btn btn-ghost delete-profile" data-profile-id="{{ profile.id }}">
+            Delete
+          </button>
         </div>
       </article>
     {% else %}
       <div class="card empty-card">
         <h2>No profiles yet</h2>
-        <p>Upload a profile PDF to enable tender-fit analysis.</p>
+        <p>Upload a profile PDF to enable TenderAI analysis.</p>
       </div>
     {% endfor %}
   </div>
@@ -71,6 +95,7 @@
     if (uploadForm) {
       uploadForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+
         uploadButton.disabled = true;
         uploadButton.textContent = "Processing…";
         uploadStatus.textContent = "Uploading profile…";
@@ -126,7 +151,7 @@
 
         if (response.ok) {
           localStorage.setItem("active_profile_id", data.active_profile_id);
-          window.location.reload();
+          window.location.href = `/tenders?profile_id=${encodeURIComponent(data.active_profile_id)}`;
         } else {
           window.TenderAI.hideProcessing();
         }
