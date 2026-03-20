@@ -1,58 +1,133 @@
-{% extends "base.html" %} {% set title = "Tender detail Â· TenderAI Beta" %} {% block content %}
-{{ tender.title or "Tender detail" }}
-{{ tender.buyer_name or "Unknown buyer" }}
-{{ tender.status or "Open" }} {% if tender.province %} {{ tender.province }} {% endif %} {% if tender.main_procurement_category %} {{ tender.main_procurement_category }} {% endif %} 
-Description
-{{ tender.description or "No description provided." }}
-Eligibility criteria
-{{ tender.eligibility_criteria or "Not supplied." }}
-Special conditions
-{{ tender.special_conditions or "Not supplied." }}
-Parsed requirements
-	•	{% for item in tender.parsed_document.mandatory_requirements %}
-	•	{{ item }}
-	•	{% else %}
-	•	No mandatory requirements confidently extracted.
-	•	{% endfor %} 
-Scope and specifications
-	•	{% for item in tender.parsed_document.specifications_scope %}
-	•	{{ item }}
-	•	{% else %}
-	•	No structured scope extracted.
-	•	{% endfor %} 
-Scoring and evaluation cues
-	•	{% for item in tender.parsed_document.evaluation_cues %}
-	•	{{ item }}
-	•	{% else %}
-	•	No scoring cues confidently extracted.
-	•	{% endfor %} 
-Briefing details
-	•	{% for item in tender.parsed_document.briefing_details %}
-	•	{{ item }}
-	•	{% else %}
-	•	No briefing details confidently extracted.
-	•	{% endfor %} 
-{{ tender.analysis.fit_band }} 
-{{ tender.analysis.fit_score }}
-Fit score
-Contact
-{{ tender.contact_person or "Not supplied" }}
-Delivery location
-{{ tender.delivery_location or "Not supplied" }}
-Document
-{% if tender.document_url %} {{ tender.document_title or "Open source document" }} {% else %}
-No tender document URL detected.
-{% endif %} 
-Strategic readiness
-	•	{% for item in tender.analysis.strategic_readiness %}
-	•	{{ item }}
-	•	{% else %}
-	•	No readiness cues surfaced.
-	•	{% endfor %} 
-Risk flags
-	•	{% for item in tender.analysis.risk_flags %}
-	•	{{ item }}
-	•	{% else %}
-	•	No strong risk flags detected.
-	•	{% endfor %} 
-{% endblock %} 
+{% extends "base.html" %}
+{% set title = "Tender detail · TenderAI Beta" %}
+
+{% block content %}
+<section class="section shell shell-wide">
+  <div class="section-head">
+    <div>
+      <h1>{{ tender.title or "Tender detail" }}</h1>
+      <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
+    </div>
+    <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=profile_id) }}">Back to tenders</a>
+  </div>
+
+  {% if not analysis_enabled %}
+    <div class="flash flash-error">
+      No active supplier profile is loaded. This tender detail is shown without TenderAI supplier-fit analysis.
+    </div>
+  {% endif %}
+
+  <div class="detail-layout">
+    <section class="card detail-main">
+      <div class="detail-block">
+        <h3>Description</h3>
+        <p>{{ tender.description or "No description supplied." }}</p>
+      </div>
+
+      <div class="detail-block">
+        <h3>Scope and specifications</h3>
+        <ul class="clean-list">
+          {% for item in tender.parsed_document.specifications_scope %}
+            <li>{{ item }}</li>
+          {% else %}
+            <li>No structured scope extracted from the tender document.</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="detail-block">
+        <h3>Mandatory requirements</h3>
+        <ul class="clean-list">
+          {% for item in tender.parsed_document.mandatory_requirements %}
+            <li>{{ item }}</li>
+          {% else %}
+            <li>No mandatory requirements extracted.</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="detail-block">
+        <h3>Evaluation cues</h3>
+        <ul class="clean-list">
+          {% for item in tender.parsed_document.evaluation_cues %}
+            <li>{{ item }}</li>
+          {% else %}
+            <li>No evaluation cues extracted.</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="detail-block">
+        <h3>Briefing details</h3>
+        <ul class="clean-list">
+          {% for item in tender.parsed_document.briefing_details %}
+            <li>{{ item }}</li>
+          {% else %}
+            <li>No briefing details extracted.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </section>
+
+    <aside class="card detail-side">
+      <div class="fit-badge fit-{{ tender.analysis.fit_band|lower|replace(' ', '-') }}">
+        {{ tender.analysis.fit_band }}
+      </div>
+
+      {% if tender.analysis.fit_score is not none %}
+        <div class="score-row">
+          <div class="score-number">{{ tender.analysis.fit_score }}</div>
+          <div class="score-copy">Fit score</div>
+        </div>
+      {% else %}
+        <div class="detail-block">
+          <p>No supplier-fit score available because no active or selected profile was loaded.</p>
+        </div>
+      {% endif %}
+
+      <div class="detail-block">
+        <h3>Contact</h3>
+        <p>{{ tender.contact_person or "Not supplied" }}</p>
+      </div>
+
+      <div class="detail-block">
+        <h3>Delivery location</h3>
+        <p>{{ tender.delivery_location or "Not supplied" }}</p>
+      </div>
+
+      <div class="detail-block">
+        <h3>Document</h3>
+        {% if tender.document_url %}
+          <a class="text-link" href="{{ tender.document_url }}" target="_blank" rel="noopener noreferrer">
+            {{ tender.document_title or "Open source document" }}
+          </a>
+        {% else %}
+          <p>No tender document URL detected.</p>
+        {% endif %}
+      </div>
+
+      <div class="detail-block">
+        <h3>Strategic readiness</h3>
+        <ul class="clean-list">
+          {% for item in tender.analysis.strategic_readiness %}
+            <li>{{ item }}</li>
+          {% else %}
+            <li>No readiness cues surfaced.</li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="detail-block">
+        <h3>Risk flags</h3>
+        <ul class="clean-list">
+          {% for item in tender.analysis.risk_flags %}
+            <li>{{ item }}</li>
+          {% else %}
+            <li>No strong risk flags detected.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </aside>
+  </div>
+</section>
+{% endblock %}
