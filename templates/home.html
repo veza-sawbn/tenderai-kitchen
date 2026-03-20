@@ -2,124 +2,48 @@
 {% set title = "TenderAI Beta" %}
 
 {% block content %}
-<section class="hero shell shell-wide">
-  <div class="hero-inner">
-    <div class="hero-orb" aria-hidden="true"></div>
-    <div class="eyebrow">South African Procurement Intelligence</div>
-
-    <h1>Ask TenderAI…</h1>
-
-    <p class="hero-copy">
-      Analyze live South African tenders against your supplier profile using document intelligence,
-      compliance signals, evaluation cues, and procurement-fit reasoning.
-    </p>
-
-    <form id="analyze-form" class="prompt-panel" action="{{ url_for('tenders_page') }}" method="get">
-      <div class="prompt-row">
-        <textarea
-          name="prompt"
-          rows="3"
-          placeholder="Compare our profile against currently advertised tenders. Highlight fit, risk, likely competitiveness, execution effort, mandatory requirements, and briefing obligations."
-        ></textarea>
-      </div>
-
-      <div class="prompt-actions">
-        <label class="select-wrap">
-          <span>Profile</span>
-          <select id="profile-select" name="profile_id">
-            <option value="">Use active profile</option>
-            {% for profile in profiles %}
-              <option value="{{ profile.id }}">
-                {{ profile.company_name or profile.file_name }}{% if profile.is_active %} · active{% endif %}
-              </option>
-            {% endfor %}
-          </select>
-        </label>
-
-        <button id="analyze-button" class="btn btn-primary" type="submit">
-          Analyze
-        </button>
-      </div>
-    </form>
+<section class="hero shell">
+  <div class="hero-orb"></div>
+  <p class="eyebrow">South African procurement intelligence</p>
+  <h1>TenderAI Beta</h1>
+  <p class="hero-copy">
+    Interpret supplier profiles, interpret tender documents, and assess bid strength with AI-assisted procurement analysis.
+  </p>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="{{ url_for('profiles_page') }}">Upload profile</a>
+    <a class="btn btn-secondary" href="{{ url_for('tenders_page') }}">Browse tenders</a>
   </div>
 </section>
 
 <section class="section shell shell-wide">
   <div class="section-head">
-    <h2>Currently advertised opportunities</h2>
-    <a class="text-link" href="{{ url_for('tenders_page') }}">Open tender intelligence</a>
+    <h2>Recent opportunities</h2>
+    <p>Fast-loading tender feed. Open a tender to run analysis.</p>
   </div>
-
-  <div class="tender-grid">
+  <div class="analysis-grid">
     {% for tender in tenders %}
-      <article class="card tender-card">
-        <div class="meta-row">
-          <span class="meta-pill">{{ tender.status or "Open" }}</span>
-          {% if tender.province %}
-            <span class="meta-muted">{{ tender.province }}</span>
-          {% endif %}
+      <article class="card intelligence-card">
+        <div class="card-top">
+          <div>
+            <div class="meta-row">
+              <span class="meta-pill">{{ tender.status or "Open" }}</span>
+              {% if tender.province %}<span class="meta-muted">{{ tender.province }}</span>{% endif %}
+            </div>
+            <h3>{{ tender.title or "Untitled tender" }}</h3>
+          </div>
         </div>
-
-        <h3>{{ tender.title or "Untitled tender" }}</h3>
-
-        <p class="card-copy">
-          {{ tender.description[:220] ~ ("..." if tender.description and tender.description|length > 220 else "") }}
-        </p>
-
+        <p class="card-copy">{{ tender.description[:220] ~ ("..." if tender.description and tender.description|length > 220 else "") }}</p>
         <div class="card-foot">
           <span>{{ tender.buyer_name or "Unknown buyer" }}</span>
-          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid) }}">View</a>
+          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid) }}">Open detail</a>
         </div>
       </article>
     {% else %}
       <div class="card empty-card">
-        <h3>No live opportunities loaded</h3>
-        <p>Check the API connection and the deployed build version.</p>
+        <h3>No tenders loaded</h3>
+        <p>Check the upstream API or deployment configuration.</p>
       </div>
     {% endfor %}
   </div>
 </section>
-
-<script>
-  (function () {
-    const form = document.getElementById("analyze-form");
-    const button = document.getElementById("analyze-button");
-    const profileSelect = document.getElementById("profile-select");
-
-    if (!form) return;
-
-    form.addEventListener("submit", async function () {
-      if (button) {
-        button.disabled = true;
-        button.textContent = "Analyzing…";
-      }
-
-      const selectedProfileId = profileSelect ? profileSelect.value : "";
-      const storedProfileId = localStorage.getItem("active_profile_id");
-
-      try {
-        const response = await fetch("/api/profiles", { cache: "no-store" });
-        const profiles = await response.json();
-
-        const availableIds = new Set((profiles || []).map((item) => item.id));
-        const effectiveId = selectedProfileId || storedProfileId || "";
-
-        if (effectiveId && !availableIds.has(effectiveId)) {
-          localStorage.removeItem("active_profile_id");
-        }
-
-        if (selectedProfileId) {
-          localStorage.setItem("active_profile_id", selectedProfileId);
-        }
-      } catch (error) {
-        console.error("Profile refresh failed", error);
-      }
-
-      window.TenderAI.showProcessing(
-        "Analyzing live tenders…",
-        "TenderAI is matching your profile against current opportunities and parsing tender documents."
-      );
-    });
-  })();
-</script>
 {% endblock %}
