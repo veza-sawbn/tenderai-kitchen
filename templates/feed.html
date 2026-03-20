@@ -7,7 +7,7 @@
     <h1>Tender intelligence</h1>
     <p>
       {% if analysis_enabled %}
-        {{ prompt or "Live tenders analyzed against the selected supplier profile." }}
+        {{ prompt or "Live tenders loaded. Open a tender to run AI analysis against the active supplier profile." }}
       {% else %}
         {{ prompt or "Live tenders loaded. Upload or activate a supplier profile to enable analysis." }}
       {% endif %}
@@ -20,13 +20,12 @@
 
   {% if not analysis_enabled %}
     <div class="flash flash-error">
-      No active supplier profile is loaded. These opportunities are listed without TenderAI supplier-fit analysis.
+      No active supplier profile is loaded. Tenders are listed without supplier-fit analysis.
     </div>
   {% endif %}
 
   <div class="analysis-grid">
     {% for tender in tenders %}
-      {% set analysis = tender.analysis %}
       <article class="card intelligence-card">
         <div class="card-top">
           <div>
@@ -38,22 +37,8 @@
             </div>
             <h2>{{ tender.title or "Untitled tender" }}</h2>
           </div>
-
-          <div class="fit-badge fit-{{ analysis.fit_band|lower|replace(' ', '-') }}">
-            {{ analysis.fit_band }}
-          </div>
+          <div class="fit-badge fit-neutral">Ready to analyze</div>
         </div>
-
-        {% if analysis.fit_score is not none %}
-          <div class="score-row">
-            <div class="score-number">{{ analysis.fit_score }}</div>
-            <div class="score-copy">Fit score</div>
-          </div>
-        {% else %}
-          <div class="detail-block">
-            <p>No supplier-fit score available.</p>
-          </div>
-        {% endif %}
 
         <p class="card-copy">
           {{ tender.description[:260] ~ ("..." if tender.description and tender.description|length > 260 else "") }}
@@ -61,40 +46,17 @@
 
         <div class="detail-stack">
           <div>
-            <strong>Competitiveness</strong>
-            <p>{{ analysis.competitiveness }}</p>
+            <strong>Buyer</strong>
+            <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
           </div>
-
           <div>
-            <strong>Execution investment</strong>
-            <p>{{ analysis.execution_investment }}</p>
-          </div>
-
-          <div>
-            <strong>Fit reasons</strong>
-            <ul class="clean-list">
-              {% for item in analysis.fit_reasons %}
-                <li>{{ item }}</li>
-              {% else %}
-                <li>No supplier-fit reasoning available.</li>
-              {% endfor %}
-            </ul>
-          </div>
-
-          <div>
-            <strong>Risk flags</strong>
-            <ul class="clean-list">
-              {% for item in analysis.risk_flags %}
-                <li>{{ item }}</li>
-              {% else %}
-                <li>No major risk flags detected from current extraction.</li>
-              {% endfor %}
-            </ul>
+            <strong>Location</strong>
+            <p>{{ tender.delivery_location or tender.province or "Not supplied" }}</p>
           </div>
         </div>
 
         <div class="card-foot">
-          <span>{{ tender.buyer_name or "Unknown buyer" }}</span>
+          <span>{{ tender.main_procurement_category or "Tender" }}</span>
           <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid, profile_id=profile_id) }}">Open detail</a>
         </div>
       </article>
