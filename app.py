@@ -26,7 +26,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260320-beta-14")
+APP_VERSION = os.getenv("APP_VERSION", "20260320-beta-15")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
@@ -156,9 +156,9 @@ def first_match(patterns: list[str], text: str, flags: int = re.IGNORECASE) -> O
 
 def detect_yes_no(text: str) -> Optional[bool]:
     text_lower = text.lower()
-    if any(token in text_lower for token in ["yes", "active", "valid", "compliant"]):
+    if any(token in text_lower for token in ["yes", "active", "valid", "compliant", "verified", "true"]):
         return True
-    if any(token in text_lower for token in ["no", "inactive", "invalid", "non-compliant"]):
+    if any(token in text_lower for token in ["no", "inactive", "invalid", "non-compliant", "false"]):
         return False
     return None
 
@@ -219,7 +219,7 @@ def download_pdf_text_from_url(url: str) -> str:
         return ""
 
 
-def openai_chat_json_schema(
+def openai_responses_json_schema(
     *,
     system_prompt: str,
     user_prompt: str,
@@ -231,322 +231,429 @@ def openai_chat_json_schema(
         print("OpenAI key not configured")
         return None
 
-    payload = {
-        "model": OPENAI_PARSER_MODEL,
-        "temperature": temperature,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": schema_name,
-                "strict": True,
-                "schema": schema,
-            },
-        },
-    }
-
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
 
+    payload = {
+        "model": OPENAI_PARSER_MODEL,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_prompt}],
+            },
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "schema": schema,
+                "strict": True,
+            }
+        },
+        "temperature": temperature,
+        "store": False,
+    }
+
     try:
         response = http.post(
-            "https://api.openai.com/v1/chat/completions",
+            "https://api.openai.com/v1/responses",
             headers=headers,
             json=payload,
-            timeout=90,
+            timeout=120,
         )
+        response.raise_for_status()
+        data = response.json()
 
-        if not response.ok:
-            print("OpenAI parser request failed")
-            print(f"Status: {response.status_code}")
-            print(response.text[:1200])
+        text_output = None
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        text_output = content.get("text")
+                        break
+            if text_output:
+                break
+
+        if not text_output:
+            print("No structured output text returned from Responses API")
             return None
 
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-
-        if isinstance(content, list):
-            content = "".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in content
-            )
-
-        parsed = json.loads(content)
+        parsed = json.loads(text_output)
         if not isinstance(parsed, dict):
             return None
         return parsed
     except Exception:
-        print("OpenAI parser exception")
+        print("OpenAI Responses API exception")
         traceback.print_exc()
         return None
 
 
-def build_empty_profile_schema() -> dict[str, Any]:
-    return {
-        "metadata": {
-            "source_type": "uploaded_pdf",
-            "parser_mode": "heuristic",
-            "confidence": 0.45,
-            "parsed_at": datetime.now(timezone.utc).isoformat(),
-            "parser_version": APP_VERSION,
-        },
-        "supplier_identification": {
-            "supplier_number": None,
-            "legal_name": None,
-            "trading_name": None,
-            "registration_number": None,
-            "supplier_type": None,
-            "supplier_sub_type": None,
-            "registration_date": None,
-            "financial_year_start": None,
-            "is_active": None,
-            "has_bank_account": None,
-            "restricted_supplier": None,
-            "business_status": None,
-            "country_of_origin": None,
-            "government_employee": None,
-            "allow_associates": None,
-            "annual_turnover_band": None,
-        },
-        "industry_classification": {
-            "main_group": [],
-            "division": [],
-            "core_industry": [],
-            "turnover_percentage": [],
-        },
-        "contact_information": [],
-        "address_information": [],
-        "bank_information": {
-            "verification_status": None,
-            "verification_response": None,
-        },
-        "tax_information": {
-            "income_tax_number": None,
-            "is_vat_vendor": None,
-            "is_registered_with_sars": None,
-            "tax_compliance_status": None,
-            "compliance_pin_provided": None,
-            "last_validation_date": None,
-        },
-        "bbbbee_information": {
-            "certificate_number": None,
-            "issue_date": None,
-            "expiry_date": None,
-            "verification_status": None,
-            "black_ownership_percent": None,
-            "women_ownership_percent": None,
-            "youth_ownership_percent": None,
-        },
-        "accreditations": [],
-        "directors": [],
-        "ownership_summary": {
-            "black_owned": None,
-            "youth_owned": None,
-            "township_based": None,
-            "rural_based": None,
-        },
-        "commodities": [],
-        "provinces": [],
-        "keywords": [],
-        "ai_enrichment": {
-            "summary": None,
-            "capability_keywords": [],
-            "compliance_flags": [],
-            "risk_notes": [],
-        },
-    }
-
-
-def profile_schema() -> dict[str, Any]:
+def supplier_extraction_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "metadata": {
+            "document_type": {"type": "string", "enum": ["supplier_profile"]},
+            "supplier_identity": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "source_type": {"type": ["string", "null"]},
-                    "parser_mode": {"type": ["string", "null"]},
-                    "confidence": {"type": ["number", "null"]},
-                },
-                "required": ["source_type", "parser_mode", "confidence"],
-            },
-            "supplier_identification": {
-                "type": "object",
-                "additionalProperties": True,
-                "properties": {
-                    "supplier_number": {"type": ["string", "null"]},
                     "legal_name": {"type": ["string", "null"]},
                     "trading_name": {"type": ["string", "null"]},
                     "registration_number": {"type": ["string", "null"]},
-                    "supplier_type": {"type": ["string", "null"]},
-                    "supplier_sub_type": {"type": ["string", "null"]},
-                    "registration_date": {"type": ["string", "null"]},
-                    "financial_year_start": {"type": ["string", "null"]},
-                    "is_active": {"type": ["boolean", "null"]},
-                    "has_bank_account": {"type": ["boolean", "null"]},
-                    "restricted_supplier": {"type": ["boolean", "null"]},
-                    "business_status": {"type": ["string", "null"]},
-                    "country_of_origin": {"type": ["string", "null"]},
-                    "government_employee": {"type": ["boolean", "null"]},
-                    "allow_associates": {"type": ["boolean", "null"]},
-                    "annual_turnover_band": {"type": ["string", "null"]},
+                    "vat_number": {"type": ["string", "null"]},
+                    "csd_number": {"type": ["string", "null"]},
+                    "entity_type": {"type": ["string", "null"]},
+                    "country": {"type": ["string", "null"]},
+                    "province": {"type": ["string", "null"]},
                 },
                 "required": [
-                    "supplier_number", "legal_name", "trading_name", "registration_number",
-                    "supplier_type", "supplier_sub_type", "registration_date",
-                    "financial_year_start", "is_active", "has_bank_account",
-                    "restricted_supplier", "business_status", "country_of_origin",
-                    "government_employee", "allow_associates", "annual_turnover_band",
+                    "legal_name",
+                    "trading_name",
+                    "registration_number",
+                    "vat_number",
+                    "csd_number",
+                    "entity_type",
+                    "country",
+                    "province",
                 ],
             },
-            "industry_classification": {
+            "core_capabilities": {"type": "array", "items": {"type": "string"}},
+            "services_offered": {"type": "array", "items": {"type": "string"}},
+            "sector_tags": {"type": "array", "items": {"type": "string"}},
+            "commodity_tags": {"type": "array", "items": {"type": "string"}},
+            "geographic_coverage": {"type": "array", "items": {"type": "string"}},
+            "compliance_signals": {
                 "type": "object",
-                "additionalProperties": True,
+                "additionalProperties": False,
                 "properties": {
-                    "main_group": {"type": "array", "items": {"type": "string"}},
-                    "division": {"type": "array", "items": {"type": "string"}},
-                    "core_industry": {"type": "array", "items": {"type": "string"}},
-                    "turnover_percentage": {"type": "array", "items": {"type": "string"}},
+                    "tax_compliance_present": {"type": ["boolean", "null"]},
+                    "bbbee_status_present": {"type": ["boolean", "null"]},
+                    "bbbee_level": {"type": ["string", "null"]},
+                    "cidb_grade": {"type": ["string", "null"]},
+                    "sars_pin_present": {"type": ["boolean", "null"]},
+                    "bank_verification_present": {"type": ["boolean", "null"]},
+                    "company_registration_present": {"type": ["boolean", "null"]},
                 },
-                "required": ["main_group", "division", "core_industry", "turnover_percentage"],
+                "required": [
+                    "tax_compliance_present",
+                    "bbbee_status_present",
+                    "bbbee_level",
+                    "cidb_grade",
+                    "sars_pin_present",
+                    "bank_verification_present",
+                    "company_registration_present",
+                ],
             },
-            "contact_information": {"type": "array", "items": {"type": "object"}},
-            "address_information": {"type": "array", "items": {"type": "object"}},
-            "bank_information": {"type": "object"},
-            "tax_information": {"type": "object"},
-            "bbbbee_information": {"type": "object"},
-            "accreditations": {"type": "array", "items": {"type": "object"}},
-            "directors": {"type": "array", "items": {"type": "object"}},
-            "ownership_summary": {"type": "object"},
-            "commodities": {"type": "array", "items": {"type": "string"}},
-            "provinces": {"type": "array", "items": {"type": "string"}},
-            "keywords": {"type": "array", "items": {"type": "string"}},
-            "ai_enrichment": {"type": "object"},
+            "certifications_and_accreditations": {"type": "array", "items": {"type": "string"}},
+            "past_performance_evidence": {"type": "array", "items": {"type": "string"}},
+            "capacity_signals": {"type": "array", "items": {"type": "string"}},
+            "key_contacts": {"type": "array", "items": {"type": "string"}},
+            "strength_summary": {"type": "array", "items": {"type": "string"}},
+            "missing_or_unclear_evidence": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number"},
         },
         "required": [
-            "metadata", "supplier_identification", "industry_classification",
-            "contact_information", "address_information", "bank_information",
-            "tax_information", "bbbbee_information", "accreditations",
-            "directors", "ownership_summary", "commodities", "provinces",
-            "keywords", "ai_enrichment",
+            "document_type",
+            "supplier_identity",
+            "core_capabilities",
+            "services_offered",
+            "sector_tags",
+            "commodity_tags",
+            "geographic_coverage",
+            "compliance_signals",
+            "certifications_and_accreditations",
+            "past_performance_evidence",
+            "capacity_signals",
+            "key_contacts",
+            "strength_summary",
+            "missing_or_unclear_evidence",
+            "confidence",
         ],
     }
 
 
-def tender_schema() -> dict[str, Any]:
+def tender_extraction_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "scoring_criteria": {"type": "array", "items": {"type": "string"}},
-            "mandatory_requirements": {"type": "array", "items": {"type": "string"}},
-            "specifications_scope": {"type": "array", "items": {"type": "string"}},
+            "document_type": {"type": "string", "enum": ["tender_document"]},
+            "tender_identity": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "tender_number": {"type": ["string", "null"]},
+                    "title": {"type": ["string", "null"]},
+                    "buyer_name": {"type": ["string", "null"]},
+                    "buyer_type": {"type": ["string", "null"]},
+                    "province": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "tender_number",
+                    "title",
+                    "buyer_name",
+                    "buyer_type",
+                    "province",
+                ],
+            },
+            "scope_summary": {"type": ["string", "null"]},
+            "deliverables": {"type": "array", "items": {"type": "string"}},
+            "required_capabilities": {"type": "array", "items": {"type": "string"}},
+            "mandatory_documents": {"type": "array", "items": {"type": "string"}},
+            "compliance_requirements": {"type": "array", "items": {"type": "string"}},
+            "functionality_criteria": {"type": "array", "items": {"type": "string"}},
+            "evaluation_criteria": {"type": "array", "items": {"type": "string"}},
+            "price_preference_system": {
+                "type": ["string", "null"],
+                "enum": ["80/20", "90/10", "other", None],
+            },
+            "specific_goals_or_preference_cues": {"type": "array", "items": {"type": "string"}},
+            "briefing": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "briefing_required": {"type": ["boolean", "null"]},
+                    "briefing_compulsory": {"type": ["boolean", "null"]},
+                    "briefing_date_text": {"type": ["string", "null"]},
+                },
+                "required": [
+                    "briefing_required",
+                    "briefing_compulsory",
+                    "briefing_date_text",
+                ],
+            },
+            "submission": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "deadline_text": {"type": ["string", "null"]},
+                    "validity_period_text": {"type": ["string", "null"]},
+                },
+                "required": ["deadline_text", "validity_period_text"],
+            },
             "special_conditions": {"type": "array", "items": {"type": "string"}},
-            "briefing_details": {"type": "array", "items": {"type": "string"}},
-            "compliance_cues": {"type": "array", "items": {"type": "string"}},
-            "evaluation_cues": {"type": "array", "items": {"type": "string"}},
-            "confidence": {"type": ["number", "null"]},
+            "risk_flags": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number"},
         },
         "required": [
-            "scoring_criteria", "mandatory_requirements", "specifications_scope",
-            "special_conditions", "briefing_details", "compliance_cues",
-            "evaluation_cues", "confidence",
+            "document_type",
+            "tender_identity",
+            "scope_summary",
+            "deliverables",
+            "required_capabilities",
+            "mandatory_documents",
+            "compliance_requirements",
+            "functionality_criteria",
+            "evaluation_criteria",
+            "price_preference_system",
+            "specific_goals_or_preference_cues",
+            "briefing",
+            "submission",
+            "special_conditions",
+            "risk_flags",
+            "confidence",
         ],
     }
 
 
-def llm_parse_profile_pdf_text(text: str) -> Optional[dict[str, Any]]:
-    doc_text = normalize_whitespace(text)[:24000]
+def bid_assessment_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "decision_summary": {"type": "string"},
+            "qualification_status": {
+                "type": "string",
+                "enum": ["likely_qualifies", "partially_qualifies", "unlikely_to_qualify"],
+            },
+            "fit_score": {"type": "integer", "minimum": 0, "maximum": 100},
+            "win_probability_band": {"type": "string", "enum": ["low", "moderate", "strong"]},
+            "bid_recommendation": {"type": "string", "enum": ["go", "go_with_caution", "no_go"]},
+            "capability_strengths": {"type": "array", "items": {"type": "string"}},
+            "compliance_strengths": {"type": "array", "items": {"type": "string"}},
+            "gaps_or_disqualifiers": {"type": "array", "items": {"type": "string"}},
+            "competitiveness_assessment": {"type": "string"},
+            "execution_burden": {"type": "string", "enum": ["low", "medium", "high"]},
+            "strategic_readiness": {"type": "array", "items": {"type": "string"}},
+            "improvement_actions": {"type": "array", "items": {"type": "string"}},
+            "critical_unknowns": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number"},
+        },
+        "required": [
+            "decision_summary",
+            "qualification_status",
+            "fit_score",
+            "win_probability_band",
+            "bid_recommendation",
+            "capability_strengths",
+            "compliance_strengths",
+            "gaps_or_disqualifiers",
+            "competitiveness_assessment",
+            "execution_burden",
+            "strategic_readiness",
+            "improvement_actions",
+            "critical_unknowns",
+            "confidence",
+        ],
+    }
 
+
+def llm_extract_supplier_profile(text: str) -> Optional[dict[str, Any]]:
     system_prompt = """
-You extract structured supplier profile data from South African business profile or CSD-style documents.
-Return only facts supported by the document.
+You are TenderAI's supplier-profile interpreter for South African procurement.
+Extract only facts supported by the supplier profile.
 Do not guess.
-Use null when unknown.
-"""
+Use null or empty arrays when evidence is missing.
+Focus on capabilities, compliance cues, accreditations, geographic fit, and past performance signals.
+Return only valid JSON matching the schema.
+""".strip()
 
     user_prompt = f"""
-Extract this supplier profile into the required JSON schema.
+Interpret this supplier profile for procurement intelligence.
 
-Document text:
-{doc_text}
-"""
+Context:
+- country: South Africa
+- objective: determine whether this supplier can qualify and compete for tenders
 
-    parsed = openai_chat_json_schema(
-        system_prompt=system_prompt.strip(),
-        user_prompt=user_prompt.strip(),
-        schema_name="supplier_profile",
-        schema=profile_schema(),
+Supplier profile text:
+{normalize_whitespace(text)[:30000]}
+""".strip()
+
+    return openai_responses_json_schema(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        schema_name="supplier_profile_extraction",
+        schema=supplier_extraction_schema(),
         temperature=0.1,
     )
 
-    if parsed:
-        parsed.setdefault("metadata", {})
-        parsed["metadata"]["source_type"] = "uploaded_pdf"
-        parsed["metadata"]["parser_mode"] = "llm"
-        parsed["metadata"]["confidence"] = parsed["metadata"].get("confidence", 0.86)
 
-    return parsed
-
-
-def llm_parse_tender_document_text(text: str) -> Optional[dict[str, Any]]:
-    doc_text = normalize_whitespace(text)[:24000]
-
+def llm_extract_tender_document(text: str) -> Optional[dict[str, Any]]:
     system_prompt = """
-You extract procurement intelligence from South African tender documents.
-Return only facts supported by the document.
-Focus on requirements, scope, special conditions, briefing details, compliance obligations,
-and evaluation or scoring cues such as functionality, 80/20, 90/10, preference points,
-specific goals, B-BBEE, and mandatory submission items.
-"""
+You are TenderAI's tender-document interpreter for South African procurement.
+Extract only facts supported by the tender document.
+Do not guess.
+Use null or empty arrays when evidence is missing.
+Focus on scope, required capabilities, mandatory documents, compliance obligations, functionality criteria, preference point cues, briefing obligations, and special conditions.
+Return only valid JSON matching the schema.
+""".strip()
 
     user_prompt = f"""
-Extract this tender document into the required JSON schema.
+Interpret this tender document for procurement intelligence.
 
-Document text:
-{doc_text}
-"""
+Context:
+- country: South Africa
+- objective: determine qualification requirements, evaluation criteria, compliance obligations, and bid risks
 
-    parsed = openai_chat_json_schema(
-        system_prompt=system_prompt.strip(),
-        user_prompt=user_prompt.strip(),
-        schema_name="tender_document",
-        schema=tender_schema(),
+Tender document text:
+{normalize_whitespace(text)[:30000]}
+""".strip()
+
+    return openai_responses_json_schema(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        schema_name="tender_document_extraction",
+        schema=tender_extraction_schema(),
         temperature=0.1,
     )
 
-    if parsed and parsed.get("confidence") is None:
-        parsed["confidence"] = 0.84
 
-    return parsed
+def llm_assess_bid(supplier_obj: dict[str, Any], tender_obj: dict[str, Any]) -> Optional[dict[str, Any]]:
+    system_prompt = """
+You are TenderAI's bid assessment engine for South African procurement.
+Compare the supplier profile against the tender requirements.
+Do not invent strengths or qualifications that are not supported by the extracted objects.
+Be conservative when evidence is incomplete.
+Return only valid JSON matching the schema.
+""".strip()
+
+    user_prompt = f"""
+Assess whether this supplier is a strong candidate for this tender.
+
+Supplier object:
+{json.dumps(supplier_obj, ensure_ascii=False)}
+
+Tender object:
+{json.dumps(tender_obj, ensure_ascii=False)}
+
+Required output:
+- determine likely qualification status
+- assign fit score
+- estimate win probability band
+- recommend go, go_with_caution, or no_go
+- explain key strengths, gaps, and improvements
+""".strip()
+
+    return openai_responses_json_schema(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        schema_name="bid_assessment",
+        schema=bid_assessment_schema(),
+        temperature=0.1,
+    )
+
+
+def build_empty_profile_schema() -> dict[str, Any]:
+    return {
+        "document_type": "supplier_profile",
+        "supplier_identity": {
+            "legal_name": None,
+            "trading_name": None,
+            "registration_number": None,
+            "vat_number": None,
+            "csd_number": None,
+            "entity_type": None,
+            "country": "South Africa",
+            "province": None,
+        },
+        "core_capabilities": [],
+        "services_offered": [],
+        "sector_tags": [],
+        "commodity_tags": [],
+        "geographic_coverage": [],
+        "compliance_signals": {
+            "tax_compliance_present": None,
+            "bbbee_status_present": None,
+            "bbbee_level": None,
+            "cidb_grade": None,
+            "sars_pin_present": None,
+            "bank_verification_present": None,
+            "company_registration_present": None,
+        },
+        "certifications_and_accreditations": [],
+        "past_performance_evidence": [],
+        "capacity_signals": [],
+        "key_contacts": [],
+        "strength_summary": [],
+        "missing_or_unclear_evidence": [],
+        "confidence": 0.35,
+    }
 
 
 def build_profile_summary_text(profile: dict[str, Any]) -> str:
-    supplier = profile.get("supplier_identification", {})
-    industry = profile.get("industry_classification", {})
-    tax_info = profile.get("tax_information", {})
-    bbbee = profile.get("bbbbee_information", {})
-
+    identity = profile.get("supplier_identity", {})
     bits = []
-    if supplier.get("legal_name"):
-        bits.append(f"Legal name: {supplier['legal_name']}")
-    if supplier.get("supplier_sub_type"):
-        bits.append(f"Supplier subtype: {supplier['supplier_sub_type']}")
-    if industry.get("main_group"):
-        bits.append(f"Main groups: {', '.join(industry['main_group'][:3])}")
-    if industry.get("division"):
-        bits.append(f"Divisions: {', '.join(industry['division'][:3])}")
-    if tax_info.get("tax_compliance_status"):
-        bits.append(f"Tax status: {tax_info['tax_compliance_status']}")
-    if bbbee.get("verification_status"):
-        bits.append(f"B-BBEE: {bbbee['verification_status']}")
+
+    if identity.get("legal_name"):
+        bits.append(f"Legal name: {identity['legal_name']}")
+    if identity.get("entity_type"):
+        bits.append(f"Entity type: {identity['entity_type']}")
+    if profile.get("core_capabilities"):
+        bits.append(f"Capabilities: {', '.join(profile['core_capabilities'][:4])}")
+    compliance = profile.get("compliance_signals", {})
+    if compliance.get("bbbee_level"):
+        bits.append(f"B-BBEE level: {compliance['bbbee_level']}")
+    if compliance.get("cidb_grade"):
+        bits.append(f"CIDB: {compliance['cidb_grade']}")
+    if compliance.get("tax_compliance_present") is True:
+        bits.append("Tax compliance signal present")
     return " | ".join(bits)
 
 
@@ -554,95 +661,148 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
     profile = build_empty_profile_schema()
     text_lower = text.lower()
 
-    supplier = profile["supplier_identification"]
-    tax_info = profile["tax_information"]
-    bbbee = profile["bbbbee_information"]
+    identity = profile["supplier_identity"]
+    compliance = profile["compliance_signals"]
 
-    supplier["supplier_number"] = first_match(
-        [
-            r"supplier\s*(?:number|no\.?)\s*[:\-]\s*([A-Z0-9\-\/]+)",
-            r"\bMAAA\s*([0-9]{6,})\b",
-        ],
-        text,
-    )
-    supplier["legal_name"] = first_match(
+    identity["legal_name"] = first_match(
         [
             r"(?:legal\s*name|supplier\s*name|enterprise\s*name)\s*[:\-]\s*(.+)",
             r"registered\s*name\s*[:\-]\s*(.+)",
         ],
         text,
     )
-    supplier["trading_name"] = first_match([r"(?:trading\s*name|business\s*name)\s*[:\-]\s*(.+)"], text)
-    supplier["registration_number"] = first_match([r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"], text)
-    supplier["supplier_type"] = first_match([r"supplier\s*type\s*[:\-]\s*(.+)"], text)
-    supplier["supplier_sub_type"] = first_match([r"supplier\s*sub[\-\s]*type\s*[:\-]\s*(.+)"], text)
-    supplier["country_of_origin"] = first_match([r"country\s*of\s*origin\s*[:\-]\s*(.+)"], text)
-    supplier["annual_turnover_band"] = first_match([r"(?:annual\s*turnover|turnover\s*band)\s*[:\-]\s*(.+)"], text)
-    supplier["business_status"] = first_match([r"business\s*status\s*[:\-]\s*(.+)"], text)
-
-    active_field = first_match([r"(?:supplier\s*active\s*status|active)\s*[:\-]\s*(.+)"], text)
-    supplier["is_active"] = detect_yes_no(active_field or "")
-
-    tax_info["tax_compliance_status"] = first_match([r"tax\s*compliance\s*status\s*[:\-]\s*(.+)"], text)
-    tax_info["is_registered_with_sars"] = detect_yes_no(
-        first_match([r"(?:registered\s*with\s*SARS)\s*[:\-]\s*(.+)"], text) or ""
-    )
-    tax_info["is_vat_vendor"] = detect_yes_no(
-        first_match([r"(?:VAT\s*vendor|is\s*vat\s*vendor)\s*[:\-]\s*(.+)"], text) or ""
-    )
-
-    bbbee["verification_status"] = first_match(
-        [r"(?:B[\-\s]*BBEE|BBBEE).{0,30}verification\s*status\s*[:\-]\s*(.+)"],
+    identity["trading_name"] = first_match([r"(?:trading\s*name|business\s*name)\s*[:\-]\s*(.+)"], text)
+    identity["registration_number"] = first_match(
+        [r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"],
         text,
     )
-    bbbee["certificate_number"] = first_match(
-        [r"(?:B[\-\s]*BBEE|BBBEE).{0,40}(?:certificate\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\-\/]+)"],
-        text,
-    )
+    identity["vat_number"] = first_match([r"(?:vat\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"], text)
+    identity["csd_number"] = first_match([r"(?:csd\s*(?:number|no\.?))\s*[:\-]?\s*([A-Z0-9\/\-]+)"], text)
+    identity["entity_type"] = first_match([r"(?:supplier\s*type|entity\s*type)\s*[:\-]\s*(.+)"], text)
+    identity["country"] = first_match([r"country\s*of\s*origin\s*[:\-]\s*(.+)"], text) or "South Africa"
 
     provinces = [
         "Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo",
         "Mpumalanga", "Northern Cape", "North West", "Western Cape",
     ]
-    profile["provinces"] = [province for province in provinces if province.lower() in text_lower]
-    profile["ai_enrichment"]["summary"] = build_profile_summary_text(profile)
+    found_provinces = [province for province in provinces if province.lower() in text_lower]
+    identity["province"] = found_provinces[0] if found_provinces else None
+    profile["geographic_coverage"] = found_provinces
+
+    profile["core_capabilities"] = find_keyword_lines(
+        text,
+        ["services", "supply", "maintenance", "construction", "consulting", "training", "installation"],
+        limit=8,
+    )
+    profile["services_offered"] = profile["core_capabilities"][:]
+    profile["sector_tags"] = [token for token in ["construction", "engineering", "it", "consulting", "logistics", "cleaning", "training"] if token in text_lower]
+    profile["commodity_tags"] = [token for token in ["equipment", "software", "transport", "furniture", "security", "catering"] if token in text_lower]
+
+    compliance["tax_compliance_present"] = True if "tax compliance" in text_lower or "sars" in text_lower else None
+    compliance["bbbee_status_present"] = True if "bbbee" in text_lower or "b-bbee" in text_lower else None
+    compliance["bbbee_level"] = first_match([r"(?:b[\-\s]*bbbee|bbbbee).{0,30}(?:level|status\s*level)\s*[:\-]?\s*(.+)"], text)
+    compliance["cidb_grade"] = first_match([r"cidb.{0,20}(?:grade|grading)\s*[:\-]?\s*([A-Z0-9]+)"], text)
+    compliance["sars_pin_present"] = True if "pin" in text_lower and "sars" in text_lower else None
+    compliance["bank_verification_present"] = True if "bank verification" in text_lower else None
+    compliance["company_registration_present"] = True if bool(identity["registration_number"]) else None
+
+    profile["certifications_and_accreditations"] = find_keyword_lines(text, ["iso", "certified", "accreditation", "registered with"], limit=6)
+    profile["past_performance_evidence"] = find_keyword_lines(text, ["project", "client", "contract", "delivered", "experience"], limit=6)
+    profile["capacity_signals"] = find_keyword_lines(text, ["team", "staff", "employees", "fleet", "equipment", "capacity"], limit=6)
+    profile["key_contacts"] = find_keyword_lines(text, ["email", "tel", "phone", "contact"], limit=5)
+
+    if profile["core_capabilities"]:
+        profile["strength_summary"].append("Core business capabilities detected in profile")
+    if compliance["tax_compliance_present"]:
+        profile["strength_summary"].append("Tax compliance signal detected")
+    if compliance["bbbee_status_present"]:
+        profile["strength_summary"].append("B-BBEE signal detected")
+    if not compliance["company_registration_present"]:
+        profile["missing_or_unclear_evidence"].append("Company registration not clearly detected")
+    if not compliance["tax_compliance_present"]:
+        profile["missing_or_unclear_evidence"].append("Tax compliance evidence not clearly detected")
+
+    profile["confidence"] = 0.42
     return profile
+
+
+def normalize_supplier_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    normalized = build_empty_profile_schema()
+    normalized.update({k: v for k, v in profile.items() if k in normalized})
+
+    normalized["document_type"] = "supplier_profile"
+    normalized.setdefault("supplier_identity", {})
+    normalized.setdefault("compliance_signals", {})
+
+    for key, value in build_empty_profile_schema()["supplier_identity"].items():
+        normalized["supplier_identity"].setdefault(key, value)
+    for key, value in build_empty_profile_schema()["compliance_signals"].items():
+        normalized["compliance_signals"].setdefault(key, value)
+
+    for key in [
+        "core_capabilities",
+        "services_offered",
+        "sector_tags",
+        "commodity_tags",
+        "geographic_coverage",
+        "certifications_and_accreditations",
+        "past_performance_evidence",
+        "capacity_signals",
+        "key_contacts",
+        "strength_summary",
+        "missing_or_unclear_evidence",
+    ]:
+        value = normalized.get(key)
+        if not isinstance(value, list):
+            normalized[key] = []
+
+    if not isinstance(normalized.get("confidence"), (int, float)):
+        normalized["confidence"] = 0.5
+
+    return normalized
 
 
 def parse_profile_pdf_text(text: str) -> dict[str, Any]:
     if PARSER_MODE in {"auto", "llm"} and OPENAI_API_KEY:
-        parsed = llm_parse_profile_pdf_text(text)
+        parsed = llm_extract_supplier_profile(text)
         if parsed:
-            return parsed
+            return normalize_supplier_profile(parsed)
     return parse_profile_pdf_text_heuristic(text)
 
 
 def profile_summary_for_ui(profile_data: dict[str, Any]) -> dict[str, Any]:
-    supplier = profile_data.get("supplier_identification", {})
-    industry = profile_data.get("industry_classification", {})
-    tax_info = profile_data.get("tax_information", {})
-    bbbee = profile_data.get("bbbbee_information", {})
-
+    identity = profile_data.get("supplier_identity", {})
+    compliance = profile_data.get("compliance_signals", {})
     return {
-        "company_name": supplier.get("legal_name") or supplier.get("trading_name"),
-        "supplier_active_status": supplier.get("is_active"),
-        "supplier_sub_type": supplier.get("supplier_sub_type"),
-        "country_of_origin": supplier.get("country_of_origin"),
-        "government_employee": supplier.get("government_employee"),
-        "overall_tax_status": tax_info.get("tax_compliance_status"),
-        "sars_registration_status": tax_info.get("is_registered_with_sars"),
-        "industry_classification": industry,
-        "industry_main_groups": industry.get("main_group", []),
-        "industry_divisions": industry.get("division", []),
-        "address_information": profile_data.get("address_information", []),
-        "bbbee_information": bbbee,
-        "bbbee_details": bbbee,
-        "ownership_information": profile_data.get("ownership_summary", {}),
-        "directors_members_owners": profile_data.get("directors", []),
-        "accreditations": profile_data.get("accreditations", []),
-        "commodities": profile_data.get("commodities", []),
-        "provinces": profile_data.get("provinces", []),
-        "keywords": profile_data.get("keywords", []),
+        "company_name": identity.get("legal_name") or identity.get("trading_name"),
+        "summary_text": build_profile_summary_text(profile_data) or "Profile processed and stored.",
+        "supplier_active_status": None,
+        "supplier_sub_type": identity.get("entity_type"),
+        "country_of_origin": identity.get("country"),
+        "government_employee": None,
+        "overall_tax_status": "Detected" if compliance.get("tax_compliance_present") else "Unclear",
+        "sars_registration_status": compliance.get("sars_pin_present"),
+        "industry_classification": {
+            "main_group": profile_data.get("sector_tags", []),
+            "division": profile_data.get("commodity_tags", []),
+        },
+        "industry_main_groups": profile_data.get("sector_tags", []),
+        "industry_divisions": profile_data.get("commodity_tags", []),
+        "address_information": profile_data.get("geographic_coverage", []),
+        "bbbee_information": {
+            "verification_status": compliance.get("bbbee_status_present"),
+            "level": compliance.get("bbbee_level"),
+        },
+        "bbbee_details": {
+            "verification_status": compliance.get("bbbee_status_present"),
+            "level": compliance.get("bbbee_level"),
+        },
+        "ownership_information": {},
+        "directors_members_owners": [],
+        "accreditations": profile_data.get("certifications_and_accreditations", []),
+        "commodities": profile_data.get("commodity_tags", []),
+        "provinces": profile_data.get("geographic_coverage", []),
+        "keywords": profile_data.get("core_capabilities", []),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -695,9 +855,7 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
 
     scored = []
     for doc in documents:
-        title = " ".join(
-            str(doc.get(key, "")) for key in ["title", "description", "documentType"]
-        ).lower()
+        title = " ".join(str(doc.get(key, "")) for key in ["title", "description", "documentType"]).lower()
         url = (document_url(doc) or "").lower()
 
         score = 0
@@ -762,13 +920,34 @@ def find_keyword_lines(text: str, keywords: list[str], limit: int = 12) -> list[
 def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
     if not text:
         return {
-            "scoring_criteria": [],
-            "mandatory_requirements": [],
-            "specifications_scope": [],
+            "document_type": "tender_document",
+            "tender_identity": {
+                "tender_number": None,
+                "title": None,
+                "buyer_name": None,
+                "buyer_type": None,
+                "province": None,
+            },
+            "scope_summary": None,
+            "deliverables": [],
+            "required_capabilities": [],
+            "mandatory_documents": [],
+            "compliance_requirements": [],
+            "functionality_criteria": [],
+            "evaluation_criteria": [],
+            "price_preference_system": None,
+            "specific_goals_or_preference_cues": [],
+            "briefing": {
+                "briefing_required": None,
+                "briefing_compulsory": None,
+                "briefing_date_text": None,
+            },
+            "submission": {
+                "deadline_text": None,
+                "validity_period_text": None,
+            },
             "special_conditions": [],
-            "briefing_details": [],
-            "compliance_cues": [],
-            "evaluation_cues": [],
+            "risk_flags": [],
             "confidence": 0.0,
         }
 
@@ -791,49 +970,108 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
     )[:6]
 
     return {
-        "scoring_criteria": scoring,
-        "mandatory_requirements": mandatory,
-        "specifications_scope": scope,
+        "document_type": "tender_document",
+        "tender_identity": {
+            "tender_number": None,
+            "title": None,
+            "buyer_name": None,
+            "buyer_type": None,
+            "province": None,
+        },
+        "scope_summary": " ".join(scope[:3]) if scope else None,
+        "deliverables": scope,
+        "required_capabilities": scope,
+        "mandatory_documents": mandatory,
+        "compliance_requirements": compliance,
+        "functionality_criteria": scoring,
+        "evaluation_criteria": evaluation,
+        "price_preference_system": "80/20" if any("80/20" in x for x in evaluation + scoring) else ("90/10" if any("90/10" in x for x in evaluation + scoring) else None),
+        "specific_goals_or_preference_cues": evaluation,
+        "briefing": {
+            "briefing_required": bool(briefing),
+            "briefing_compulsory": any("compulsory" in x.lower() for x in briefing),
+            "briefing_date_text": briefing[0] if briefing else None,
+        },
+        "submission": {
+            "deadline_text": None,
+            "validity_period_text": None,
+        },
         "special_conditions": special,
-        "briefing_details": briefing,
-        "compliance_cues": compliance,
-        "evaluation_cues": evaluation,
+        "risk_flags": [],
         "confidence": 0.46,
     }
 
 
-def parse_tender_document_text(text: str) -> dict[str, Any]:
-    if not text:
-        return {
-            "scoring_criteria": [],
-            "mandatory_requirements": [],
-            "specifications_scope": [],
-            "special_conditions": [],
-            "briefing_details": [],
-            "compliance_cues": [],
-            "evaluation_cues": [],
-            "confidence": 0.0,
+def normalize_tender_extraction(parsed: dict[str, Any], tender: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    normalized = parse_tender_document_text_heuristic("")
+    normalized.update({k: v for k, v in parsed.items() if k in normalized})
+
+    if tender:
+        normalized["tender_identity"]["tender_number"] = normalized["tender_identity"].get("tender_number") or tender.get("tender_id") or tender.get("ocid")
+        normalized["tender_identity"]["title"] = normalized["tender_identity"].get("title") or tender.get("title")
+        normalized["tender_identity"]["buyer_name"] = normalized["tender_identity"].get("buyer_name") or tender.get("buyer_name")
+        normalized["tender_identity"]["province"] = normalized["tender_identity"].get("province") or tender.get("province")
+
+    for key in [
+        "deliverables",
+        "required_capabilities",
+        "mandatory_documents",
+        "compliance_requirements",
+        "functionality_criteria",
+        "evaluation_criteria",
+        "specific_goals_or_preference_cues",
+        "special_conditions",
+        "risk_flags",
+    ]:
+        if not isinstance(normalized.get(key), list):
+            normalized[key] = []
+
+    if not isinstance(normalized.get("briefing"), dict):
+        normalized["briefing"] = {
+            "briefing_required": None,
+            "briefing_compulsory": None,
+            "briefing_date_text": None,
+        }
+    if not isinstance(normalized.get("submission"), dict):
+        normalized["submission"] = {
+            "deadline_text": None,
+            "validity_period_text": None,
         }
 
-    if PARSER_MODE in {"auto", "llm"} and OPENAI_API_KEY:
-        parsed = llm_parse_tender_document_text(text)
-        if parsed:
-            return parsed
+    if not isinstance(normalized.get("confidence"), (int, float)):
+        normalized["confidence"] = 0.5
 
-    return parse_tender_document_text_heuristic(text)
+    normalized["scoring_criteria"] = list(dict.fromkeys(normalized["functionality_criteria"] + normalized["evaluation_criteria"]))[:10]
+    normalized["mandatory_requirements"] = normalized["mandatory_documents"][:]
+    normalized["specifications_scope"] = normalized["deliverables"][:]
+    normalized["briefing_details"] = [normalized["briefing"].get("briefing_date_text")] if normalized["briefing"].get("briefing_date_text") else []
+    normalized["compliance_cues"] = normalized["compliance_requirements"][:]
+    normalized["evaluation_cues"] = normalized["evaluation_criteria"][:]
+
+    return normalized
+
+
+def parse_tender_document_text(text: str, tender: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    if PARSER_MODE in {"auto", "llm"} and OPENAI_API_KEY and text:
+        parsed = llm_extract_tender_document(text)
+        if parsed:
+            return normalize_tender_extraction(parsed, tender=tender)
+    return normalize_tender_extraction(parse_tender_document_text_heuristic(text), tender=tender)
 
 
 def infer_profile_keywords(profile_data: dict[str, Any]) -> set[str]:
     tokens = set()
-    for key in ["industry_classification", "keywords", "commodities", "provinces"]:
+    for key in [
+        "core_capabilities",
+        "services_offered",
+        "sector_tags",
+        "commodity_tags",
+        "geographic_coverage",
+        "past_performance_evidence",
+        "capacity_signals",
+    ]:
         value = profile_data.get(key)
-        if isinstance(value, dict):
-            for nested in value.values():
-                if isinstance(nested, list):
-                    for item in nested:
-                        if item:
-                            tokens.update(re.findall(r"[A-Za-z][A-Za-z&/\-]{2,}", str(item).lower()))
-        elif isinstance(value, list):
+        if isinstance(value, list):
             for item in value:
                 if item:
                     tokens.update(re.findall(r"[A-Za-z][A-Za-z&/\-]{2,}", str(item).lower()))
@@ -856,16 +1094,54 @@ def score_fit(
             "execution_investment": "Not assessed",
             "strategic_readiness": ["Upload or activate a supplier profile to enable TenderAI analysis."],
             "analysis_ready": False,
+            "decision_summary": "No supplier profile available for assessment.",
+            "bid_recommendation": "no_go",
+            "win_probability_band": "low",
+            "improvement_actions": [],
+            "critical_unknowns": [],
+            "qualification_status": "unlikely_to_qualify",
+            "confidence": 0.0,
+        }
+
+    assessment = None
+    if PARSER_MODE in {"auto", "llm"} and OPENAI_API_KEY:
+        assessment = llm_assess_bid(profile_data, parsed_doc)
+
+    if assessment:
+        fit_score = assessment.get("fit_score")
+        if fit_score is None:
+            fit_band = "Profile assessed"
+        elif fit_score >= 75:
+            fit_band = "High fit"
+        elif fit_score >= 55:
+            fit_band = "Medium fit"
+        else:
+            fit_band = "Low fit"
+
+        return {
+            "fit_score": fit_score,
+            "fit_band": fit_band,
+            "fit_reasons": assessment.get("capability_strengths", []),
+            "risk_flags": assessment.get("gaps_or_disqualifiers", []),
+            "competitiveness": assessment.get("competitiveness_assessment", "Not assessed"),
+            "execution_investment": assessment.get("execution_burden", "Not assessed"),
+            "strategic_readiness": assessment.get("strategic_readiness", []),
+            "analysis_ready": True,
+            "decision_summary": assessment.get("decision_summary"),
+            "bid_recommendation": assessment.get("bid_recommendation"),
+            "win_probability_band": assessment.get("win_probability_band"),
+            "improvement_actions": assessment.get("improvement_actions", []),
+            "critical_unknowns": assessment.get("critical_unknowns", []),
+            "qualification_status": assessment.get("qualification_status"),
+            "confidence": assessment.get("confidence"),
         }
 
     tender_text_parts = [
         tender.get("title") or "",
         tender.get("description") or "",
-        tender.get("eligibility_criteria") or "",
-        tender.get("special_conditions") or "",
-        " ".join(parsed_doc.get("mandatory_requirements", [])),
-        " ".join(parsed_doc.get("specifications_scope", [])),
-        " ".join(parsed_doc.get("evaluation_cues", [])),
+        " ".join(parsed_doc.get("mandatory_documents", [])),
+        " ".join(parsed_doc.get("deliverables", [])),
+        " ".join(parsed_doc.get("evaluation_criteria", [])),
         prompt or "",
     ]
     tender_text = " ".join(tender_text_parts).lower()
@@ -884,22 +1160,21 @@ def score_fit(
     else:
         risks.append("Limited direct capability overlap detected from current profile extraction")
 
-    tax_status = (profile_data.get("tax_information", {}).get("tax_compliance_status") or "").lower()
-    if "compliant" in tax_status or "valid" in tax_status:
+    compliance = profile_data.get("compliance_signals", {})
+    if compliance.get("tax_compliance_present"):
         fit_score += 8
         readiness.append("Tax compliance signal detected")
     else:
         risks.append("Tax compliance status not clearly confirmed in profile")
 
-    bbbee_status = (profile_data.get("bbbbee_information", {}).get("verification_status") or "").strip()
-    if bbbee_status:
+    if compliance.get("bbbee_status_present"):
         fit_score += 4
         readiness.append("B-BBEE signal detected")
 
-    if parsed_doc.get("briefing_details"):
+    if parsed_doc.get("briefing", {}).get("briefing_required"):
         risks.append("Tender appears to include briefing or site inspection obligations")
 
-    if any("cidb" in item.lower() for item in parsed_doc.get("mandatory_requirements", []) + parsed_doc.get("compliance_cues", [])):
+    if any("cidb" in item.lower() for item in parsed_doc.get("mandatory_documents", []) + parsed_doc.get("compliance_requirements", [])):
         risks.append("CIDB-related compliance may be required")
 
     fit_score = max(5, min(95, fit_score))
@@ -908,14 +1183,23 @@ def score_fit(
         fit_band = "High fit"
         competitiveness = "Potentially strong"
         execution_investment = "Medium"
+        bid_recommendation = "go"
+        win_probability_band = "strong"
+        qualification_status = "likely_qualifies"
     elif fit_score >= 55:
         fit_band = "Medium fit"
         competitiveness = "Moderate"
         execution_investment = "Medium"
+        bid_recommendation = "go_with_caution"
+        win_probability_band = "moderate"
+        qualification_status = "partially_qualifies"
     else:
         fit_band = "Low fit"
         competitiveness = "Uncertain"
         execution_investment = "High"
+        bid_recommendation = "no_go"
+        win_probability_band = "low"
+        qualification_status = "unlikely_to_qualify"
 
     if not readiness:
         readiness.append("Prepare a structured compliance and capability evidence pack")
@@ -928,7 +1212,14 @@ def score_fit(
         "competitiveness": competitiveness,
         "execution_investment": execution_investment,
         "strategic_readiness": readiness[:6],
-        "analysis_ready": True,
+        "analysis_ready": False,
+        "decision_summary": "Fallback assessment used because structured bid assessment was unavailable.",
+        "bid_recommendation": bid_recommendation,
+        "win_probability_band": win_probability_band,
+        "improvement_actions": ["Verify mandatory documents", "Strengthen compliance evidence", "Tailor capability proof to tender scope"],
+        "critical_unknowns": [],
+        "qualification_status": qualification_status,
+        "confidence": 0.35,
     }
 
 
@@ -969,21 +1260,12 @@ def enrich_tender(
     best_doc_url = document_url(best_doc or {})
 
     parsed_text = ""
-    parsed_doc = {
-        "scoring_criteria": [],
-        "mandatory_requirements": [],
-        "specifications_scope": [],
-        "special_conditions": [],
-        "briefing_details": [],
-        "compliance_cues": [],
-        "evaluation_cues": [],
-        "confidence": 0.0,
-    }
+    parsed_doc = normalize_tender_extraction(parse_tender_document_text_heuristic(""), tender=tender)
 
     if best_doc_url:
         parsed_text = download_pdf_text_from_url(best_doc_url)
         if parsed_text:
-            parsed_doc = parse_tender_document_text(parsed_text)
+            parsed_doc = parse_tender_document_text(parsed_text, tender=tender)
 
     fit = score_fit(tender, parsed_doc, profile, prompt)
 
@@ -1052,13 +1334,15 @@ def profiles_page():
 
     parsed_profiles = []
     for profile in profiles:
+        summary = json_loads_safe(profile.summary_json, {})
         parsed_profiles.append(
             {
                 "id": profile.id,
                 "file_name": profile.file_name,
+                "company_name": profile.company_name,
                 "is_active": profile.is_active,
                 "uploaded_at": profile.uploaded_at.isoformat(),
-                "summary": json_loads_safe(profile.summary_json, {}),
+                **summary,
             }
         )
 
@@ -1125,7 +1409,12 @@ def tender_detail_page(tender_id: str):
         abort(404)
 
     enriched = enrich_tender(matched, profile=profile_data)
-    return render_template("tender_detail.html", tender=enriched, analysis_enabled=bool(profile_data), profile_id=profile_id)
+    return render_template(
+        "tender_detail.html",
+        tender=enriched,
+        analysis_enabled=bool(profile_data),
+        profile_id=profile_id,
+    )
 
 
 @app.get("/health")
@@ -1165,6 +1454,7 @@ def api_profiles_list():
                 "file_name": profile.file_name,
                 "is_active": profile.is_active,
                 "uploaded_at": profile.uploaded_at.isoformat(),
+                "company_name": profile.company_name,
                 **json_loads_safe(profile.summary_json, {}),
             }
         )
@@ -1219,9 +1509,11 @@ def api_profiles_upload():
         {
             "id": profile_id,
             "file_name": safe_name,
+            "company_name": summary.get("company_name"),
+            "summary_text": summary.get("summary_text"),
             "is_active": not has_any_profile,
-            "parser_mode": parsed.get("metadata", {}).get("parser_mode"),
-            "parser_confidence": parsed.get("metadata", {}).get("confidence"),
+            "parser_mode": "llm" if OPENAI_API_KEY and PARSER_MODE in {"auto", "llm"} else "heuristic",
+            "parser_confidence": parsed.get("confidence"),
             **summary,
         },
         201,
@@ -1346,19 +1638,25 @@ def api_advise():
     tender = payload.get("tender") or {}
     profile = payload.get("profile") or {}
     parsed_doc = tender.get("parsed_document") or {}
+    analysis = tender.get("analysis") or {}
+
+    if profile and parsed_doc and OPENAI_API_KEY and PARSER_MODE in {"auto", "llm"}:
+        assessment = llm_assess_bid(profile, parsed_doc)
+        if assessment:
+            return render_json_response(assessment)
 
     return render_json_response(
         {
-            "summary": "Prioritize compliance completeness, capability proof, and evaluation-fit evidence.",
-            "actions": [
+            "summary": analysis.get("decision_summary") or "Prioritize compliance completeness, capability proof, and evaluation-fit evidence.",
+            "actions": analysis.get("improvement_actions", []) or [
                 "Validate all mandatory submission items against the tender document.",
                 "Prepare a response structure aligned to specifications and scope headings.",
                 "Surface tax, CSD, and B-BBEE evidence early in the submission pack.",
                 "Address functionality thresholds and scoring cues explicitly where detected.",
                 "Confirm briefing attendance requirements and date constraints before bid/no-bid.",
             ],
-            "profile_signals": profile.get("ai_enrichment", {}).get("compliance_flags", []),
-            "tender_signals": parsed_doc.get("evaluation_cues", []),
+            "profile_signals": profile.get("strength_summary", []),
+            "tender_signals": parsed_doc.get("evaluation_criteria", []),
         }
     )
 
