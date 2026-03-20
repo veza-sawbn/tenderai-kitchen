@@ -19,6 +19,9 @@
 * {
   box-sizing: border-box;
 }
+.css-probe-tenderai {
+  border-top: 7px solid transparent;
+}
 
 html,
 body {
