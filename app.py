@@ -4,6 +4,7 @@ import os
 import re
 import traceback
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urljoin
@@ -12,13 +13,13 @@ import requests
 from flask import (
     Flask,
     abort,
-    flash,
     jsonify,
     make_response,
     redirect,
     render_template,
     request,
     url_for,
+    flash,
 )
 from pypdf import PdfReader
 from sqlalchemy import Boolean, DateTime, String, Text, create_engine, select
@@ -26,7 +27,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260320-beta-15")
+APP_VERSION = os.getenv("APP_VERSION", "20260320-beta-16")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
@@ -45,6 +46,8 @@ print("=== TenderAI Boot Starting ===")
 print(f"APP_VERSION={APP_VERSION}")
 print(f"OPENAI_CONFIGURED={bool(OPENAI_API_KEY)}")
 print(f"DATABASE_URL_CONFIGURED={bool(DATABASE_URL)}")
+print(f"PARSER_MODE={PARSER_MODE}")
+print(f"OPENAI_PARSER_MODEL={OPENAI_PARSER_MODEL}")
 
 http = requests.Session()
 http.headers.update({"User-Agent": "TenderAI/1.0"})
@@ -52,6 +55,82 @@ http.headers.update({"User-Agent": "TenderAI/1.0"})
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-secret")
+
+
+AI_TELEMETRY: dict[str, Any] = {
+    "configured": bool(OPENAI_API_KEY),
+    "parser_mode": PARSER_MODE,
+    "model": OPENAI_PARSER_MODEL,
+    "attempts_total": 0,
+    "success_total": 0,
+    "failure_total": 0,
+    "stages": {
+        "supplier_extraction": {"attempts": 0, "success": 0, "failure": 0},
+        "tender_extraction": {"attempts": 0, "success": 0, "failure": 0},
+        "bid_assessment": {"attempts": 0, "success": 0, "failure": 0},
+        "debug_ping": {"attempts": 0, "success": 0, "failure": 0},
+    },
+    "last_attempt_at": None,
+    "last_success_at": None,
+    "last_failure_at": None,
+    "last_stage": None,
+    "last_status_code": None,
+    "last_error": None,
+    "last_request_id": None,
+    "recent_events": deque(maxlen=25),
+}
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def ai_event(stage: str, status: str, **extra: Any) -> None:
+    event = {"time": iso_now(), "stage": stage, "status": status}
+    event.update(extra)
+    AI_TELEMETRY["recent_events"].appendleft(event)
+
+
+def ai_mark_attempt(stage: str, payload_preview: Optional[str] = None) -> None:
+    AI_TELEMETRY["attempts_total"] += 1
+    AI_TELEMETRY["stages"].setdefault(stage, {"attempts": 0, "success": 0, "failure": 0})
+    AI_TELEMETRY["stages"][stage]["attempts"] += 1
+    AI_TELEMETRY["last_attempt_at"] = iso_now()
+    AI_TELEMETRY["last_stage"] = stage
+    AI_TELEMETRY["last_error"] = None
+    ai_event(stage, "attempt", preview=(payload_preview or "")[:300])
+
+
+def ai_mark_success(stage: str, status_code: int, request_id: Optional[str] = None) -> None:
+    AI_TELEMETRY["success_total"] += 1
+    AI_TELEMETRY["stages"][stage]["success"] += 1
+    AI_TELEMETRY["last_success_at"] = iso_now()
+    AI_TELEMETRY["last_status_code"] = status_code
+    AI_TELEMETRY["last_request_id"] = request_id
+    ai_event(stage, "success", status_code=status_code, request_id=request_id)
+
+
+def ai_mark_failure(
+    stage: str,
+    error: str,
+    status_code: Optional[int] = None,
+    request_id: Optional[str] = None,
+    response_excerpt: Optional[str] = None,
+) -> None:
+    AI_TELEMETRY["failure_total"] += 1
+    AI_TELEMETRY["stages"][stage]["failure"] += 1
+    AI_TELEMETRY["last_failure_at"] = iso_now()
+    AI_TELEMETRY["last_status_code"] = status_code
+    AI_TELEMETRY["last_request_id"] = request_id
+    AI_TELEMETRY["last_error"] = error
+    ai_event(
+        stage,
+        "failure",
+        status_code=status_code,
+        request_id=request_id,
+        error=error[:300],
+        response_excerpt=(response_excerpt or "")[:500],
+    )
 
 
 class Base(DeclarativeBase):
@@ -204,23 +283,32 @@ def extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
 def download_pdf_text_from_url(url: str) -> str:
     if not url:
         return ""
-
     try:
         response = http.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         content_type = (response.headers.get("Content-Type") or "").lower()
-
         if "pdf" in content_type or url.lower().endswith(".pdf"):
             return extract_pdf_text_from_bytes(response.content)
-
         return normalize_whitespace(response.text)
     except Exception:
         traceback.print_exc()
         return ""
 
 
+def _extract_response_text(data: dict[str, Any]) -> Optional[str]:
+    if isinstance(data.get("output_text"), str) and data.get("output_text"):
+        return data["output_text"]
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for content in item.get("content", []):
+                if content.get("type") == "output_text" and content.get("text"):
+                    return content["text"]
+    return None
+
+
 def openai_responses_json_schema(
     *,
+    stage: str,
     system_prompt: str,
     user_prompt: str,
     schema_name: str,
@@ -228,8 +316,11 @@ def openai_responses_json_schema(
     temperature: float = 0.1,
 ) -> Optional[dict[str, Any]]:
     if not OPENAI_API_KEY:
+        ai_mark_failure(stage, "OPENAI_API_KEY missing")
         print("OpenAI key not configured")
         return None
+
+    ai_mark_attempt(stage, payload_preview=user_prompt[:250])
 
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -267,28 +358,49 @@ def openai_responses_json_schema(
             json=payload,
             timeout=120,
         )
-        response.raise_for_status()
+        request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
+
+        if not response.ok:
+            excerpt = response.text[:1000]
+            ai_mark_failure(
+                stage,
+                f"OpenAI request failed with status {response.status_code}",
+                status_code=response.status_code,
+                request_id=request_id,
+                response_excerpt=excerpt,
+            )
+            print(f"OpenAI {stage} failed: {response.status_code}")
+            print(excerpt)
+            return None
+
         data = response.json()
-
-        text_output = None
-        for item in data.get("output", []):
-            if item.get("type") == "message":
-                for content in item.get("content", []):
-                    if content.get("type") == "output_text":
-                        text_output = content.get("text")
-                        break
-            if text_output:
-                break
-
+        text_output = _extract_response_text(data)
         if not text_output:
+            ai_mark_failure(
+                stage,
+                "No structured output text returned",
+                status_code=response.status_code,
+                request_id=request_id,
+                response_excerpt=json.dumps(data)[:1000],
+            )
             print("No structured output text returned from Responses API")
             return None
 
         parsed = json.loads(text_output)
         if not isinstance(parsed, dict):
+            ai_mark_failure(
+                stage,
+                "Structured output was not a JSON object",
+                status_code=response.status_code,
+                request_id=request_id,
+                response_excerpt=text_output[:1000],
+            )
             return None
+
+        ai_mark_success(stage, response.status_code, request_id=request_id)
         return parsed
-    except Exception:
+    except Exception as exc:
+        ai_mark_failure(stage, f"Exception during OpenAI call: {exc}")
         print("OpenAI Responses API exception")
         traceback.print_exc()
         return None
@@ -514,7 +626,6 @@ Use null or empty arrays when evidence is missing.
 Focus on capabilities, compliance cues, accreditations, geographic fit, and past performance signals.
 Return only valid JSON matching the schema.
 """.strip()
-
     user_prompt = f"""
 Interpret this supplier profile for procurement intelligence.
 
@@ -525,8 +636,8 @@ Context:
 Supplier profile text:
 {normalize_whitespace(text)[:30000]}
 """.strip()
-
     return openai_responses_json_schema(
+        stage="supplier_extraction",
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         schema_name="supplier_profile_extraction",
@@ -544,7 +655,6 @@ Use null or empty arrays when evidence is missing.
 Focus on scope, required capabilities, mandatory documents, compliance obligations, functionality criteria, preference point cues, briefing obligations, and special conditions.
 Return only valid JSON matching the schema.
 """.strip()
-
     user_prompt = f"""
 Interpret this tender document for procurement intelligence.
 
@@ -555,8 +665,8 @@ Context:
 Tender document text:
 {normalize_whitespace(text)[:30000]}
 """.strip()
-
     return openai_responses_json_schema(
+        stage="tender_extraction",
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         schema_name="tender_document_extraction",
@@ -573,7 +683,6 @@ Do not invent strengths or qualifications that are not supported by the extracte
 Be conservative when evidence is incomplete.
 Return only valid JSON matching the schema.
 """.strip()
-
     user_prompt = f"""
 Assess whether this supplier is a strong candidate for this tender.
 
@@ -590,8 +699,8 @@ Required output:
 - recommend go, go_with_caution, or no_go
 - explain key strengths, gaps, and improvements
 """.strip()
-
     return openai_responses_json_schema(
+        stage="bid_assessment",
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         schema_name="bid_assessment",
@@ -640,7 +749,6 @@ def build_empty_profile_schema() -> dict[str, Any]:
 def build_profile_summary_text(profile: dict[str, Any]) -> str:
     identity = profile.get("supplier_identity", {})
     bits = []
-
     if identity.get("legal_name"):
         bits.append(f"Legal name: {identity['legal_name']}")
     if identity.get("entity_type"):
@@ -660,7 +768,6 @@ def build_profile_summary_text(profile: dict[str, Any]) -> str:
 def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
     profile = build_empty_profile_schema()
     text_lower = text.lower()
-
     identity = profile["supplier_identity"]
     compliance = profile["compliance_signals"]
 
@@ -672,18 +779,22 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
         text,
     )
     identity["trading_name"] = first_match([r"(?:trading\s*name|business\s*name)\s*[:\-]\s*(.+)"], text)
-    identity["registration_number"] = first_match(
-        [r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"],
-        text,
-    )
-    identity["vat_number"] = first_match([r"(?:vat\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9\/\-]+)"], text)
-    identity["csd_number"] = first_match([r"(?:csd\s*(?:number|no\.?))\s*[:\-]?\s*([A-Z0-9\/\-]+)"], text)
+    identity["registration_number"] = first_match([r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9/\-]+)"], text)
+    identity["vat_number"] = first_match([r"(?:vat\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9/\-]+)"], text)
+    identity["csd_number"] = first_match([r"(?:csd\s*(?:number|no\.?))\s*[:\-]?\s*([A-Z0-9/\-]+)"], text)
     identity["entity_type"] = first_match([r"(?:supplier\s*type|entity\s*type)\s*[:\-]\s*(.+)"], text)
     identity["country"] = first_match([r"country\s*of\s*origin\s*[:\-]\s*(.+)"], text) or "South Africa"
 
     provinces = [
-        "Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo",
-        "Mpumalanga", "Northern Cape", "North West", "Western Cape",
+        "Eastern Cape",
+        "Free State",
+        "Gauteng",
+        "KwaZulu-Natal",
+        "Limpopo",
+        "Mpumalanga",
+        "Northern Cape",
+        "North West",
+        "Western Cape",
     ]
     found_provinces = [province for province in provinces if province.lower() in text_lower]
     identity["province"] = found_provinces[0] if found_provinces else None
@@ -729,16 +840,13 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
 def normalize_supplier_profile(profile: dict[str, Any]) -> dict[str, Any]:
     normalized = build_empty_profile_schema()
     normalized.update({k: v for k, v in profile.items() if k in normalized})
-
     normalized["document_type"] = "supplier_profile"
     normalized.setdefault("supplier_identity", {})
     normalized.setdefault("compliance_signals", {})
-
     for key, value in build_empty_profile_schema()["supplier_identity"].items():
         normalized["supplier_identity"].setdefault(key, value)
     for key, value in build_empty_profile_schema()["compliance_signals"].items():
         normalized["compliance_signals"].setdefault(key, value)
-
     for key in [
         "core_capabilities",
         "services_offered",
@@ -752,13 +860,10 @@ def normalize_supplier_profile(profile: dict[str, Any]) -> dict[str, Any]:
         "strength_summary",
         "missing_or_unclear_evidence",
     ]:
-        value = normalized.get(key)
-        if not isinstance(value, list):
+        if not isinstance(normalized.get(key), list):
             normalized[key] = []
-
     if not isinstance(normalized.get("confidence"), (int, float)):
         normalized["confidence"] = 0.5
-
     return normalized
 
 
@@ -822,24 +927,16 @@ def extract_releases(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def fetch_tenders(
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    page_number: int = 1,
-    page_size: int = 20,
-) -> list[dict[str, Any]]:
+def fetch_tenders(date_from: Optional[str] = None, date_to: Optional[str] = None, page_number: int = 1, page_size: int = 20) -> list[dict[str, Any]]:
     url = urljoin(ETENDERS_BASE_URL, ETENDERS_RELEASES_PATH)
-
     params = {"pageNumber": page_number, "pageSize": page_size}
     if date_from:
         params["dateFrom"] = date_from
     if date_to:
         params["dateTo"] = date_to
-
     response = http.get(url, params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
-    payload = response.json()
-    return extract_releases(payload)
+    return extract_releases(response.json())
 
 
 def document_url(doc: dict[str, Any]) -> Optional[str]:
@@ -852,12 +949,10 @@ def document_url(doc: dict[str, Any]) -> Optional[str]:
 def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not documents:
         return None
-
     scored = []
     for doc in documents:
         title = " ".join(str(doc.get(key, "")) for key in ["title", "description", "documentType"]).lower()
         url = (document_url(doc) or "").lower()
-
         score = 0
         if "pdf" in url or url.endswith(".pdf"):
             score += 10
@@ -875,9 +970,7 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
             score += 5
         if "advert" in title or "invitation" in title or "notice" in title:
             score -= 4
-
         scored.append((score, doc))
-
     scored.sort(key=lambda item: item[0], reverse=True)
     return scored[0][1]
 
@@ -885,32 +978,23 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
 def extract_section(text: str, headings: list[str], next_headings: list[str]) -> list[str]:
     if not text:
         return []
-
     pattern_headings = "|".join(re.escape(item) for item in headings)
     pattern_next = "|".join(re.escape(item) for item in next_headings)
-
-    pattern = (
-        rf"(?is)\b(?:{pattern_headings})\b[:\s\-]*"
-        rf"(.*?)"
-        rf"(?=(?:\n[A-Z][A-Z0-9 /()\-]{{3,}})|(?:\b(?:{pattern_next})\b)|\Z)"
-    )
+    pattern = rf"(?is)\b(?:{pattern_headings})\b[:\s\-]*(.*?)(?=(?:\n[A-Z][A-Z0-9 /()\-]{{3,}})|(?:\b(?:{pattern_next})\b)|\Z)"
     matches = re.findall(pattern, text)
     results = []
-
     for match in matches[:3]:
-        lines = chunk_lines(match)
-        for line in lines[:20]:
+        for line in chunk_lines(match)[:20]:
             if 4 < len(line) < 300:
                 results.append(line)
-
     return list(dict.fromkeys(results))[:12]
 
 
 def find_keyword_lines(text: str, keywords: list[str], limit: int = 12) -> list[str]:
     results = []
     for line in chunk_lines(text):
-        line_lower = line.lower()
-        if any(keyword.lower() in line_lower for keyword in keywords):
+        ll = line.lower()
+        if any(keyword.lower() in ll for keyword in keywords):
             results.append(line)
         if len(results) >= limit:
             break
@@ -921,13 +1005,7 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
     if not text:
         return {
             "document_type": "tender_document",
-            "tender_identity": {
-                "tender_number": None,
-                "title": None,
-                "buyer_name": None,
-                "buyer_type": None,
-                "province": None,
-            },
+            "tender_identity": {"tender_number": None, "title": None, "buyer_name": None, "buyer_type": None, "province": None},
             "scope_summary": None,
             "deliverables": [],
             "required_capabilities": [],
@@ -937,47 +1015,30 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
             "evaluation_criteria": [],
             "price_preference_system": None,
             "specific_goals_or_preference_cues": [],
-            "briefing": {
-                "briefing_required": None,
-                "briefing_compulsory": None,
-                "briefing_date_text": None,
-            },
-            "submission": {
-                "deadline_text": None,
-                "validity_period_text": None,
-            },
+            "briefing": {"briefing_required": None, "briefing_compulsory": None, "briefing_date_text": None},
+            "submission": {"deadline_text": None, "validity_period_text": None},
             "special_conditions": [],
             "risk_flags": [],
             "confidence": 0.0,
         }
-
     scoring = find_keyword_lines(text, ["80/20", "90/10", "functionality", "points", "specific goals"], limit=6)
     mandatory = find_keyword_lines(text, ["must submit", "mandatory", "required", "csd", "cidb", "tax", "sbd"], limit=8)
     briefing = find_keyword_lines(text, ["briefing", "site inspection", "clarification meeting", "compulsory briefing"], limit=5)
     compliance = find_keyword_lines(text, ["tax compliance", "csd", "pin", "declaration", "cidb", "bbbee"], limit=8)
     evaluation = find_keyword_lines(text, ["pppfa", "80/20", "90/10", "specific goals", "functionality", "evaluation"], limit=8)
-
     scope = extract_section(
         text,
         ["scope of work", "specification", "specifications", "terms of reference", "deliverables", "project scope"],
         ["special conditions", "evaluation", "briefing", "contact person", "closing date", "mandatory requirements"],
     )[:8]
-
     special = extract_section(
         text,
         ["special conditions", "conditions of tender", "conditions", "special condition"],
         ["evaluation", "briefing", "scope of work", "specification", "contact person", "closing date"],
     )[:6]
-
     return {
         "document_type": "tender_document",
-        "tender_identity": {
-            "tender_number": None,
-            "title": None,
-            "buyer_name": None,
-            "buyer_type": None,
-            "province": None,
-        },
+        "tender_identity": {"tender_number": None, "title": None, "buyer_name": None, "buyer_type": None, "province": None},
         "scope_summary": " ".join(scope[:3]) if scope else None,
         "deliverables": scope,
         "required_capabilities": scope,
@@ -992,10 +1053,7 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
             "briefing_compulsory": any("compulsory" in x.lower() for x in briefing),
             "briefing_date_text": briefing[0] if briefing else None,
         },
-        "submission": {
-            "deadline_text": None,
-            "validity_period_text": None,
-        },
+        "submission": {"deadline_text": None, "validity_period_text": None},
         "special_conditions": special,
         "risk_flags": [],
         "confidence": 0.46,
@@ -1005,13 +1063,11 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
 def normalize_tender_extraction(parsed: dict[str, Any], tender: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     normalized = parse_tender_document_text_heuristic("")
     normalized.update({k: v for k, v in parsed.items() if k in normalized})
-
     if tender:
         normalized["tender_identity"]["tender_number"] = normalized["tender_identity"].get("tender_number") or tender.get("tender_id") or tender.get("ocid")
         normalized["tender_identity"]["title"] = normalized["tender_identity"].get("title") or tender.get("title")
         normalized["tender_identity"]["buyer_name"] = normalized["tender_identity"].get("buyer_name") or tender.get("buyer_name")
         normalized["tender_identity"]["province"] = normalized["tender_identity"].get("province") or tender.get("province")
-
     for key in [
         "deliverables",
         "required_capabilities",
@@ -1025,19 +1081,10 @@ def normalize_tender_extraction(parsed: dict[str, Any], tender: Optional[dict[st
     ]:
         if not isinstance(normalized.get(key), list):
             normalized[key] = []
-
     if not isinstance(normalized.get("briefing"), dict):
-        normalized["briefing"] = {
-            "briefing_required": None,
-            "briefing_compulsory": None,
-            "briefing_date_text": None,
-        }
+        normalized["briefing"] = {"briefing_required": None, "briefing_compulsory": None, "briefing_date_text": None}
     if not isinstance(normalized.get("submission"), dict):
-        normalized["submission"] = {
-            "deadline_text": None,
-            "validity_period_text": None,
-        }
-
+        normalized["submission"] = {"deadline_text": None, "validity_period_text": None}
     if not isinstance(normalized.get("confidence"), (int, float)):
         normalized["confidence"] = 0.5
 
@@ -1047,7 +1094,6 @@ def normalize_tender_extraction(parsed: dict[str, Any], tender: Optional[dict[st
     normalized["briefing_details"] = [normalized["briefing"].get("briefing_date_text")] if normalized["briefing"].get("briefing_date_text") else []
     normalized["compliance_cues"] = normalized["compliance_requirements"][:]
     normalized["evaluation_cues"] = normalized["evaluation_criteria"][:]
-
     return normalized
 
 
@@ -1078,12 +1124,7 @@ def infer_profile_keywords(profile_data: dict[str, Any]) -> set[str]:
     return tokens
 
 
-def score_fit(
-    tender: dict[str, Any],
-    parsed_doc: dict[str, Any],
-    profile_data: Optional[dict[str, Any]],
-    prompt: str,
-) -> dict[str, Any]:
+def score_fit(tender: dict[str, Any], parsed_doc: dict[str, Any], profile_data: Optional[dict[str, Any]], prompt: str) -> dict[str, Any]:
     if not profile_data:
         return {
             "fit_score": None,
@@ -1216,7 +1257,11 @@ def score_fit(
         "decision_summary": "Fallback assessment used because structured bid assessment was unavailable.",
         "bid_recommendation": bid_recommendation,
         "win_probability_band": win_probability_band,
-        "improvement_actions": ["Verify mandatory documents", "Strengthen compliance evidence", "Tailor capability proof to tender scope"],
+        "improvement_actions": [
+            "Verify mandatory documents",
+            "Strengthen compliance evidence",
+            "Tailor capability proof to tender scope",
+        ],
         "critical_unknowns": [],
         "qualification_status": qualification_status,
         "confidence": 0.35,
@@ -1250,15 +1295,10 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def enrich_tender(
-    item: dict[str, Any],
-    profile: Optional[dict[str, Any]] = None,
-    prompt: str = "",
-) -> dict[str, Any]:
+def enrich_tender(item: dict[str, Any], profile: Optional[dict[str, Any]] = None, prompt: str = "") -> dict[str, Any]:
     tender = normalize_tender_release(item)
     best_doc = pick_best_tender_document(tender.get("documents", []))
     best_doc_url = document_url(best_doc or {})
-
     parsed_text = ""
     parsed_doc = normalize_tender_extraction(parse_tender_document_text_heuristic(""), tender=tender)
 
@@ -1299,14 +1339,15 @@ def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
 def home():
     tenders = []
     profiles = []
-
     try:
         today = datetime.now(timezone.utc).date()
-        date_from = (today - timedelta(days=7)).isoformat()
-        date_to = (today + timedelta(days=30)).isoformat()
-        releases = fetch_tenders(date_from=date_from, date_to=date_to, page_number=1, page_size=10)
-        for item in releases[:8]:
-            tenders.append(normalize_tender_release(item))
+        releases = fetch_tenders(
+            date_from=(today - timedelta(days=7)).isoformat(),
+            date_to=(today + timedelta(days=30)).isoformat(),
+            page_number=1,
+            page_size=10,
+        )
+        tenders = [normalize_tender_release(item) for item in releases[:8]]
     except Exception:
         traceback.print_exc()
 
@@ -1434,6 +1475,82 @@ def health():
 @app.get("/debug/static-check")
 def debug_static_check():
     return render_template("base.html", title="Static Check")
+
+
+@app.get("/debug/ai-status")
+def debug_ai_status():
+    recent_events = list(AI_TELEMETRY["recent_events"])
+    payload = {
+        "configured": AI_TELEMETRY["configured"],
+        "parser_mode": AI_TELEMETRY["parser_mode"],
+        "model": AI_TELEMETRY["model"],
+        "attempts_total": AI_TELEMETRY["attempts_total"],
+        "success_total": AI_TELEMETRY["success_total"],
+        "failure_total": AI_TELEMETRY["failure_total"],
+        "stages": AI_TELEMETRY["stages"],
+        "last_attempt_at": AI_TELEMETRY["last_attempt_at"],
+        "last_success_at": AI_TELEMETRY["last_success_at"],
+        "last_failure_at": AI_TELEMETRY["last_failure_at"],
+        "last_stage": AI_TELEMETRY["last_stage"],
+        "last_status_code": AI_TELEMETRY["last_status_code"],
+        "last_request_id": AI_TELEMETRY["last_request_id"],
+        "last_error": AI_TELEMETRY["last_error"],
+        "recent_events": recent_events,
+    }
+    return render_json_response(payload)
+
+
+@app.get("/debug/test-openai")
+def debug_test_openai():
+    if not OPENAI_API_KEY:
+        return render_json_response({"error": "OPENAI_API_KEY not configured"}, 400)
+
+    system_prompt = "Return valid JSON matching the schema."
+    user_prompt = "Confirm the OpenAI pipeline is working for TenderAI."
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "status": {"type": "string"},
+            "message": {"type": "string"},
+        },
+        "required": ["status", "message"],
+    }
+
+    result = openai_responses_json_schema(
+        stage="debug_ping",
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        schema_name="debug_ping",
+        schema=schema,
+        temperature=0,
+    )
+
+    if not result:
+        return render_json_response(
+            {
+                "status": "failed",
+                "message": "OpenAI debug ping failed",
+                "telemetry": {
+                    "last_error": AI_TELEMETRY["last_error"],
+                    "last_status_code": AI_TELEMETRY["last_status_code"],
+                    "last_request_id": AI_TELEMETRY["last_request_id"],
+                },
+            },
+            500,
+        )
+
+    return render_json_response(
+        {
+            "status": "ok",
+            "result": result,
+            "telemetry": {
+                "last_status_code": AI_TELEMETRY["last_status_code"],
+                "last_request_id": AI_TELEMETRY["last_request_id"],
+                "last_success_at": AI_TELEMETRY["last_success_at"],
+            },
+        }
+    )
 
 
 @app.get("/api/profiles")
@@ -1580,8 +1697,7 @@ def api_tenders():
         page_number=page_number,
         page_size=page_size,
     )
-    payload = [normalize_tender_release(item) for item in releases]
-    return render_json_response(payload)
+    return render_json_response([normalize_tender_release(item) for item in releases])
 
 
 @app.get("/api/tender/<path:tender_id>")
