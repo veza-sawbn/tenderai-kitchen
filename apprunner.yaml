@@ -20,7 +20,7 @@ run:
     - name: PARSER_MODE
       value: "auto"
     - name: APP_VERSION
-      value: "20260320-beta-14"
+      value: "20260320-beta-17"
     - name: FLASK_SECRET_KEY
       value: "replace-this-with-a-real-secret"
     - name: PORT
