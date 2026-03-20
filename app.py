@@ -28,11 +28,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260320-beta-17")
+APP_VERSION = os.getenv("APP_VERSION", "20260320-beta-18")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
-MAX_TENDERS = int(os.getenv("MAX_TENDERS", "20"))
+MAX_TENDERS = int(os.getenv("MAX_TENDERS", "50"))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or "sqlite:///tenderai.db"
 LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "/tmp/uploads")
 MAX_CONTENT_LENGTH = 20 * 1024 * 1024
@@ -176,7 +176,6 @@ DB_INIT_ERROR = None
 
 def configure_database() -> None:
     global engine, SessionLocal, DB_INIT_ERROR
-
     if engine is not None:
         return
 
@@ -189,9 +188,7 @@ def configure_database() -> None:
             pool_pre_ping=True,
         )
         local_session = sessionmaker(bind=local_engine, future=True)
-
         Base.metadata.create_all(local_engine)
-
         engine = local_engine
         SessionLocal = local_session
         DB_INIT_ERROR = None
@@ -273,6 +270,34 @@ def add_headers(response):
     return response
 
 
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        clean = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def format_date(value: Optional[str]) -> Optional[str]:
+    dt = parse_iso_datetime(value)
+    if not dt:
+        return None
+    return dt.strftime("%d %b %Y")
+
+
+def compute_days_left(value: Optional[str]) -> Optional[int]:
+    dt = parse_iso_datetime(value)
+    if not dt:
+        return None
+    today = datetime.now(timezone.utc).date()
+    return (dt.date() - today).days
+
+
 def extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
@@ -336,14 +361,8 @@ def openai_responses_json_schema(
     payload = {
         "model": OPENAI_PARSER_MODEL,
         "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": system_prompt}],
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": user_prompt}],
-            },
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
         ],
         "text": {
             "format": {
@@ -428,14 +447,8 @@ def supplier_extraction_schema() -> dict[str, Any]:
                     "province": {"type": ["string", "null"]},
                 },
                 "required": [
-                    "legal_name",
-                    "trading_name",
-                    "registration_number",
-                    "vat_number",
-                    "csd_number",
-                    "entity_type",
-                    "country",
-                    "province",
+                    "legal_name", "trading_name", "registration_number", "vat_number",
+                    "csd_number", "entity_type", "country", "province",
                 ],
             },
             "core_capabilities": {"type": "array", "items": {"type": "string"}},
@@ -456,12 +469,8 @@ def supplier_extraction_schema() -> dict[str, Any]:
                     "company_registration_present": {"type": ["boolean", "null"]},
                 },
                 "required": [
-                    "tax_compliance_present",
-                    "bbbee_status_present",
-                    "bbbee_level",
-                    "cidb_grade",
-                    "sars_pin_present",
-                    "bank_verification_present",
+                    "tax_compliance_present", "bbbee_status_present", "bbbee_level",
+                    "cidb_grade", "sars_pin_present", "bank_verification_present",
                     "company_registration_present",
                 ],
             },
@@ -474,21 +483,10 @@ def supplier_extraction_schema() -> dict[str, Any]:
             "confidence": {"type": "number"},
         },
         "required": [
-            "document_type",
-            "supplier_identity",
-            "core_capabilities",
-            "services_offered",
-            "sector_tags",
-            "commodity_tags",
-            "geographic_coverage",
-            "compliance_signals",
-            "certifications_and_accreditations",
-            "past_performance_evidence",
-            "capacity_signals",
-            "key_contacts",
-            "strength_summary",
-            "missing_or_unclear_evidence",
-            "confidence",
+            "document_type", "supplier_identity", "core_capabilities", "services_offered",
+            "sector_tags", "commodity_tags", "geographic_coverage", "compliance_signals",
+            "certifications_and_accreditations", "past_performance_evidence", "capacity_signals",
+            "key_contacts", "strength_summary", "missing_or_unclear_evidence", "confidence",
         ],
     }
 
@@ -509,13 +507,7 @@ def tender_extraction_schema() -> dict[str, Any]:
                     "buyer_type": {"type": ["string", "null"]},
                     "province": {"type": ["string", "null"]},
                 },
-                "required": [
-                    "tender_number",
-                    "title",
-                    "buyer_name",
-                    "buyer_type",
-                    "province",
-                ],
+                "required": ["tender_number", "title", "buyer_name", "buyer_type", "province"],
             },
             "scope_summary": {"type": ["string", "null"]},
             "deliverables": {"type": "array", "items": {"type": "string"}},
@@ -537,11 +529,7 @@ def tender_extraction_schema() -> dict[str, Any]:
                     "briefing_compulsory": {"type": ["boolean", "null"]},
                     "briefing_date_text": {"type": ["string", "null"]},
                 },
-                "required": [
-                    "briefing_required",
-                    "briefing_compulsory",
-                    "briefing_date_text",
-                ],
+                "required": ["briefing_required", "briefing_compulsory", "briefing_date_text"],
             },
             "submission": {
                 "type": "object",
@@ -557,22 +545,11 @@ def tender_extraction_schema() -> dict[str, Any]:
             "confidence": {"type": "number"},
         },
         "required": [
-            "document_type",
-            "tender_identity",
-            "scope_summary",
-            "deliverables",
-            "required_capabilities",
-            "mandatory_documents",
-            "compliance_requirements",
-            "functionality_criteria",
-            "evaluation_criteria",
-            "price_preference_system",
-            "specific_goals_or_preference_cues",
-            "briefing",
-            "submission",
-            "special_conditions",
-            "risk_flags",
-            "confidence",
+            "document_type", "tender_identity", "scope_summary", "deliverables",
+            "required_capabilities", "mandatory_documents", "compliance_requirements",
+            "functionality_criteria", "evaluation_criteria", "price_preference_system",
+            "specific_goals_or_preference_cues", "briefing", "submission",
+            "special_conditions", "risk_flags", "confidence",
         ],
     }
 
@@ -601,20 +578,10 @@ def bid_assessment_schema() -> dict[str, Any]:
             "confidence": {"type": "number"},
         },
         "required": [
-            "decision_summary",
-            "qualification_status",
-            "fit_score",
-            "win_probability_band",
-            "bid_recommendation",
-            "capability_strengths",
-            "compliance_strengths",
-            "gaps_or_disqualifiers",
-            "competitiveness_assessment",
-            "execution_burden",
-            "strategic_readiness",
-            "improvement_actions",
-            "critical_unknowns",
-            "confidence",
+            "decision_summary", "qualification_status", "fit_score", "win_probability_band",
+            "bid_recommendation", "capability_strengths", "compliance_strengths",
+            "gaps_or_disqualifiers", "competitiveness_assessment", "execution_burden",
+            "strategic_readiness", "improvement_actions", "critical_unknowns", "confidence",
         ],
     }
 
@@ -775,15 +742,8 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
     identity["entity_type"] = first_match([r"(?:supplier\s*type|entity\s*type)\s*[:\-]\s*(.+)"], text)
 
     provinces = [
-        "Eastern Cape",
-        "Free State",
-        "Gauteng",
-        "KwaZulu-Natal",
-        "Limpopo",
-        "Mpumalanga",
-        "Northern Cape",
-        "North West",
-        "Western Cape",
+        "Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo",
+        "Mpumalanga", "Northern Cape", "North West", "Western Cape",
     ]
     found_provinces = [province for province in provinces if province.lower() in text_lower]
     identity["province"] = found_provinces[0] if found_provinces else None
@@ -832,27 +792,24 @@ def normalize_supplier_profile(profile: dict[str, Any]) -> dict[str, Any]:
     normalized["document_type"] = "supplier_profile"
     normalized.setdefault("supplier_identity", {})
     normalized.setdefault("compliance_signals", {})
+
     for key, value in build_empty_profile_schema()["supplier_identity"].items():
         normalized["supplier_identity"].setdefault(key, value)
     for key, value in build_empty_profile_schema()["compliance_signals"].items():
         normalized["compliance_signals"].setdefault(key, value)
+
     for key in [
-        "core_capabilities",
-        "services_offered",
-        "sector_tags",
-        "commodity_tags",
-        "geographic_coverage",
-        "certifications_and_accreditations",
-        "past_performance_evidence",
-        "capacity_signals",
-        "key_contacts",
-        "strength_summary",
-        "missing_or_unclear_evidence",
+        "core_capabilities", "services_offered", "sector_tags", "commodity_tags",
+        "geographic_coverage", "certifications_and_accreditations",
+        "past_performance_evidence", "capacity_signals", "key_contacts",
+        "strength_summary", "missing_or_unclear_evidence",
     ]:
         if not isinstance(normalized.get(key), list):
             normalized[key] = []
+
     if not isinstance(normalized.get("confidence"), (int, float)):
         normalized["confidence"] = 0.5
+
     return normalized
 
 
@@ -934,6 +891,7 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
     for doc in documents:
         title = " ".join(str(doc.get(key, "")) for key in ["title", "description", "documentType"]).lower()
         url = (document_url(doc) or "").lower()
+
         score = 0
         if "pdf" in url or url.endswith(".pdf"):
             score += 10
@@ -951,7 +909,9 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
             score += 5
         if "advert" in title or "invitation" in title or "notice" in title:
             score -= 4
+
         scored.append((score, doc))
+
     scored.sort(key=lambda item: item[0], reverse=True)
     return scored[0][1]
 
@@ -986,13 +946,7 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
     if not text:
         return {
             "document_type": "tender_document",
-            "tender_identity": {
-                "tender_number": None,
-                "title": None,
-                "buyer_name": None,
-                "buyer_type": None,
-                "province": None,
-            },
+            "tender_identity": {"tender_number": None, "title": None, "buyer_name": None, "buyer_type": None, "province": None},
             "scope_summary": None,
             "deliverables": [],
             "required_capabilities": [],
@@ -1002,15 +956,8 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
             "evaluation_criteria": [],
             "price_preference_system": None,
             "specific_goals_or_preference_cues": [],
-            "briefing": {
-                "briefing_required": None,
-                "briefing_compulsory": None,
-                "briefing_date_text": None,
-            },
-            "submission": {
-                "deadline_text": None,
-                "validity_period_text": None,
-            },
+            "briefing": {"briefing_required": None, "briefing_compulsory": None, "briefing_date_text": None},
+            "submission": {"deadline_text": None, "validity_period_text": None},
             "special_conditions": [],
             "risk_flags": [],
             "confidence": 0.0,
@@ -1036,13 +983,7 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
 
     return {
         "document_type": "tender_document",
-        "tender_identity": {
-            "tender_number": None,
-            "title": None,
-            "buyer_name": None,
-            "buyer_type": None,
-            "province": None,
-        },
+        "tender_identity": {"tender_number": None, "title": None, "buyer_name": None, "buyer_type": None, "province": None},
         "scope_summary": " ".join(scope[:3]) if scope else None,
         "deliverables": scope,
         "required_capabilities": scope,
@@ -1057,10 +998,7 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
             "briefing_compulsory": any("compulsory" in x.lower() for x in briefing),
             "briefing_date_text": briefing[0] if briefing else None,
         },
-        "submission": {
-            "deadline_text": None,
-            "validity_period_text": None,
-        },
+        "submission": {"deadline_text": None, "validity_period_text": None},
         "special_conditions": special,
         "risk_flags": [],
         "confidence": 0.46,
@@ -1078,31 +1016,17 @@ def normalize_tender_extraction(parsed: dict[str, Any], tender: Optional[dict[st
         normalized["tender_identity"]["province"] = normalized["tender_identity"].get("province") or tender.get("province")
 
     for key in [
-        "deliverables",
-        "required_capabilities",
-        "mandatory_documents",
-        "compliance_requirements",
-        "functionality_criteria",
-        "evaluation_criteria",
-        "specific_goals_or_preference_cues",
-        "special_conditions",
-        "risk_flags",
+        "deliverables", "required_capabilities", "mandatory_documents", "compliance_requirements",
+        "functionality_criteria", "evaluation_criteria", "specific_goals_or_preference_cues",
+        "special_conditions", "risk_flags",
     ]:
         if not isinstance(normalized.get(key), list):
             normalized[key] = []
 
     if not isinstance(normalized.get("briefing"), dict):
-        normalized["briefing"] = {
-            "briefing_required": None,
-            "briefing_compulsory": None,
-            "briefing_date_text": None,
-        }
+        normalized["briefing"] = {"briefing_required": None, "briefing_compulsory": None, "briefing_date_text": None}
     if not isinstance(normalized.get("submission"), dict):
-        normalized["submission"] = {
-            "deadline_text": None,
-            "validity_period_text": None,
-        }
-
+        normalized["submission"] = {"deadline_text": None, "validity_period_text": None}
     if not isinstance(normalized.get("confidence"), (int, float)):
         normalized["confidence"] = 0.5
 
@@ -1122,25 +1046,6 @@ def parse_tender_document_text(text: str, tender: Optional[dict[str, Any]] = Non
         if parsed:
             return normalize_tender_extraction(parsed, tender=tender)
     return normalize_tender_extraction(parse_tender_document_text_heuristic(text), tender=tender)
-
-
-def infer_profile_keywords(profile_data: dict[str, Any]) -> set[str]:
-    tokens = set()
-    for key in [
-        "core_capabilities",
-        "services_offered",
-        "sector_tags",
-        "commodity_tags",
-        "geographic_coverage",
-        "past_performance_evidence",
-        "capacity_signals",
-    ]:
-        value = profile_data.get(key)
-        if isinstance(value, list):
-            for item in value:
-                if item:
-                    tokens.update(re.findall(r"[A-Za-z][A-Za-z&/\-]{2,}", str(item).lower()))
-    return tokens
 
 
 def score_fit(
@@ -1227,6 +1132,18 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(documents, list):
         documents = []
 
+    closing_date = (
+        tender.get("closingDate")
+        or ((tender.get("tenderPeriod") or {}).get("endDate") if isinstance(tender.get("tenderPeriod"), dict) else None)
+        or item.get("date")
+    )
+
+    category = (
+        tender.get("mainProcurementCategory")
+        or tender.get("procurementMethodDetails")
+        or tender.get("procurementMethod")
+    )
+
     return {
         "ocid": item.get("ocid"),
         "release_id": item.get("id"),
@@ -1237,6 +1154,7 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
         "delivery_location": tender.get("deliveryLocation"),
         "special_conditions": tender.get("specialConditions"),
         "main_procurement_category": tender.get("mainProcurementCategory"),
+        "tender_type": category,
         "description": tender.get("description"),
         "eligibility_criteria": tender.get("eligibilityCriteria"),
         "selection_criteria": tender.get("selectionCriteria"),
@@ -1244,6 +1162,79 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
         "contact_person": tender.get("contactPerson"),
         "buyer_name": buyer.get("name"),
         "documents": documents,
+        "closing_date": closing_date,
+        "closing_date_display": format_date(closing_date),
+        "days_left": compute_days_left(closing_date),
+    }
+
+
+def filter_tenders(
+    tenders: list[dict[str, Any]],
+    province: str = "",
+    tender_type: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> list[dict[str, Any]]:
+    province = province.strip().lower()
+    tender_type = tender_type.strip().lower()
+    date_from_dt = parse_iso_datetime(date_from) if date_from else None
+    date_to_dt = parse_iso_datetime(date_to) if date_to else None
+
+    filtered = []
+    for tender in tenders:
+        if province:
+            province_text = (tender.get("province") or "").lower()
+            if province not in province_text:
+                continue
+
+        if tender_type:
+            type_text = " ".join([
+                str(tender.get("tender_type") or ""),
+                str(tender.get("main_procurement_category") or ""),
+            ]).lower()
+            if tender_type not in type_text:
+                continue
+
+        closing_dt = parse_iso_datetime(tender.get("closing_date"))
+        if date_from_dt and closing_dt and closing_dt.date() < date_from_dt.date():
+            continue
+        if date_to_dt and closing_dt and closing_dt.date() > date_to_dt.date():
+            continue
+
+        filtered.append(tender)
+
+    return filtered
+
+
+def get_profile_record(profile_id: str) -> Optional[Profile]:
+    with db_session() as session:
+        return session.get(Profile, profile_id)
+
+
+def get_active_profile_record() -> Optional[Profile]:
+    with db_session() as session:
+        statement = select(Profile).where(Profile.is_active.is_(True)).order_by(Profile.uploaded_at.desc())
+        return session.scalar(statement)
+
+
+def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
+    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
+    if not record:
+        return None
+    return json_loads_safe(record.parsed_json, {})
+
+
+def get_profile_summary(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
+    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
+    if not record:
+        return None
+    return {
+        "id": record.id,
+        "file_name": record.file_name,
+        "company_name": record.company_name,
+        "is_active": record.is_active,
+        "uploaded_at": record.uploaded_at.isoformat(),
+        **json_loads_safe(record.summary_json, {}),
     }
 
 
@@ -1268,24 +1259,6 @@ def enrich_tender(item: dict[str, Any], profile: Optional[dict[str, Any]] = None
     return tender
 
 
-def get_profile_record(profile_id: str) -> Optional[Profile]:
-    with db_session() as session:
-        return session.get(Profile, profile_id)
-
-
-def get_active_profile_record() -> Optional[Profile]:
-    with db_session() as session:
-        statement = select(Profile).where(Profile.is_active.is_(True)).order_by(Profile.uploaded_at.desc())
-        return session.scalar(statement)
-
-
-def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
-    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
-    if not record:
-        return None
-    return json_loads_safe(record.parsed_json, {})
-
-
 def run_analysis_job(job_id: str, tender_id: str, profile_id: str, prompt: str = ""):
     try:
         with db_session() as session:
@@ -1302,7 +1275,7 @@ def run_analysis_job(job_id: str, tender_id: str, profile_id: str, prompt: str =
         today = datetime.now(timezone.utc).date()
         releases = fetch_tenders(
             date_from=(today - timedelta(days=30)).isoformat(),
-            date_to=(today + timedelta(days=60)).isoformat(),
+            date_to=(today + timedelta(days=90)).isoformat(),
             page_number=1,
             page_size=MAX_TENDERS,
         )
@@ -1341,7 +1314,7 @@ def run_analysis_job(job_id: str, tender_id: str, profile_id: str, prompt: str =
 @app.get("/")
 def home():
     tenders = []
-    profiles = []
+    active_profile = get_profile_summary(None)
     try:
         today = datetime.now(timezone.utc).date()
         releases = fetch_tenders(
@@ -1354,15 +1327,7 @@ def home():
     except Exception:
         traceback.print_exc()
 
-    try:
-        with db_session() as session:
-            profiles = session.scalars(
-                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
-            ).all()
-    except Exception:
-        traceback.print_exc()
-
-    return render_template("home.html", tenders=tenders, profiles=profiles)
+    return render_template("home.html", tenders=tenders, active_profile=active_profile)
 
 
 @app.get("/profiles")
@@ -1370,16 +1335,16 @@ def profiles_page():
     profiles = []
     try:
         with db_session() as session:
-            profiles = session.scalars(
+            records = session.scalars(
                 select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
             ).all()
     except Exception:
         traceback.print_exc()
+        records = []
 
-    parsed_profiles = []
-    for profile in profiles:
+    for profile in records:
         summary = json_loads_safe(profile.summary_json, {})
-        parsed_profiles.append(
+        profiles.append(
             {
                 "id": profile.id,
                 "file_name": profile.file_name,
@@ -1390,33 +1355,48 @@ def profiles_page():
             }
         )
 
-    return render_template("profiles.html", profiles=parsed_profiles)
+    active_profile = next((p for p in profiles if p.get("is_active")), None)
+    return render_template("profiles.html", profiles=profiles, active_profile=active_profile)
 
 
 @app.get("/tenders")
 def tenders_page():
     prompt = request.args.get("prompt", "").strip()
     profile_id = request.args.get("profile_id", "").strip() or None
-    analysis_enabled = bool(get_profile_data(profile_id))
+    province = request.args.get("province", "").strip()
+    tender_type = request.args.get("tender_type", "").strip()
 
-    if profile_id and not analysis_enabled:
+    today = datetime.now(timezone.utc).date()
+    date_from = request.args.get("date_from", today.isoformat())
+    date_to = request.args.get("date_to", (today + timedelta(days=60)).isoformat())
+
+    active_profile = get_profile_summary(profile_id)
+    analysis_enabled = bool(active_profile)
+
+    if profile_id and not active_profile:
         flash("Selected profile was not found. Please activate or upload a profile again.", "error")
         return redirect(url_for("profiles_page"))
 
-    today = datetime.now(timezone.utc).date()
-    error_message = None
-    tenders = []
-
     try:
         releases = fetch_tenders(
-            date_from=request.args.get("date_from", (today - timedelta(days=7)).isoformat()),
-            date_to=request.args.get("date_to", (today + timedelta(days=30)).isoformat()),
+            date_from=(today - timedelta(days=30)).isoformat(),
+            date_to=(today + timedelta(days=90)).isoformat(),
             page_number=1,
             page_size=MAX_TENDERS,
         )
-        tenders = [normalize_tender_release(item) for item in releases[:MAX_TENDERS]]
+        tenders = [normalize_tender_release(item) for item in releases]
+        tenders = filter_tenders(
+            tenders,
+            province=province,
+            tender_type=tender_type,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        tenders.sort(key=lambda x: (x.get("days_left") is None, x.get("days_left", 99999)))
+        error_message = None
     except Exception as exc:
         traceback.print_exc()
+        tenders = []
         error_message = str(exc)
 
     return render_template(
@@ -1424,19 +1404,27 @@ def tenders_page():
         tenders=tenders,
         prompt=prompt,
         profile_id=profile_id,
+        active_profile=active_profile,
         error_message=error_message,
         analysis_enabled=analysis_enabled,
+        filters={
+            "province": province,
+            "tender_type": tender_type,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
     )
 
 
 @app.get("/tender/<path:tender_id>")
 def tender_detail_page(tender_id: str):
     profile_id = request.args.get("profile_id", "").strip() or None
+    active_profile = get_profile_summary(profile_id)
 
     today = datetime.now(timezone.utc).date()
     releases = fetch_tenders(
         date_from=(today - timedelta(days=30)).isoformat(),
-        date_to=(today + timedelta(days=60)).isoformat(),
+        date_to=(today + timedelta(days=90)).isoformat(),
         page_number=1,
         page_size=MAX_TENDERS,
     )
@@ -1454,7 +1442,8 @@ def tender_detail_page(tender_id: str):
     return render_template(
         "tender_detail.html",
         tender=matched,
-        analysis_enabled=bool(profile_id),
+        analysis_enabled=bool(active_profile),
+        active_profile=active_profile,
         profile_id=profile_id,
     )
 
@@ -1471,11 +1460,6 @@ def health():
             "time": datetime.now(timezone.utc).isoformat(),
         }
     )
-
-
-@app.get("/debug/static-check")
-def debug_static_check():
-    return render_template("base.html", title="Static Check")
 
 
 @app.get("/debug/ai-status")
@@ -1666,18 +1650,21 @@ def api_profiles_delete(profile_id: str):
 @app.get("/api/tenders")
 def api_tenders():
     today = datetime.now(timezone.utc).date()
-    date_from = request.args.get("date_from", (today - timedelta(days=7)).isoformat())
-    date_to = request.args.get("date_to", (today + timedelta(days=30)).isoformat())
-    page_number = int(request.args.get("page_number", "1"))
-    page_size = int(request.args.get("page_size", "20"))
+    date_from = request.args.get("date_from", today.isoformat())
+    date_to = request.args.get("date_to", (today + timedelta(days=60)).isoformat())
+    province = request.args.get("province", "")
+    tender_type = request.args.get("tender_type", "")
 
     releases = fetch_tenders(
-        date_from=date_from,
-        date_to=date_to,
-        page_number=page_number,
-        page_size=page_size,
+        date_from=(today - timedelta(days=30)).isoformat(),
+        date_to=(today + timedelta(days=90)).isoformat(),
+        page_number=int(request.args.get("page_number", "1")),
+        page_size=int(request.args.get("page_size", "50")),
     )
-    return render_json_response([normalize_tender_release(item) for item in releases])
+    tenders = [normalize_tender_release(item) for item in releases]
+    tenders = filter_tenders(tenders, province=province, tender_type=tender_type, date_from=date_from, date_to=date_to)
+    tenders.sort(key=lambda x: (x.get("days_left") is None, x.get("days_left", 99999)))
+    return render_json_response(tenders)
 
 
 @app.get("/api/tender/<path:tender_id>")
@@ -1685,7 +1672,7 @@ def api_tender_detail(tender_id: str):
     today = datetime.now(timezone.utc).date()
     releases = fetch_tenders(
         date_from=(today - timedelta(days=30)).isoformat(),
-        date_to=(today + timedelta(days=60)).isoformat(),
+        date_to=(today + timedelta(days=90)).isoformat(),
         page_number=1,
         page_size=MAX_TENDERS,
     )
@@ -1714,6 +1701,9 @@ def api_analyze_tender():
         return render_json_response({"error": "tender_id is required"}, 400)
     if not profile_id:
         return render_json_response({"error": "profile_id is required"}, 400)
+
+    if not get_profile_data(profile_id):
+        return render_json_response({"error": "Selected profile not found or not active"}, 404)
 
     job_id = str(uuid.uuid4())
 
@@ -1774,56 +1764,14 @@ def api_score():
 
     today = datetime.now(timezone.utc).date()
     releases = fetch_tenders(
-        date_from=(today - timedelta(days=7)).isoformat(),
-        date_to=(today + timedelta(days=30)).isoformat(),
+        date_from=(today - timedelta(days=30)).isoformat(),
+        date_to=(today + timedelta(days=90)).isoformat(),
         page_number=1,
         page_size=MAX_TENDERS,
     )
 
     enriched = [enrich_tender(item, profile=profile_data, prompt=prompt) for item in releases[:MAX_TENDERS]]
     return render_json_response(enriched)
-
-
-@app.post("/api/advise")
-def api_advise():
-    payload = request.get_json(silent=True) or {}
-    tender = payload.get("tender") or {}
-    profile = payload.get("profile") or {}
-    parsed_doc = tender.get("parsed_document") or {}
-    analysis = tender.get("analysis") or {}
-
-    if profile and parsed_doc and OPENAI_API_KEY and PARSER_MODE in {"auto", "llm"}:
-        assessment = llm_assess_bid(profile, parsed_doc)
-        if assessment:
-            return render_json_response(assessment)
-
-    return render_json_response(
-        {
-            "summary": analysis.get("decision_summary") or "Prioritize compliance completeness, capability proof, and evaluation-fit evidence.",
-            "actions": analysis.get("improvement_actions", []) or [
-                "Validate all mandatory submission items against the tender document.",
-                "Prepare a response structure aligned to specifications and scope headings.",
-                "Surface tax, CSD, and B-BBEE evidence early in the submission pack.",
-                "Address functionality thresholds and scoring cues explicitly where detected.",
-                "Confirm briefing attendance requirements and date constraints before bid/no-bid.",
-            ],
-            "profile_signals": profile.get("strength_summary", []),
-            "tender_signals": parsed_doc.get("evaluation_criteria", []),
-        }
-    )
-
-
-@app.post("/api/service-request")
-def api_service_request():
-    payload = request.get_json(silent=True) or {}
-    return render_json_response(
-        {
-            "status": "received",
-            "message": "Service request stub recorded",
-            "payload": payload,
-        },
-        202,
-    )
 
 
 if __name__ == "__main__":
