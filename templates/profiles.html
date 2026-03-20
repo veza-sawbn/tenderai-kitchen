@@ -1,90 +1,28 @@
-{% extends "base.html" %}
+{% extends "base.html" %} {% set title = "Profiles Â· TenderAI Beta" %} {% block content %}
+Supplier profiles
+Upload and manage supplier or CSD-style PDF profiles.
+Upload profile PDF Upload profile 
 
-{% block content %}
-<section class="content-section">
-  <div class="section-head">
-    <h1>Supplier Profiles</h1>
-    <p>Upload and manage supplier capability profiles.</p>
-  </div>
-
-  <form id="profileUploadForm" class="upload-form">
-    <input type="file" id="profileFile" accept=".pdf" required>
-    <button type="submit" class="btn btn-primary">Upload Profile</button>
-  </form>
-
-  <div id="profileUploadStatus" class="analyze-status hidden">
-    <div class="spinner"></div>
-    <span>Parsing supplier profile...</span>
-  </div>
-
-  <div id="profileError" class="page-error hidden"></div>
-  <div id="profilesList" class="results-grid"></div>
-</section>
-
-<script>
-const profileUploadForm = document.getElementById("profileUploadForm");
-const profileFile = document.getElementById("profileFile");
-const profileUploadStatus = document.getElementById("profileUploadStatus");
-const profileError = document.getElementById("profileError");
-const profilesList = document.getElementById("profilesList");
-
-async function loadProfiles() {
-  const res = await fetch("/api/profiles");
-  const data = await res.json();
-
-  profilesList.innerHTML = data.map(p => `
-    <article class="result-card">
-      <div class="result-card-top">
-        <div>
-          <p class="result-buyer">Profile</p>
-          <h3 class="result-title">${p.name || p.filename || ("Profile " + p.id)}</h3>
-        </div>
-        <div class="fit-badge">ID ${p.id}</div>
-      </div>
-      <pre>${JSON.stringify(p.parsed_json || {}, null, 2)}</pre>
-    </article>
-  `).join("");
-}
-
-profileUploadForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-
-  profileError.classList.add("hidden");
-  profileError.textContent = "";
-
-  const file = profileFile.files[0];
-  if (!file) {
-    profileError.textContent = "Please select a PDF file";
-    profileError.classList.remove("hidden");
-    return;
-  }
-
-  const formData = new FormData();
-  formData.append("file", file);
-
-  profileUploadStatus.classList.remove("hidden");
-
-  try {
-    const res = await fetch("/api/profiles", {
-      method: "POST",
-      body: formData
-    });
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "Upload failed");
-    }
-
-    await loadProfiles();
-    profileFile.value = "";
-  } catch (err) {
-    profileError.textContent = err.message || "Upload failed";
-    profileError.classList.remove("hidden");
-  } finally {
-    profileUploadStatus.classList.add("hidden");
-  }
-});
-
-loadProfiles();
-</script>
-{% endblock %}
+{% for profile in profiles %}
+{% if profile.is_active %} Active {% else %} Stored {% endif %} {{ profile.uploaded_at[:10] }} 
+{{ profile.summary.company_name or profile.file_name }}
+B-BBEE
+{{ profile.summary.bbbee_information.verification_status or "Not clearly detected" }}
+Industry main groups
+{{ profile.summary.industry_main_groups | join(", ") or "Not clearly detected" }}
+Industry divisions
+{{ profile.summary.industry_divisions | join(", ") or "Not clearly detected" }}
+Accreditations
+{% if profile.summary.accreditations %}
+	•	{% for accreditation in profile.summary.accreditations[:5] %}
+	•	{{ accreditation.body or "Detected" }} {{ accreditation.description }} 
+	•	{% endfor %} 
+{% else %}
+No accreditations confidently extracted.
+{% endif %} 
+Set active Delete 
+{% else %}
+No profiles yet
+Upload a profile PDF to enable tender-fit analysis.
+{% endfor %} 
+{% endblock %} 
