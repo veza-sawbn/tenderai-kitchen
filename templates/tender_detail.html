@@ -1,184 +1,58 @@
-{% extends "base.html" %}
-
-{% block content %}
-<section class="content-section">
-  <div class="section-head">
-    <h1>Tender Detail</h1>
-    <p>Run supplier analysis against this tender.</p>
-  </div>
-
-  <div id="tenderDetail" class="detail-card"></div>
-
-  <div class="analyze-panel">
-    <label for="profileSelect">Supplier profile</label>
-    <select id="profileSelect" class="input-select"></select>
-
-    <button id="analyzeBtn" class="btn btn-primary">Analyze</button>
-
-    <div id="analyzeStatus" class="analyze-status hidden">
-      <div class="spinner"></div>
-      <span>Analyzing tender against supplier profile...</span>
-    </div>
-
-    <div id="analyzeError" class="page-error hidden"></div>
-    <div id="analysisResult" class="analysis-result hidden"></div>
-  </div>
-</section>
-
-<script>
-const tenderId = "{{ tender_id }}";
-const presetProfileId = "{{ profile_id or '' }}";
-
-const tenderDetail = document.getElementById("tenderDetail");
-const profileSelect = document.getElementById("profileSelect");
-const analyzeBtn = document.getElementById("analyzeBtn");
-const analyzeStatus = document.getElementById("analyzeStatus");
-const analyzeError = document.getElementById("analyzeError");
-const analysisResult = document.getElementById("analysisResult");
-
-async function loadProfiles() {
-  const res = await fetch("/api/profiles");
-  const profiles = await res.json();
-
-  profileSelect.innerHTML = `
-    <option value="">Select profile</option>
-    ${profiles.map(p => `<option value="${p.id}">${p.name || p.filename || ("Profile " + p.id)}</option>`).join("")}
-  `;
-
-  if (presetProfileId) {
-    profileSelect.value = presetProfileId;
-  }
-
-  const saved = localStorage.getItem("selectedProfileId");
-  if (!presetProfileId && saved) {
-    const exists = profiles.some(p => String(p.id) === String(saved));
-    if (exists) {
-      profileSelect.value = saved;
-    } else {
-      localStorage.removeItem("selectedProfileId");
-    }
-  }
-}
-
-profileSelect.addEventListener("change", () => {
-  if (profileSelect.value) {
-    localStorage.setItem("selectedProfileId", profileSelect.value);
-  }
-});
-
-async function loadTender() {
-  const res = await fetch(`/api/tender/${encodeURIComponent(tenderId)}`);
-  const data = await res.json();
-
-  if (!res.ok) {
-    tenderDetail.innerHTML = `<div class="page-error">${data.error || "Failed to load tender"}</div>`;
-    return;
-  }
-
-  const summary = data.summary || {};
-  const parsed = data.parsed || {};
-
-  tenderDetail.innerHTML = `
-    <article class="detail-card-inner">
-      <p class="result-buyer">${summary.buyer_name || "Unknown buyer"}</p>
-      <h2 class="result-title">${summary.title || "Untitled tender"}</h2>
-      <p class="result-description">${summary.description || ""}</p>
-
-      <div class="detail-grid">
-        <div class="detail-block">
-          <h4>Scope</h4>
-          <p>${parsed.scope_summary || "Not extracted yet."}</p>
-        </div>
-
-        <div class="detail-block">
-          <h4>Compliance</h4>
-          <ul>${(parsed.compliance_requirements || []).map(i => `<li>${i}</li>`).join("")}</ul>
-        </div>
-
-        <div class="detail-block">
-          <h4>Functionality</h4>
-          <ul>${(parsed.functionality_criteria || []).map(i => `<li>${i}</li>`).join("")}</ul>
-        </div>
-
-        <div class="detail-block">
-          <h4>Preference System</h4>
-          <p>${parsed.price_preference_system || "Not explicitly found"}</p>
-        </div>
-      </div>
-    </article>
-  `;
-}
-
-async function runAnalysis() {
-  const profileId = profileSelect.value;
-
-  analyzeError.classList.add("hidden");
-  analyzeError.textContent = "";
-  analysisResult.classList.add("hidden");
-  analysisResult.innerHTML = "";
-
-  if (!profileId) {
-    analyzeError.textContent = "Please select a supplier profile";
-    analyzeError.classList.remove("hidden");
-    return;
-  }
-
-  analyzeBtn.disabled = true;
-  analyzeStatus.classList.remove("hidden");
-
-  try {
-    const res = await fetch("/api/score", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        profile_id: profileId,
-        tender_id: tenderId
-      })
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "Analysis failed");
-    }
-
-    const result = data.result || {};
-    analysisResult.innerHTML = `
-      <div class="analysis-card">
-        <div class="analysis-score-row">
-          <div class="fit-badge">${result.fit_score || 0}% Fit</div>
-          <div class="fit-badge">Competitiveness ${result.competitiveness || 0}</div>
-          <div class="fit-badge">Execution Effort ${result.execution_effort || 0}</div>
-          <div class="fit-badge">Strategic Readiness ${result.strategic_readiness || 0}</div>
-        </div>
-
-        <div class="detail-grid">
-          <div class="detail-block">
-            <h4>Breakdown</h4>
-            <pre>${JSON.stringify(result.breakdown || {}, null, 2)}</pre>
-          </div>
-          <div class="detail-block">
-            <h4>Risk Flags</h4>
-            <ul>${(result.risk_flags || []).map(i => `<li>${i}</li>`).join("") || "<li>No major flags detected</li>"}</ul>
-          </div>
-        </div>
-      </div>
-    `;
-    analysisResult.classList.remove("hidden");
-  } catch (err) {
-    analyzeError.textContent = err.message || "Analysis failed";
-    analyzeError.classList.remove("hidden");
-  } finally {
-    analyzeBtn.disabled = false;
-    analyzeStatus.classList.add("hidden");
-  }
-}
-
-analyzeBtn.addEventListener("click", runAnalysis);
-
-loadProfiles();
-loadTender();
-</script>
-{% endblock %}
+{% extends "base.html" %} {% set title = "Tender detail Â· TenderAI Beta" %} {% block content %}
+{{ tender.title or "Tender detail" }}
+{{ tender.buyer_name or "Unknown buyer" }}
+{{ tender.status or "Open" }} {% if tender.province %} {{ tender.province }} {% endif %} {% if tender.main_procurement_category %} {{ tender.main_procurement_category }} {% endif %} 
+Description
+{{ tender.description or "No description provided." }}
+Eligibility criteria
+{{ tender.eligibility_criteria or "Not supplied." }}
+Special conditions
+{{ tender.special_conditions or "Not supplied." }}
+Parsed requirements
+	•	{% for item in tender.parsed_document.mandatory_requirements %}
+	•	{{ item }}
+	•	{% else %}
+	•	No mandatory requirements confidently extracted.
+	•	{% endfor %} 
+Scope and specifications
+	•	{% for item in tender.parsed_document.specifications_scope %}
+	•	{{ item }}
+	•	{% else %}
+	•	No structured scope extracted.
+	•	{% endfor %} 
+Scoring and evaluation cues
+	•	{% for item in tender.parsed_document.evaluation_cues %}
+	•	{{ item }}
+	•	{% else %}
+	•	No scoring cues confidently extracted.
+	•	{% endfor %} 
+Briefing details
+	•	{% for item in tender.parsed_document.briefing_details %}
+	•	{{ item }}
+	•	{% else %}
+	•	No briefing details confidently extracted.
+	•	{% endfor %} 
+{{ tender.analysis.fit_band }} 
+{{ tender.analysis.fit_score }}
+Fit score
+Contact
+{{ tender.contact_person or "Not supplied" }}
+Delivery location
+{{ tender.delivery_location or "Not supplied" }}
+Document
+{% if tender.document_url %} {{ tender.document_title or "Open source document" }} {% else %}
+No tender document URL detected.
+{% endif %} 
+Strategic readiness
+	•	{% for item in tender.analysis.strategic_readiness %}
+	•	{{ item }}
+	•	{% else %}
+	•	No readiness cues surfaced.
+	•	{% endfor %} 
+Risk flags
+	•	{% for item in tender.analysis.risk_flags %}
+	•	{{ item }}
+	•	{% else %}
+	•	No strong risk flags detected.
+	•	{% endfor %} 
+{% endblock %} 
