@@ -8,16 +8,23 @@
       <div class="meta-row">
         <span class="meta-pill">{{ tender.status or "Open" }}</span>
         {% if tender.province %}<span class="meta-muted">{{ tender.province }}</span>{% endif %}
+        {% if tender.tender_type %}<span class="meta-muted">{{ tender.tender_type }}</span>{% endif %}
       </div>
       <h1>{{ tender.title or "Tender detail" }}</h1>
       <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
     </div>
-    <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=profile_id) }}">Back to tenders</a>
+    <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=profile_id) if profile_id else url_for('tenders_page') }}">Back to tenders</a>
   </div>
 
-  {% if not analysis_enabled %}
+  {% if active_profile %}
+    <div class="flash flash-success">
+      Active profile: <strong>{{ active_profile.company_name or active_profile.file_name }}</strong>
+    </div>
+  {% else %}
     <div class="flash flash-error">
-      No active supplier profile is loaded. You can still review the tender, but AI analysis requires a profile.
+      No active supplier profile is loaded. Activate one from
+      <a class="text-link" href="{{ url_for('profiles_page') }}">Profiles</a>
+      to analyze this tender.
     </div>
   {% endif %}
 
@@ -39,28 +46,26 @@
       </div>
 
       <div class="detail-block">
-        <h3>Buyer</h3>
-        <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
+        <h3>Closing date</h3>
+        <p>
+          {{ tender.closing_date_display or "Not supplied" }}
+          {% if tender.days_left is not none %}
+            ·
+            {% if tender.days_left < 0 %}
+              Closed
+            {% elif tender.days_left == 0 %}
+              Closes today
+            {% elif tender.days_left == 1 %}
+              1 day left
+            {% else %}
+              {{ tender.days_left }} days left
+            {% endif %}
+          {% endif %}
+        </p>
       </div>
 
       <div class="detail-block">
-        <h3>Location</h3>
-        <p>{{ tender.delivery_location or tender.province or "Not supplied" }}</p>
-      </div>
-
-      <div class="detail-block">
-        <h3>Analyze this tender</h3>
-        <p>Run AI analysis against the active supplier profile.</p>
-        <button id="analyze-button" class="btn btn-primary">Analyze tender</button>
-      </div>
-
-      <div id="analysis-error" class="flash flash-error" hidden></div>
-      <div id="analysis-result" hidden></div>
-    </section>
-
-    <aside class="card detail-side">
-      <div class="detail-block">
-        <h3>Source document</h3>
+        <h3>Source documents</h3>
         {% if tender.documents and tender.documents|length > 0 %}
           <ul class="clean-list">
             {% for doc in tender.documents %}
@@ -79,6 +84,32 @@
         {% else %}
           <p>No tender document URL detected.</p>
         {% endif %}
+      </div>
+
+      <div class="detail-block">
+        <h3>Analyze this tender</h3>
+        <p>Run TenderAI against the active supplier profile.</p>
+        <button id="analyze-button" class="btn btn-primary">Analyze tender</button>
+      </div>
+
+      <div id="analysis-error" class="flash flash-error" hidden></div>
+      <div id="analysis-result" hidden></div>
+    </section>
+
+    <aside class="card detail-side">
+      <div class="detail-block">
+        <h3>Buyer</h3>
+        <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
+      </div>
+
+      <div class="detail-block">
+        <h3>Location</h3>
+        <p>{{ tender.delivery_location or tender.province or "Not supplied" }}</p>
+      </div>
+
+      <div class="detail-block">
+        <h3>Category</h3>
+        <p>{{ tender.tender_type or tender.main_procurement_category or "Not supplied" }}</p>
       </div>
 
       <div class="detail-block">
