@@ -1,35 +1,109 @@
-{% extends "base.html" %} {% set title = "Tender intelligence Â· TenderAI Beta" %} {% block content %}
-Tender intelligence
-{{ prompt or "Live tenders analyzed with current settings." }}
-{% if error_message %}
-{{ error_message }}
-{% endif %}
-{% for tender in tenders %} {% set analysis = tender.analysis %}
-{{ tender.status or "Open" }} {% if tender.province %} {{ tender.province }} {% endif %} 
-{{ tender.title or "Untitled tender" }}
-{{ analysis.fit_band }} 
-{{ analysis.fit_score }}
-Fit score
-{{ tender.description[:260] ~ ("..." if tender.description and tender.description|length > 260 else "") }} 
-Competitiveness
-{{ analysis.competitiveness }}
-Execution investment
-{{ analysis.execution_investment }}
-Fit reasons
-	•	{% for item in analysis.fit_reasons %}
-	•	{{ item }}
-	•	{% else %}
-	•	No strong overlap signals found yet.
-	•	{% endfor %} 
-Risk flags
-	•	{% for item in analysis.risk_flags %}
-	•	{{ item }}
-	•	{% else %}
-	•	No major risk flags detected from current extraction.
-	•	{% endfor %} 
-{{ tender.buyer_name or "Unknown buyer" }} Open detail 
-{% else %}
-No tenders returned
-Check API filters, deployment version, or upstream API availability.
-{% endfor %} 
-{% endblock %} 
+{% extends "base.html" %}
+{% set title = "Tender intelligence · TenderAI Beta" %}
+
+{% block content %}
+<section class="section shell shell-wide">
+  <div class="section-head">
+    <h1>Tender intelligence</h1>
+    <p>
+      {% if analysis_enabled %}
+        {{ prompt or "Live tenders analyzed against the selected supplier profile." }}
+      {% else %}
+        {{ prompt or "Live tenders loaded. Upload or activate a supplier profile to enable analysis." }}
+      {% endif %}
+    </p>
+  </div>
+
+  {% if error_message %}
+    <div class="flash flash-error">{{ error_message }}</div>
+  {% endif %}
+
+  {% if not analysis_enabled %}
+    <div class="flash flash-error">
+      No active supplier profile is loaded. These opportunities are listed without TenderAI supplier-fit analysis.
+    </div>
+  {% endif %}
+
+  <div class="analysis-grid">
+    {% for tender in tenders %}
+      {% set analysis = tender.analysis %}
+      <article class="card intelligence-card">
+        <div class="card-top">
+          <div>
+            <div class="meta-row">
+              <span class="meta-pill">{{ tender.status or "Open" }}</span>
+              {% if tender.province %}
+                <span class="meta-muted">{{ tender.province }}</span>
+              {% endif %}
+            </div>
+            <h2>{{ tender.title or "Untitled tender" }}</h2>
+          </div>
+
+          <div class="fit-badge fit-{{ analysis.fit_band|lower|replace(' ', '-') }}">
+            {{ analysis.fit_band }}
+          </div>
+        </div>
+
+        {% if analysis.fit_score is not none %}
+          <div class="score-row">
+            <div class="score-number">{{ analysis.fit_score }}</div>
+            <div class="score-copy">Fit score</div>
+          </div>
+        {% else %}
+          <div class="detail-block">
+            <p>No supplier-fit score available.</p>
+          </div>
+        {% endif %}
+
+        <p class="card-copy">
+          {{ tender.description[:260] ~ ("..." if tender.description and tender.description|length > 260 else "") }}
+        </p>
+
+        <div class="detail-stack">
+          <div>
+            <strong>Competitiveness</strong>
+            <p>{{ analysis.competitiveness }}</p>
+          </div>
+
+          <div>
+            <strong>Execution investment</strong>
+            <p>{{ analysis.execution_investment }}</p>
+          </div>
+
+          <div>
+            <strong>Fit reasons</strong>
+            <ul class="clean-list">
+              {% for item in analysis.fit_reasons %}
+                <li>{{ item }}</li>
+              {% else %}
+                <li>No supplier-fit reasoning available.</li>
+              {% endfor %}
+            </ul>
+          </div>
+
+          <div>
+            <strong>Risk flags</strong>
+            <ul class="clean-list">
+              {% for item in analysis.risk_flags %}
+                <li>{{ item }}</li>
+              {% else %}
+                <li>No major risk flags detected from current extraction.</li>
+              {% endfor %}
+            </ul>
+          </div>
+        </div>
+
+        <div class="card-foot">
+          <span>{{ tender.buyer_name or "Unknown buyer" }}</span>
+          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid, profile_id=profile_id) }}">Open detail</a>
+        </div>
+      </article>
+    {% else %}
+      <div class="card empty-card">
+        <h2>No tenders returned</h2>
+        <p>Check API filters, deployment version, or upstream API availability.</p>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
