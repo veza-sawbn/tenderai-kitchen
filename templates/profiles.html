@@ -4,10 +4,8 @@
 {% block content %}
 <section class="section shell">
   <div class="section-head">
-    <div>
-      <h1>Supplier profiles</h1>
-      <p>Upload and manage CSD-style supplier profiles for TenderAI matching.</p>
-    </div>
+    <h1>Supplier profiles</h1>
+    <p>Upload and manage CSD-style supplier profiles for TenderAI analysis.</p>
   </div>
 
   <form id="upload-form" class="card upload-card" enctype="multipart/form-data">
@@ -17,14 +15,12 @@
     </div>
 
     <div class="card-actions">
-      <button id="upload-button" class="btn btn-primary" type="submit">
-        Upload profile
-      </button>
+      <button id="upload-button" class="btn btn-primary" type="submit">Upload profile</button>
       <p id="upload-status" class="meta-muted"></p>
     </div>
   </form>
 
-  <div class="profile-grid">
+  <div class="analysis-grid">
     {% for profile in profiles %}
       <article class="card profile-card">
         <div class="card-top">
@@ -39,25 +35,22 @@
           </div>
         </div>
 
+        <p class="card-copy">{{ profile.summary_text or "Profile processed and stored." }}</p>
+
         <div class="detail-stack">
           <div>
-            <strong>File</strong>
-            <p>{{ profile.file_name }}</p>
+            <strong>Capabilities</strong>
+            <p>{{ (profile.keywords or [])[:5] | join(", ") or "No structured keywords yet" }}</p>
           </div>
-
           <div>
-            <strong>Profile summary</strong>
-            <p>{{ profile.summary_text or "Profile processed and stored." }}</p>
+            <strong>Coverage</strong>
+            <p>{{ (profile.provinces or [])[:5] | join(", ") or "Not detected" }}</p>
           </div>
         </div>
 
         <div class="card-actions">
-          <button class="btn btn-secondary activate-profile" data-profile-id="{{ profile.id }}">
-            Set active
-          </button>
-          <button class="btn btn-ghost delete-profile" data-profile-id="{{ profile.id }}">
-            Delete
-          </button>
+          <button class="btn btn-secondary activate-profile" data-profile-id="{{ profile.id }}">Set active</button>
+          <button class="btn btn-ghost delete-profile" data-profile-id="{{ profile.id }}">Delete</button>
         </div>
       </article>
     {% else %}
@@ -78,17 +71,13 @@
     if (uploadForm) {
       uploadForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-
-        if (uploadButton) {
-          uploadButton.disabled = true;
-          uploadButton.textContent = "Processing…";
-        }
-
+        uploadButton.disabled = true;
+        uploadButton.textContent = "Processing…";
         uploadStatus.textContent = "Uploading profile…";
 
         window.TenderAI.showProcessing(
           "Processing supplier profile…",
-          "TenderAI is extracting, validating, and structuring your business profile."
+          "TenderAI is extracting and structuring your business profile."
         );
 
         const formData = new FormData(uploadForm);
@@ -104,10 +93,8 @@
           if (!response.ok) {
             uploadStatus.textContent = data.error || "Upload failed";
             window.TenderAI.hideProcessing();
-            if (uploadButton) {
-              uploadButton.disabled = false;
-              uploadButton.textContent = "Upload profile";
-            }
+            uploadButton.disabled = false;
+            uploadButton.textContent = "Upload profile";
             return;
           }
 
@@ -117,10 +104,8 @@
         } catch (error) {
           uploadStatus.textContent = "Upload failed";
           window.TenderAI.hideProcessing();
-          if (uploadButton) {
-            uploadButton.disabled = false;
-            uploadButton.textContent = "Upload profile";
-          }
+          uploadButton.disabled = false;
+          uploadButton.textContent = "Upload profile";
         }
       });
     }
