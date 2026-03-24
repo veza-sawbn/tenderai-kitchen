@@ -46,9 +46,10 @@
       </div>
 
       <div class="detail-block">
-        <h3>Closing date</h3>
+        <h3>Issue and closing dates</h3>
         <p>
-          {{ tender.closing_date_display or "Not supplied" }}
+          <strong>Issued:</strong> {{ tender.issue_date_display or "Not supplied" }}<br>
+          <strong>Closes:</strong> {{ tender.closing_date_display or "Not supplied" }}
           {% if tender.days_left is not none %}
             ·
             {% if tender.days_left < 0 %}
@@ -89,11 +90,15 @@
       <div class="detail-block">
         <h3>Analyze this tender</h3>
         <p>Run TenderAI against the active supplier profile.</p>
-        <button id="analyze-button" class="btn btn-primary">Analyze tender</button>
+        <div class="card-actions">
+          <button id="analyze-button" class="btn btn-primary">Analyze tender</button>
+          <button id="proposal-button" class="btn btn-secondary">Write proposal draft</button>
+        </div>
       </div>
 
       <div id="analysis-error" class="flash flash-error" hidden></div>
       <div id="analysis-result" hidden></div>
+      <div id="proposal-result" hidden></div>
     </section>
 
     <aside class="card detail-side">
@@ -120,6 +125,7 @@
           <li>Win probability band</li>
           <li>Bid recommendation</li>
           <li>Improvement actions</li>
+          <li>Proposal-required cues</li>
         </ul>
       </div>
     </aside>
@@ -131,8 +137,10 @@
     const profileId = "{{ profile_id or '' }}";
     const tenderId = "{{ tender.tender_id or tender.ocid }}";
     const resultBox = document.getElementById("analysis-result");
+    const proposalBox = document.getElementById("proposal-result");
     const errorBox = document.getElementById("analysis-error");
-    const button = document.getElementById("analyze-button");
+    const analyzeButton = document.getElementById("analyze-button");
+    const proposalButton = document.getElementById("proposal-button");
 
     function renderList(items) {
       if (!items || !items.length) return "<li>None</li>";
@@ -173,6 +181,8 @@
           <ul class="clean-list">${renderList(p.compliance_requirements)}</ul>
           <strong>Evaluation criteria</strong>
           <ul class="clean-list">${renderList(p.evaluation_criteria)}</ul>
+          <strong>Proposal required</strong>
+          <p>${p.submission && p.submission.proposal_required ? "Likely yes" : "Not clearly detected"}</p>
         </div>
 
         <div class="detail-block">
@@ -214,42 +224,90 @@
       errorBox.hidden = false;
     }
 
-    if (button) {
-      button.addEventListener("click", async () => {
-        errorBox.hidden = true;
-        errorBox.textContent = "";
+    async function startAnalysis() {
+      errorBox.hidden = true;
+      errorBox.textContent = "";
 
-        if (!profileId) {
-          errorBox.textContent = "Please activate a supplier profile first.";
-          errorBox.hidden = false;
-          return;
-        }
+      if (!profileId) {
+        errorBox.textContent = "Please activate a supplier profile first.";
+        errorBox.hidden = false;
+        return;
+      }
 
-        window.TenderAI.showProcessing(
-          "Analyzing tender…",
-          "TenderAI is parsing the tender, comparing your profile, and generating a bid assessment."
-        );
+      window.TenderAI.showProcessing(
+        "Analyzing tender…",
+        "TenderAI is parsing the tender, comparing your profile, and generating a bid assessment."
+      );
 
-        const res = await fetch("/api/analyze-tender", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            tender_id: tenderId,
-            profile_id: profileId
-          })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          window.TenderAI.hideProcessing();
-          errorBox.textContent = data.error || "Failed to start analysis";
-          errorBox.hidden = false;
-          return;
-        }
-
-        poll(data.job_id);
+      const res = await fetch("/api/analyze-tender", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          tender_id: tenderId,
+          profile_id: profileId
+        })
       });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        window.TenderAI.hideProcessing();
+        errorBox.textContent = data.error || "Failed to start analysis";
+        errorBox.hidden = false;
+        return;
+      }
+
+      poll(data.job_id);
+    }
+
+    async function writeProposal() {
+      errorBox.hidden = true;
+      errorBox.textContent = "";
+
+      if (!profileId) {
+        errorBox.textContent = "Please activate a supplier profile first.";
+        errorBox.hidden = false;
+        return;
+      }
+
+      window.TenderAI.showProcessing(
+        "Writing proposal draft…",
+        "TenderAI is drafting a proposal based on the tender and your profile."
+      );
+
+      const res = await fetch("/api/write-proposal", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          tender_id: tenderId,
+          profile_id: profileId
+        })
+      });
+
+      const data = await res.json();
+      window.TenderAI.hideProcessing();
+
+      if (!res.ok) {
+        errorBox.textContent = data.error || "Proposal draft failed";
+        errorBox.hidden = false;
+        return;
+      }
+
+      proposalBox.innerHTML = `
+        <div class="detail-block">
+          <h3>Proposal draft</h3>
+          <pre class="proposal-pre">${data.proposal_text}</pre>
+        </div>
+      `;
+      proposalBox.hidden = false;
+    }
+
+    if (analyzeButton) {
+      analyzeButton.addEventListener("click", startAnalysis);
+    }
+
+    if (proposalButton) {
+      proposalButton.addEventListener("click", writeProposal);
     }
   })();
 </script>
