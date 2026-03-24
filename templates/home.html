@@ -2,69 +2,86 @@
 {% set title = "TenderAI Beta" %}
 
 {% block content %}
-<section class="hero shell">
-  <div class="hero-orb"></div>
-  <p class="eyebrow">South African procurement intelligence</p>
-  <h1>TenderAI Beta</h1>
-  <p class="hero-copy">
-    Interpret supplier profiles, interpret tender documents, and assess bid strength with AI-assisted procurement analysis.
-  </p>
-  <div class="hero-actions">
-    <a class="btn btn-primary" href="{{ url_for('profiles_page') }}">Manage profiles</a>
-    {% if active_profile %}
-      <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=active_profile.id) }}">Browse tenders with active profile</a>
-    {% else %}
-      <a class="btn btn-secondary" href="{{ url_for('tenders_page') }}">Browse tenders</a>
-    {% endif %}
+<section class="hero shell shell-wide">
+  <div class="hero-inner">
+    <div class="hero-orb" aria-hidden="true"></div>
+    <div class="eyebrow">South African Procurement Intelligence</div>
+
+    <h1>Ask TenderAI…</h1>
+
+    <p class="hero-copy">
+      Browse live tenders, pre-inspect profile alignment, parse tender documents, and generate proposal drafts where required.
+    </p>
+
+    <div class="prompt-actions" style="justify-content:center; margin-top:18px;">
+      <a class="btn btn-primary" href="{{ url_for('profiles_page') }}">Manage profiles</a>
+      {% if active_profile %}
+        <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=active_profile.id) }}">Browse tenders with active profile</a>
+      {% else %}
+        <a class="btn btn-secondary" href="{{ url_for('tenders_page') }}">Browse tenders</a>
+      {% endif %}
+    </div>
   </div>
 </section>
 
 <section class="section shell shell-wide">
   <div class="section-head">
-    <h2>Recent opportunities</h2>
-    <p>
-      {% if active_profile %}
-        Active profile: <strong>{{ active_profile.company_name or active_profile.file_name }}</strong>
-      {% else %}
-        No active profile yet.
-      {% endif %}
-    </p>
+    <h2>Recently issued opportunities</h2>
+    {% if active_profile %}
+      <p>Active profile: <strong>{{ active_profile.company_name or active_profile.file_name }}</strong></p>
+    {% else %}
+      <p>No active profile yet.</p>
+    {% endif %}
   </div>
-  <div class="analysis-grid">
+
+  <div class="tender-grid">
     {% for tender in tenders %}
-      <article class="card intelligence-card">
-        <div class="card-top">
-          <div>
-            <div class="meta-row">
-              <span class="meta-pill">{{ tender.status or "Open" }}</span>
-              {% if tender.province %}<span class="meta-muted">{{ tender.province }}</span>{% endif %}
-            </div>
-            <h3>{{ tender.title or "Untitled tender" }}</h3>
-          </div>
-          {% if tender.days_left is not none %}
-            <div class="fit-badge fit-neutral">
-              {% if tender.days_left < 0 %}
-                Closed
-              {% elif tender.days_left == 0 %}
-                Closes today
-              {% elif tender.days_left == 1 %}
-                1 day left
-              {% else %}
-                {{ tender.days_left }} days left
-              {% endif %}
-            </div>
-          {% endif %}
+      <article class="card tender-card">
+        <div class="meta-row">
+          <span class="meta-pill">{{ tender.status or "Open" }}</span>
+          {% if tender.province %}<span class="meta-muted">{{ tender.province }}</span>{% endif %}
         </div>
-        <p class="card-copy">{{ tender.description[:220] ~ ("..." if tender.description and tender.description|length > 220 else "") }}</p>
+
+        <h3>{{ tender.title or "Untitled tender" }}</h3>
+
+        <p class="card-copy">
+          {{ tender.description[:220] ~ ("..." if tender.description and tender.description|length > 220 else "") }}
+        </p>
+
+        <div class="detail-stack">
+          <div>
+            <strong>Issued</strong>
+            <p>{{ tender.issue_date_display or "Not supplied" }}</p>
+          </div>
+          <div>
+            <strong>Closes</strong>
+            <p>
+              {{ tender.closing_date_display or "Not supplied" }}
+              {% if tender.days_left is not none %}
+                ·
+                {% if tender.days_left < 0 %}
+                  Closed
+                {% elif tender.days_left == 0 %}
+                  Closes today
+                {% elif tender.days_left == 1 %}
+                  1 day left
+                {% else %}
+                  {{ tender.days_left }} days left
+                {% endif %}
+              {% endif %}
+            </p>
+          </div>
+        </div>
+
         <div class="card-foot">
           <span>{{ tender.buyer_name or "Unknown buyer" }}</span>
-          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid, profile_id=active_profile.id if active_profile else None) }}">Open detail</a>
+          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid, profile_id=active_profile.id if active_profile else None) }}">View</a>
         </div>
       </article>
     {% else %}
       <div class="card empty-card">
-        <h3>No tenders loaded</h3>
-        <p>Check the upstream API or deployment configuration.</p>
+        <h3>No live opportunities loaded</h3>
+        <p>Check the API connection and the deployed build version.</p>
       </div>
     {% endfor %}
   </div>
