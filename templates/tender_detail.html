@@ -1,329 +1,119 @@
 {% extends "base.html" %}
-{% set title = "Tender detail · TenderAI Beta" %}
 
 {% block content %}
-<section class="section shell shell-wide">
-  <div class="section-head detail-head">
-    <div>
-      <div class="meta-row">
-        <span class="meta-pill">{{ tender.status or "Open" }}</span>
-        {% if tender.province %}<span class="meta-muted">{{ tender.province }}</span>{% endif %}
-        {% if tender.tender_type %}<span class="meta-muted">{{ tender.tender_type }}</span>{% endif %}
-      </div>
-      <h1>{{ tender.title or "Tender detail" }}</h1>
-      <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
+<section class="glass-card">
+    <div class="card-meta">
+        <span>{{ tender.tender_type or "Tender" }}</span>
+        <span>{{ tender.industry or "General" }}</span>
+        <span>{{ tender.province or "Province n/a" }}</span>
     </div>
-    <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=profile_id) if profile_id else url_for('tenders_page') }}">Back to tenders</a>
-  </div>
 
-  {% if active_profile %}
-    <div class="flash flash-success">
-      Active profile: <strong>{{ active_profile.company_name or active_profile.file_name }}</strong>
-    </div>
-  {% else %}
-    <div class="flash flash-error">
-      No active supplier profile is loaded. Activate one from
-      <a class="text-link" href="{{ url_for('profiles_page') }}">Profiles</a>
-      to analyze this tender.
-    </div>
-  {% endif %}
+    <h1>{{ tender.title }}</h1>
+    <p class="muted">{{ tender.description or "No description available." }}</p>
 
-  <div class="detail-layout">
-    <section class="card detail-main">
-      <div class="detail-block">
-        <h3>Description</h3>
-        <p>{{ tender.description or "No description supplied." }}</p>
-      </div>
-
-      <div class="detail-block">
-        <h3>Eligibility criteria</h3>
-        <p>{{ tender.eligibility_criteria or "Not supplied." }}</p>
-      </div>
-
-      <div class="detail-block">
-        <h3>Special conditions</h3>
-        <p>{{ tender.special_conditions or "Not supplied." }}</p>
-      </div>
-
-      <div class="detail-block">
-        <h3>Issue and closing dates</h3>
-        <p>
-          <strong>Issued:</strong> {{ tender.issue_date_display or "Not supplied" }}<br>
-          <strong>Closes:</strong> {{ tender.closing_date_display or "Not supplied" }}
-          {% if tender.days_left is not none %}
-            ·
-            {% if tender.days_left < 0 %}
-              Closed
-            {% elif tender.days_left == 0 %}
-              Closes today
-            {% elif tender.days_left == 1 %}
-              1 day left
-            {% else %}
-              {{ tender.days_left }} days left
-            {% endif %}
-          {% endif %}
-        </p>
-      </div>
-
-      <div class="detail-block">
-        <h3>Source documents</h3>
-        {% if tender.documents and tender.documents|length > 0 %}
-          <ul class="clean-list">
-            {% for doc in tender.documents %}
-              {% set doc_url = doc.url or doc.downloadUrl or doc.uri or doc.href %}
-              <li>
-                {% if doc_url and doc_url|string|lower not in ['url not found', 'not found', 'none', 'null'] %}
-                  <a class="text-link" href="{{ doc_url }}" target="_blank" rel="noopener noreferrer">
-                    {{ doc.title or doc.documentType or "Open document" }}
-                  </a>
-                {% else %}
-                  {{ doc.title or doc.documentType or "Document listed" }} · <span class="meta-muted">No direct URL available</span>
-                {% endif %}
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p>No tender document URL detected.</p>
-        {% endif %}
-      </div>
-
-      <div class="detail-block">
-        <h3>Analyze this tender</h3>
-        <p>Run TenderAI against the active supplier profile, then generate a downloadable proposal draft if needed.</p>
-        <div class="card-actions">
-          <button id="analyze-button" class="btn btn-primary">Analyze tender</button>
-          <button id="proposal-button" class="btn btn-secondary">Download proposal draft (.docx)</button>
+    <div class="detail-grid">
+        <div>
+            <label>Buyer</label>
+            <p>{{ tender.buyer_name or "n/a" }}</p>
         </div>
-      </div>
+        <div>
+            <label>Issued Date</label>
+            <p>{{ tender.issued_date or "n/a" }}</p>
+        </div>
+        <div>
+            <label>Closing Date</label>
+            <p>{{ tender.closing_date or "n/a" }}</p>
+        </div>
+        <div>
+            <label>Days Left</label>
+            <p>
+                {% if tender.closing_date %}
+                    {{ tender.closing_date|days_left }}
+                {% else %}
+                    n/a
+                {% endif %}
+            </p>
+        </div>
+    </div>
 
-      <div id="analysis-error" class="flash flash-error" hidden></div>
-      <div id="analysis-result" hidden></div>
-    </section>
+    <div class="detail-actions">
+        {% if tender.source_url %}
+            <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source Link</a>
+        {% endif %}
 
-    <aside class="card detail-side">
-      <div class="detail-block">
-        <h3>Buyer</h3>
-        <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
-      </div>
-
-      <div class="detail-block">
-        <h3>Location</h3>
-        <p>{{ tender.delivery_location or tender.province or "Not supplied" }}</p>
-      </div>
-
-      <div class="detail-block">
-        <h3>Category</h3>
-        <p>{{ tender.tender_type or tender.main_procurement_category or "Not supplied" }}</p>
-      </div>
-
-      {% if active_profile and active_profile.issues %}
-      <div class="detail-block">
-        <h3>Profile issues tracker</h3>
-        <ul class="clean-list issue-list">
-          {% for issue in active_profile.issues %}
-            <li data-issue-id="{{ issue.id }}">
-              <div class="issue-row">
-                <span>{{ issue.issue_text }}</span>
-                <span class="meta-pill {% if issue.status == 'fixed' %}active{% endif %}">{{ issue.status }}</span>
-              </div>
-              <div class="issue-actions">
-                <button class="btn btn-ghost issue-status-btn" data-status="fixed" data-issue-id="{{ issue.id }}">Mark fixed</button>
-                <button class="btn btn-ghost issue-status-btn" data-status="pending" data-issue-id="{{ issue.id }}">Mark pending</button>
-              </div>
-            </li>
-          {% endfor %}
-        </ul>
-      </div>
-      {% endif %}
-    </aside>
-  </div>
+        {% if active_profile %}
+            <form action="{{ url_for('analyze_tender', tender_id=tender.id) }}" method="post" data-loading="true">
+                <button class="btn btn-primary" type="submit">Analyze Against Active Profile</button>
+            </form>
+        {% else %}
+            <a class="btn btn-primary" href="{{ url_for('profiles') }}">Upload Active Profile</a>
+        {% endif %}
+    </div>
 </section>
 
-<script>
-  (function () {
-    const profileId = "{{ profile_id or '' }}";
-    const tenderId = "{{ tender.release_id or tender.tender_id or tender.ocid }}";
-    const resultBox = document.getElementById("analysis-result");
-    const errorBox = document.getElementById("analysis-error");
-    const analyzeButton = document.getElementById("analyze-button");
-    const proposalButton = document.getElementById("proposal-button");
+{% if alignment_score is not none %}
+<section class="glass-card">
+    <h2>Pre-Ranking</h2>
+    <div class="score-panel glow-chip large">
+        <span>Alignment Score</span>
+        <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
+    </div>
+</section>
+{% endif %}
 
-    function renderList(items) {
-      if (!items || !items.length) return "<li>None</li>";
-      return items.map(item => `<li>${item}</li>`).join("");
-    }
+{% if analysis %}
+<section class="glass-card">
+    <div class="section-head">
+        <h2>Analysis Result</h2>
+        <a class="btn btn-secondary" href="{{ url_for('download_proposal', job_id=analysis.id) }}">Download Proposal DOCX</a>
+    </div>
 
-    function renderResult(result) {
-      if (!result || !result.analysis) return;
-      const a = result.analysis;
-      const p = result.parsed_document || {};
+    <p>{{ analysis.summary }}</p>
 
-      resultBox.innerHTML = `
-        <div class="detail-block">
-          <div class="fit-badge fit-${(a.fit_band || "neutral").toLowerCase().replace(/\s+/g, "-")}">
-            ${a.fit_band || "Assessment"}
-          </div>
-          <h3 style="margin-top:16px;">AI assessment</h3>
-          <p>${a.decision_summary || ""}</p>
-          <div class="score-row">
-            <div class="score-number">${a.fit_score ?? "N/A"}</div>
-            <div class="score-copy">Fit score</div>
-          </div>
-          <p><strong>Qualification:</strong> ${a.qualification_status || "N/A"}</p>
-          <p><strong>Win probability:</strong> ${a.win_probability_band || "N/A"}</p>
-          <p><strong>Recommendation:</strong> ${a.bid_recommendation || "N/A"}</p>
-          <p><strong>Competitiveness:</strong> ${a.competitiveness || "N/A"}</p>
-          <p><strong>Execution burden:</strong> ${a.execution_investment || "N/A"}</p>
+    <div class="detail-grid">
+        <div>
+            <label>Strengths</label>
+            <ul>
+                {% for line in (analysis.strengths_text or '').split('\n') if line.strip() %}
+                    <li>{{ line }}</li>
+                {% endfor %}
+            </ul>
         </div>
-
-        <div class="detail-block">
-          <h3>Tender interpretation</h3>
-          <p>${p.scope_summary || "No scope summary extracted."}</p>
-          <strong>Required capabilities</strong>
-          <ul class="clean-list">${renderList(p.required_capabilities)}</ul>
-          <strong>Mandatory documents</strong>
-          <ul class="clean-list">${renderList(p.mandatory_documents)}</ul>
-          <strong>Compliance requirements</strong>
-          <ul class="clean-list">${renderList(p.compliance_requirements)}</ul>
-          <strong>Evaluation criteria</strong>
-          <ul class="clean-list">${renderList(p.evaluation_criteria)}</ul>
-          <strong>Proposal required</strong>
-          <p>${p.submission && p.submission.proposal_required ? "Likely yes" : "Not clearly detected"}</p>
+        <div>
+            <label>Risks</label>
+            <ul>
+                {% for line in (analysis.risks_text or '').split('\n') if line.strip() %}
+                    <li>{{ line }}</li>
+                {% endfor %}
+            </ul>
         </div>
+    </div>
 
-        <div class="detail-block">
-          <h3>Improvement actions</h3>
-          <ul class="clean-list">${renderList(a.improvement_actions)}</ul>
-        </div>
+    <div>
+        <label>Recommendations</label>
+        <ul>
+            {% for line in (analysis.recommendations_text or '').split('\n') if line.strip() %}
+                <li>{{ line }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+</section>
+{% endif %}
 
-        <div class="detail-block">
-          <h3>Risk flags</h3>
-          <ul class="clean-list">${renderList(a.risk_flags)}</ul>
-        </div>
-      `;
-      resultBox.hidden = false;
-    }
-
-    async function poll(jobId) {
-      for (let i = 0; i < 120; i++) {
-        const res = await fetch(`/api/analyze-status/${jobId}`);
-        const data = await res.json();
-
-        if (data.status === "completed") {
-          window.TenderAI.hideProcessing();
-          renderResult(data.result);
-          return;
-        }
-
-        if (data.status === "failed") {
-          window.TenderAI.hideProcessing();
-          errorBox.textContent = data.error || "Analysis failed";
-          errorBox.hidden = false;
-          return;
-        }
-
-        await new Promise(r => setTimeout(r, 2000));
-      }
-
-      window.TenderAI.hideProcessing();
-      errorBox.textContent = "Analysis timed out while waiting for completion.";
-      errorBox.hidden = false;
-    }
-
-    async function startAnalysis() {
-      errorBox.hidden = true;
-      errorBox.textContent = "";
-
-      if (!profileId) {
-        errorBox.textContent = "Please activate a supplier profile first.";
-        errorBox.hidden = false;
-        return;
-      }
-
-      window.TenderAI.showProcessing(
-        "Analyzing tender…",
-        "TenderAI is parsing the tender, comparing your profile, and generating a bid assessment."
-      );
-
-      const res = await fetch("/api/analyze-tender", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ tender_id: tenderId, profile_id: profileId })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        window.TenderAI.hideProcessing();
-        errorBox.textContent = data.error || "Failed to start analysis";
-        errorBox.hidden = false;
-        return;
-      }
-
-      poll(data.job_id);
-    }
-
-    async function downloadProposal() {
-      errorBox.hidden = true;
-      errorBox.textContent = "";
-
-      if (!profileId) {
-        errorBox.textContent = "Please activate a supplier profile first.";
-        errorBox.hidden = false;
-        return;
-      }
-
-      window.TenderAI.showProcessing(
-        "Writing proposal draft…",
-        "TenderAI is drafting a proposal and packaging it as a downloadable DOCX."
-      );
-
-      const res = await fetch("/api/write-proposal-docx", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ tender_id: tenderId, profile_id: profileId })
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        window.TenderAI.hideProcessing();
-        errorBox.textContent = data.error || "Proposal draft failed";
-        errorBox.hidden = false;
-        return;
-      }
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "proposal_draft.docx";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-      window.TenderAI.hideProcessing();
-    }
-
-    document.querySelectorAll(".issue-status-btn").forEach((button) => {
-      button.addEventListener("click", async () => {
-        if (!profileId) return;
-        const issueId = button.dataset.issueId;
-        const status = button.dataset.status;
-
-        const res = await fetch(`/api/profile-issues/${profileId}/${issueId}`, {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({ status })
-        });
-
-        if (res.ok) {
-          location.reload();
-        }
-      });
-    });
-
-    if (analyzeButton) analyzeButton.addEventListener("click", startAnalysis);
-    if (proposalButton) proposalButton.addEventListener("click", downloadProposal);
-  })();
-</script>
+<section class="glass-card">
+    <h2>Cached Tender Documents</h2>
+    <div class="stack-list">
+        {% for doc in documents %}
+            <div class="issue-card">
+                <div>
+                    <strong>{{ doc.filename or 'Document' }}</strong>
+                    <p class="muted">{{ doc.document_url }}</p>
+                    <small>Status: {{ doc.fetch_status }}</small>
+                </div>
+            </div>
+        {% else %}
+            <p class="muted">No cached tender document entries yet.</p>
+        {% endfor %}
+    </div>
+</section>
 {% endblock %}
