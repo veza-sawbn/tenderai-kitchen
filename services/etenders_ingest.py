@@ -16,10 +16,11 @@ DEFAULT_ETENDERS_URL = os.getenv(
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
 )
 
-DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "200"))
-DEFAULT_LOOKBACK_DAYS = int(os.getenv("ETENDERS_LOOKBACK_DAYS", "60"))
+DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "100"))
+DEFAULT_LOOKBACK_DAYS = int(os.getenv("ETENDERS_LOOKBACK_DAYS", "45"))
 DEFAULT_LOOKAHEAD_DAYS = int(os.getenv("ETENDERS_LOOKAHEAD_DAYS", "120"))
-DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_TIMEOUT_SECONDS", "12"))
+DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_TIMEOUT_SECONDS", "8"))
+
 
 PROVINCES = [
     "eastern cape",
@@ -48,22 +49,25 @@ def safe_json_dumps(payload: Any) -> str:
 def parse_date(value: Any):
     if not value:
         return None
+
     text = str(value).strip()
     if not text:
         return None
 
-    patterns = [
+    formats = [
         "%Y-%m-%d",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S.%f",
         "%Y-%m-%dT%H:%M:%SZ",
         "%Y-%m-%dT%H:%M:%S.%fZ",
     ]
-    for fmt in patterns:
+
+    for fmt in formats:
         try:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
+
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
     except Exception:
@@ -80,6 +84,7 @@ def build_date_window():
 
 def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
     date_from, date_to = build_date_window()
+
     variants = [
         {"PageNumber": page_number, "PageSize": page_size, "dateFrom": date_from, "dateTo": date_to},
         {"PageNumber": page_number, "PageSize": page_size},
@@ -87,13 +92,26 @@ def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
         {"pageNumber": page_number, "pageSize": page_size},
     ]
 
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "TenderAI/1.0",
+    }
+
     last_error = None
+
     for params in variants:
         try:
-            response = requests.get(DEFAULT_ETENDERS_URL, params=params, timeout=DEFAULT_TIMEOUT)
+            response = requests.get(
+                DEFAULT_ETENDERS_URL,
+                params=params,
+                timeout=DEFAULT_TIMEOUT,
+                headers=headers,
+            )
+
             if response.status_code == 400:
                 last_error = f"400 Bad Request for params={params}"
                 continue
+
             response.raise_for_status()
             return response.json(), None
         except Exception as exc:
@@ -105,8 +123,10 @@ def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
 def extract_releases(payload: Any):
     if payload is None:
         return []
+
     if isinstance(payload, list):
         return [x for x in payload if isinstance(x, dict)]
+
     if not isinstance(payload, dict):
         return []
 
@@ -116,12 +136,13 @@ def extract_releases(payload: Any):
             return [x for x in value if isinstance(x, dict)]
 
     for key in ["data", "value", "result"]:
-        value = payload.get(key)
-        if isinstance(value, dict):
-            for child in ["releases", "results", "items"]:
-                nested = value.get(child)
-                if isinstance(nested, list):
-                    return [x for x in nested if isinstance(x, dict)]
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            for child_key in ["releases", "results", "items"]:
+                child = nested.get(child_key)
+                if isinstance(child, list):
+                    return [x for x in child if isinstance(x, dict)]
+
     return []
 
 
@@ -148,6 +169,7 @@ def infer_buyer_name(release: dict):
         roles = [str(r).lower() for r in party.get("roles", [])]
         if "buyer" in roles and party.get("name"):
             return str(party["name"])
+
     return None
 
 
@@ -155,14 +177,18 @@ def infer_document_url(release: dict):
     candidates = []
     tender = release.get("tender") or {}
 
-    for section in [tender.get("documents") or [], release.get("documents") or []]:
-        for doc in section:
-            if isinstance(doc, dict) and doc.get("url"):
-                candidates.append(doc["url"])
+    for doc in tender.get("documents", []) or []:
+        if isinstance(doc, dict) and doc.get("url"):
+            candidates.append(doc["url"])
+
+    for doc in release.get("documents", []) or []:
+        if isinstance(doc, dict) and doc.get("url"):
+            candidates.append(doc["url"])
 
     for item in candidates:
         if isinstance(item, str) and item.startswith("http"):
             return item
+
     return None
 
 
@@ -194,6 +220,7 @@ def infer_tender_type(release: dict):
 
 def infer_industry(release: dict):
     blob = text_blob(release)
+
     rules = [
         ("Construction", ["construction", "building", "civil works", "infrastructure", "contractor"]),
         ("ICT", ["ict", "software", "system", "it service", "digital", "technology", "network"]),
@@ -206,9 +233,11 @@ def infer_industry(release: dict):
         ("Tourism", ["tourism", "travel", "hospitality", "destination"]),
         ("Energy", ["energy", "electrical", "power", "solar"]),
     ]
+
     for label, words in rules:
         if any(word in blob for word in words):
             return label
+
     return None
 
 
@@ -218,9 +247,9 @@ def is_live_tender_release(release: dict):
     tags = [str(t).lower() for t in (release.get("tag") or [])]
     blob = text_blob(release)
 
-    if any(tag == "award" or tag == "awardupdate" for tag in tags):
+    if any(tag in {"award", "awardupdate"} for tag in tags):
         return False
-    if "award notice" in blob or "contract awarded" in blob or "awarded" in blob:
+    if "award notice" in blob or "contract awarded" in blob:
         return False
     if status in {"complete", "completed", "cancelled", "withdrawn", "terminated", "unsuccessful"}:
         return False
@@ -251,6 +280,7 @@ def normalize_release(release: dict):
     release_id = release.get("id")
     ocid = release.get("ocid")
     tender_uid = ocid or release_id
+
     if not tender_uid:
         return None
 
@@ -304,10 +334,14 @@ def upsert_tender(session, normalized: dict):
     return True
 
 
-def ingest_tenders(session, max_pages: int = 3, page_size: int = DEFAULT_PAGE_SIZE):
+def ingest_tenders(session, max_pages: int = 2, page_size: int = DEFAULT_PAGE_SIZE):
     run = IngestRun(status="running")
     session.add(run)
     session.flush()
+
+    existing_live_before = session.execute(
+        select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))
+    ).scalar_one() if False else None
 
     seen_this_run = set()
     tenders_seen = 0
@@ -316,8 +350,8 @@ def ingest_tenders(session, max_pages: int = 3, page_size: int = DEFAULT_PAGE_SI
     try:
         for page_number in range(1, max_pages + 1):
             run.pages_attempted += 1
-            payload, error = fetch_page(page_number=page_number, page_size=page_size)
 
+            payload, error = fetch_page(page_number=page_number, page_size=page_size)
             if error:
                 run.status = "partial_success" if run.pages_succeeded > 0 else "failed"
                 run.failure_message = f"Stopped on page {page_number}: {error}"
@@ -329,6 +363,7 @@ def ingest_tenders(session, max_pages: int = 3, page_size: int = DEFAULT_PAGE_SI
                 break
 
             valid_count = 0
+
             for release in releases:
                 normalized = normalize_release(release)
                 if not normalized:
@@ -349,10 +384,12 @@ def ingest_tenders(session, max_pages: int = 3, page_size: int = DEFAULT_PAGE_SI
                 run.status = "completed"
                 break
 
+        # Only mark stale tenders inactive if we actually saw valid tenders on this run.
         if seen_this_run:
             existing_live = session.execute(
                 select(TenderCache).where(TenderCache.is_live.is_(True))
             ).scalars().all()
+
             for tender in existing_live:
                 if tender.tender_uid not in seen_this_run and tender.closing_date and tender.closing_date < date.today():
                     tender.is_live = False
@@ -374,12 +411,16 @@ def ingest_tenders(session, max_pages: int = 3, page_size: int = DEFAULT_PAGE_SI
             "tenders_upserted": run.tenders_upserted,
             "failure_message": run.failure_message,
         }
+
     except Exception as exc:
         logger.exception("Ingest failed")
         run.status = "failed"
         run.failure_message = str(exc)
         run.finished_at = utcnow()
+        run.tenders_seen = tenders_seen
+        run.tenders_upserted = tenders_upserted
         session.flush()
+
         return {
             "run_id": run.id,
             "status": run.status,
