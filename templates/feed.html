@@ -3,11 +3,11 @@
 {% block content %}
 <section class="section-head">
     <h1>Current Tenders</h1>
-    <p class="muted">All results here come from the PostgreSQL cache, not from live page-render fetching.</p>
+    <p class="muted">These results are served from PostgreSQL cache only.</p>
 </section>
 
 <section class="glass-card">
-    <form method="get" action="{{ url_for('feed') }}" class="filter-grid">
+    <form method="get" action="{{ url_for('tenders') }}" class="filter-grid">
         <input type="text" name="q" placeholder="Search title, buyer, industry..." value="{{ filters.q }}">
         <input type="date" name="issued_from" value="{{ filters.issued_from }}">
 
@@ -85,7 +85,7 @@
     {% else %}
         <div class="empty-state">
             <h3>No tenders matched</h3>
-            <p>Adjust your filters or run a fresh ingest.</p>
+            <p>No cached tenders currently match your filters.</p>
         </div>
     {% endfor %}
 </div>
