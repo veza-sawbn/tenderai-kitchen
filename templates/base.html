@@ -12,14 +12,15 @@
     <div class="ambient ambient-purple"></div>
 
     <header class="site-header">
-      <div class="shell nav-row">
-        <a class="brand" href="{{ url_for('home') }}">TenderAI Beta</a>
-        <nav class="site-nav">
-          <a href="{{ url_for('home') }}">Home</a>
-          <a href="{{ url_for('profiles_page') }}">Profiles</a>
-          <a href="{{ url_for('tenders_page') }}">Tenders</a>
-        </nav>
-      </div>
+      <a class="brand" href="{{ url_for('home') }}">
+        <span>TenderAI Beta</span>
+      </a>
+
+      <nav class="site-nav">
+        <a href="{{ url_for('home') }}">Home</a>
+        <a href="{{ url_for('profiles_page') }}">Profiles</a>
+        <a href="{{ url_for('tenders_page') }}">Tenders</a>
+      </nav>
     </header>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -37,8 +38,8 @@
     </main>
 
     <div id="processing-overlay" class="processing-overlay" hidden>
-      <div class="processing-panel">
-        <div class="processing-orb"></div>
+      <div class="processing-panel card">
+        <div class="processing-orb" aria-hidden="true"></div>
         <h2 id="processing-title">Processing…</h2>
         <p id="processing-copy">Please wait while TenderAI processes your request.</p>
       </div>
