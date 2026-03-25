@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -70,8 +70,8 @@ class TenderCache(Base):
     tender_type: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     industry: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     status: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
-    issued_date: Mapped[Date | None] = mapped_column(Date, nullable=True, index=True)
-    closing_date: Mapped[Date | None] = mapped_column(Date, nullable=True, index=True)
+    issued_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    closing_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     document_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
