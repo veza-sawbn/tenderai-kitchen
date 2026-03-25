@@ -403,6 +403,10 @@ h3 {
   text-align: center;
 }
 
+.processing-overlay[hidden] {
+  display: none !important;
+}
+
 .processing-overlay {
   position: fixed;
   inset: 0;
@@ -418,39 +422,38 @@ h3 {
   width: min(520px, 100%);
   padding: 28px;
   text-align: center;
-  position: relative;
-  overflow: hidden;
-}
-
-.processing-panel::before {
-  content: "";
-  position: absolute;
-  inset: -2px;
+  background: linear-gradient(180deg, rgba(16, 22, 38, 0.94), rgba(10, 15, 28, 0.96));
+  border: 1px solid var(--line);
   border-radius: 26px;
-  padding: 2px;
-  background: conic-gradient(from 0deg, rgba(75,231,255,0.0), rgba(75,231,255,0.95), rgba(145,93,255,0.95), rgba(75,231,255,0.0));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  animation: neon-ring-spin 1.2s linear infinite;
+  box-shadow: 0 18px 60px rgba(3, 6, 12, 0.45);
 }
 
-.processing-panel h2 {
-  margin-top: 16px;
+.processing-ring-wrap {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  margin: 0 auto 18px;
 }
 
-.processing-panel p {
-  margin: 10px 0 0;
+.processing-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  padding: 4px;
+  background: conic-gradient(from 0deg, rgba(75,231,255,0.0), rgba(75,231,255,1), rgba(145,93,255,1), rgba(75,231,255,0.0));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 8px), #000 calc(100% - 7px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 8px), #000 calc(100% - 7px));
+  animation: neon-ring-spin 1.15s linear infinite;
+  box-shadow: 0 0 28px rgba(75, 231, 255, 0.22), 0 0 42px rgba(145, 93, 255, 0.18);
 }
 
-.processing-orb {
-  width: 24px;
-  height: 24px;
-  margin: 0 auto;
-  border-radius: 999px;
-  background: radial-gradient(circle, #ffffff 0%, var(--cyan) 28%, var(--purple) 100%);
-  box-shadow: 0 0 28px rgba(75, 231, 255, 0.5), 0 0 42px rgba(145, 93, 255, 0.34);
-  animation: processing-spin 1.2s linear infinite;
+.processing-core {
+  position: absolute;
+  inset: 22px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.95) 0%, rgba(75,231,255,0.82) 40%, rgba(145,93,255,0.4) 100%);
+  filter: blur(1px);
+  box-shadow: 0 0 20px rgba(75, 231, 255, 0.35);
 }
 
 .site-footer {
@@ -490,12 +493,6 @@ h3 {
   0% { transform: scale(0.95); opacity: 0.88; }
   50% { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(0.95); opacity: 0.88; }
-}
-
-@keyframes processing-spin {
-  0% { transform: rotate(0deg) scale(0.95); }
-  50% { transform: rotate(180deg) scale(1.15); }
-  100% { transform: rotate(360deg) scale(0.95); }
 }
 
 @keyframes neon-ring-spin {
