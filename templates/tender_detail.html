@@ -36,84 +36,20 @@
         </div>
     </div>
 
-    <div class="detail-actions">
-        {% if tender.source_url %}
+    {% if tender.source_url %}
+        <div class="detail-actions">
             <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source Link</a>
-        {% endif %}
-
-        {% if active_profile %}
-            <form action="{{ url_for('analyze_tender', tender_id=tender.id) }}" method="post" data-loading="true">
-                <button class="btn btn-primary" type="submit">Analyze Against Active Profile</button>
-            </form>
-        {% else %}
-            <a class="btn btn-primary" href="{{ url_for('profiles') }}">Upload Active Profile</a>
-        {% endif %}
-    </div>
+        </div>
+    {% endif %}
 </section>
 
 {% if alignment_score is not none %}
 <section class="glass-card">
-    <h2>Pre-Ranking</h2>
+    <h2>Profile Alignment</h2>
     <div class="score-panel glow-chip large">
-        <span>Alignment Score</span>
+        <span>Heuristic Score</span>
         <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
     </div>
 </section>
 {% endif %}
-
-{% if analysis %}
-<section class="glass-card">
-    <div class="section-head">
-        <h2>Analysis Result</h2>
-        <a class="btn btn-secondary" href="{{ url_for('download_proposal', job_id=analysis.id) }}">Download Proposal DOCX</a>
-    </div>
-
-    <p>{{ analysis.summary }}</p>
-
-    <div class="detail-grid">
-        <div>
-            <label>Strengths</label>
-            <ul>
-                {% for line in (analysis.strengths_text or '').split('\n') if line.strip() %}
-                    <li>{{ line }}</li>
-                {% endfor %}
-            </ul>
-        </div>
-        <div>
-            <label>Risks</label>
-            <ul>
-                {% for line in (analysis.risks_text or '').split('\n') if line.strip() %}
-                    <li>{{ line }}</li>
-                {% endfor %}
-            </ul>
-        </div>
-    </div>
-
-    <div>
-        <label>Recommendations</label>
-        <ul>
-            {% for line in (analysis.recommendations_text or '').split('\n') if line.strip() %}
-                <li>{{ line }}</li>
-            {% endfor %}
-        </ul>
-    </div>
-</section>
-{% endif %}
-
-<section class="glass-card">
-    <h2>Cached Tender Documents</h2>
-    <div class="stack-list">
-        {% for doc in documents %}
-            <div class="issue-card">
-                <div>
-                    <strong>{{ doc.filename or 'Document' }}</strong>
-                    <p class="muted">{{ doc.document_url }}</p>
-                    <small>Status: {{ doc.fetch_status }}</small>
-                </div>
-            </div>
-        {% else %}
-            <p class="muted">No cached tender document entries yet.</p>
-        {% endfor %}
-    </div>
-</section>
 {% endblock %}
