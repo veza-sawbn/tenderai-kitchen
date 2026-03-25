@@ -10,7 +10,7 @@
 <body>
     <div id="loadingOverlay" class="loading-overlay hidden">
         <div class="neon-ring"></div>
-        <div class="loading-text">Processing</div>
+        <div class="loading-text">Loading</div>
     </div>
 
     <header class="site-header">
@@ -18,9 +18,8 @@
             <a href="{{ url_for('home') }}" class="brand">TenderAI</a>
             <nav class="nav">
                 <a href="{{ url_for('home') }}">Home</a>
-                <a href="{{ url_for('feed') }}">Tenders</a>
+                <a href="{{ url_for('tenders') }}">Browse Tenders</a>
                 <a href="{{ url_for('profiles') }}">Profiles</a>
-                <a href="{{ url_for('admin_run_ingest') }}">Run Ingest</a>
             </nav>
         </div>
     </header>
@@ -58,7 +57,8 @@
 
     <script>
         function showLoading() {
-            document.getElementById('loadingOverlay').classList.remove('hidden');
+            const overlay = document.getElementById('loadingOverlay');
+            if (overlay) overlay.classList.remove('hidden');
         }
 
         document.addEventListener('DOMContentLoaded', function () {
