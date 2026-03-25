@@ -5,7 +5,7 @@
 <section class="section shell shell-wide">
   <div class="section-head">
     <h1>Supplier profiles</h1>
-    <p>Upload and manage supplier or CSD-style PDF profiles.</p>
+    <p>Upload, activate, and monitor supplier profile readiness issues that affect tender scoring.</p>
   </div>
 
   {% if active_profile %}
@@ -62,6 +62,24 @@
         <div class="profile-block">
           <h3>Capabilities</h3>
           <p>{{ profile.keywords | join(", ") or "Not clearly detected" }}</p>
+        </div>
+
+        <div class="profile-block">
+          <h3>Tracked issues</h3>
+          {% if profile.issues %}
+            <ul class="clean-list issue-list compact">
+              {% for issue in profile.issues[:5] %}
+                <li>
+                  <div class="issue-row">
+                    <span>{{ issue.issue_text }}</span>
+                    <span class="meta-pill {% if issue.status == 'fixed' %}active{% endif %}">{{ issue.status }}</span>
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p>No tracked issues yet. Run tender analysis to surface gaps.</p>
+          {% endif %}
         </div>
 
         <div class="card-actions">
