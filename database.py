@@ -1,7 +1,7 @@
 import os
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 
 
@@ -60,7 +60,22 @@ def get_session_factory():
 def init_db():
     from models import AnalysisJob, IngestRun, Profile, ProfileIssue, TenderCache, TenderDocumentCache  # noqa: F401
 
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    database_url = get_database_url()
+
+    # SQLite fallback
+    if database_url.startswith("sqlite"):
+        Base.metadata.create_all(bind=engine)
+        return
+
+    # PostgreSQL: protect create_all with an advisory lock so multiple
+    # gunicorn workers do not race each other on first startup.
+    with engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_lock(742159001)"))
+        try:
+            Base.metadata.create_all(bind=conn)
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(742159001)"))
 
 
 @contextmanager
