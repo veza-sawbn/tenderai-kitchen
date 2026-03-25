@@ -38,8 +38,11 @@
     </main>
 
     <div id="processing-overlay" class="processing-overlay" hidden>
-      <div class="processing-panel card">
-        <div class="processing-orb" aria-hidden="true"></div>
+      <div class="processing-panel">
+        <div class="processing-ring-wrap" aria-hidden="true">
+          <div class="processing-ring"></div>
+          <div class="processing-core"></div>
+        </div>
         <h2 id="processing-title">Processing…</h2>
         <p id="processing-copy">Please wait while TenderAI processes your request.</p>
       </div>
@@ -56,19 +59,34 @@
           const overlay = document.getElementById("processing-overlay");
           const titleEl = document.getElementById("processing-title");
           const copyEl = document.getElementById("processing-copy");
+
           if (titleEl && title) titleEl.textContent = title;
           if (copyEl && copy) copyEl.textContent = copy;
+
           if (overlay) {
             overlay.hidden = false;
+            overlay.style.display = "grid";
             document.body.classList.add("is-processing");
           }
         },
+
         hideProcessing() {
           const overlay = document.getElementById("processing-overlay");
-          if (overlay) overlay.hidden = true;
+          if (overlay) {
+            overlay.hidden = true;
+            overlay.style.display = "none";
+          }
           document.body.classList.remove("is-processing");
         }
       };
+
+      document.addEventListener("DOMContentLoaded", () => {
+        window.TenderAI.hideProcessing();
+      });
+
+      window.addEventListener("pageshow", () => {
+        window.TenderAI.hideProcessing();
+      });
     </script>
   </body>
 </html>
