@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="empty-state">
+    <h1>Not found</h1>
+    <p>The page you requested does not exist.</p>
+    <a class="btn btn-primary" href="{{ url_for('home') }}">Go Home</a>
+</div>
+{% endblock %}
