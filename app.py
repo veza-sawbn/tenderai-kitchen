@@ -285,3 +285,30 @@ def internal_error(_):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+@app.get("/api/admin/network-check")
+def network_check():
+    import requests
+
+    results = {}
+
+    targets = {
+        "google": "https://www.google.com",
+        "openai": "https://api.openai.com",
+        "etenders": "https://ocds-api.etenders.gov.za/api/OCDSReleases?pageNumber=1&pageSize=1",
+    }
+
+    for name, url in targets.items():
+        try:
+            r = requests.get(url, timeout=8)
+            results[name] = {
+                "ok": True,
+                "status_code": r.status_code,
+            }
+        except Exception as exc:
+            results[name] = {
+                "ok": False,
+                "error": str(exc),
+            }
+
+    return jsonify(results)
