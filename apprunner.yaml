@@ -4,27 +4,23 @@ runtime: python311
 build:
   commands:
     build:
-      - python3 -m compileall .
+      - python -m pip install --upgrade pip
+      - pip install -r requirements.txt
 
 run:
-  runtime-version: 3.11.14
-  pre-run:
-    - pip3 install --upgrade pip
-    - pip3 install -r requirements.txt
-  command: gunicorn --bind 0.0.0.0:8080 --workers 2 --threads 4 --timeout 180 app:app
+  runtime-version: "3.11"
+  command: gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers 2 --threads 4 --timeout 120
   network:
     port: 8080
+    env: PORT
   env:
-    - name: OPENAI_PARSER_MODEL
-      value: "gpt-4o-mini"
-    - name: PARSER_MODE
-      value: "auto"
-    - name: APP_VERSION
-      value: "20260320-beta-17"
+    - name: PYTHONUNBUFFERED
+      value: "1"
+    - name: INGEST_MAX_PAGES
+      value: "20"
+    - name: DATABASE_URL
+      value: "postgresql+psycopg://tenderai_admin:119988Sawbona@tenderai-db.c3kg8kwoutl7.eu-central-1.rds.amazonaws.com:5432/postgres"
     - name: FLASK_SECRET_KEY
-      value: "replace-this-with-a-real-secret"
-    - name: PORT
-      value: "8080"
-  secrets:
+      value: "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:tenderai/flask-secret-key"
     - name: OPENAI_API_KEY
       value-from: "arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ"
