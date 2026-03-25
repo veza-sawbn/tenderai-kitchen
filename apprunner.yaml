@@ -9,10 +9,9 @@ build:
 
 run:
   runtime-version: "3.11"
-  command: gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --workers 2 --threads 4 --timeout 120
+  command: gunicorn app:app --bind 0.0.0.0:8080 --workers 2 --threads 4 --timeout 120
   network:
     port: 8080
-    env: PORT
   env:
     - name: PYTHONUNBUFFERED
       value: "1"
@@ -21,6 +20,6 @@ run:
     - name: DATABASE_URL
       value: "postgresql+psycopg://tenderai_admin:119988Sawbona@tenderai-db.c3kg8kwoutl7.eu-central-1.rds.amazonaws.com:5432/postgres"
     - name: FLASK_SECRET_KEY
-      value: "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:tenderai/flask-secret-key"
+      value: "tenderai-prod-6f4c1d1f7bb348a68f11f5d24b9c5f8e"  
     - name: OPENAI_API_KEY
       value-from: "arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ"
