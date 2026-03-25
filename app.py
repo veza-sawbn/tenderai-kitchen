@@ -82,6 +82,12 @@ def inject_globals():
             "today": date.today(),
         }
 
+        return {
+            "active_profile": active_profile,
+            "latest_ingest": latest_ingest,
+            "today": date.today(),
+        }
+
 
 @app.template_filter("days_left")
 def days_left_filter(closing_date):
