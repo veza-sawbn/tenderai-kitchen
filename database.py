@@ -4,7 +4,6 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 
-
 Base = declarative_base()
 
 _engine = None
