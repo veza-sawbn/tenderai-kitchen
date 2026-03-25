@@ -40,11 +40,11 @@ except Exception:
     Pt = None
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260325-beta-stable-2")
+APP_VERSION = os.getenv("APP_VERSION", "20260325-beta-stable-3")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
-MAX_PAGES = int(os.getenv("MAX_PAGES", "12"))
+MAX_PAGES = int(os.getenv("MAX_PAGES", "5"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "100"))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or "sqlite:///tenderai.db"
 LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "/tmp/uploads")
@@ -440,6 +440,10 @@ def fetch_tender_page(page_number: int, page_size: int = PAGE_SIZE) -> list[dict
         params={"PageNumber": int(page_number), "PageSize": int(page_size)},
         timeout=REQUEST_TIMEOUT,
     )
+
+    if response.status_code == 400:
+        return []
+
     response.raise_for_status()
     return extract_releases(response.json())
 
@@ -449,7 +453,12 @@ def fetch_all_current_tenders(max_pages: int = MAX_PAGES, page_size: int = PAGE_
     all_items: list[dict[str, Any]] = []
 
     for page in range(1, max_pages + 1):
-        items = fetch_tender_page(page, page_size=page_size)
+        try:
+            items = fetch_tender_page(page, page_size=page_size)
+        except Exception:
+            traceback.print_exc()
+            break
+
         if not items:
             break
 
@@ -616,6 +625,7 @@ def upsert_profile_issues(profile_id: str, tender_id: str, issues: list[str]) ->
     cleaned = [issue.strip() for issue in issues if issue and issue.strip()]
     if not cleaned:
         return
+
     with db_session() as session:
         for issue_text in cleaned:
             issue_key = issue_text.lower()[:255]
@@ -734,6 +744,7 @@ def build_proposal_docx_bytes(title: str, company_name: str, proposal_text: str)
 
 
 def build_simple_proposal_text(company_name: str, tender: dict[str, Any], analysis: dict[str, Any]) -> str:
+    actions = analysis.get("improvement_actions") or ["[Insert risk mitigation actions]"]
     return f"""
 Cover Letter:
 
@@ -775,7 +786,7 @@ Team and Capacity:
 
 Risk and Mitigation:
 
-{chr(10).join('- ' + x for x in (analysis.get("improvement_actions") or ["[Insert risk mitigation actions]"]))}
+{chr(10).join('- ' + x for x in actions)}
 
 Closing Statement:
 
@@ -808,19 +819,19 @@ def run_analysis_job(job_id: str, tender_id: str, profile_id: str):
         analysis = assess_tender_against_profile(tender, profile_data, profile_id)
         upsert_profile_issues(profile_id, tender_id, analysis.get("risk_flags", []))
 
+        result = {
+            **tender,
+            "analysis": analysis,
+            "parsed_document": analysis.get("parsed_document", {}),
+            "proposal_required": analysis.get("parsed_document", {}).get("proposal_required"),
+        }
+
         with db_session() as session:
             job = session.get(AnalysisJob, job_id)
             if not job:
                 return
             job.status = "completed"
-            job.result_json = json.dumps(
-                {
-                    **tender,
-                    "analysis": analysis,
-                    "parsed_document": analysis.get("parsed_document", {}),
-                    "proposal_required": analysis.get("parsed_document", {}).get("proposal_required"),
-                }
-            )
+            job.result_json = json.dumps(result)
             session.commit()
 
     except Exception as exc:
@@ -1238,7 +1249,11 @@ def api_write_proposal_docx():
 
     try:
         filename = secure_filename(f"{profile_summary.get('company_name') or 'supplier'}_{tender_id}_proposal_draft.docx")
-        fileobj = build_proposal_docx_bytes(tender.get("title") or "Tender Proposal Draft", profile_summary.get("company_name") or "Supplier", proposal_text)
+        fileobj = build_proposal_docx_bytes(
+            tender.get("title") or "Tender Proposal Draft",
+            profile_summary.get("company_name") or "Supplier",
+            proposal_text,
+        )
         return send_file(
             fileobj,
             as_attachment=True,
