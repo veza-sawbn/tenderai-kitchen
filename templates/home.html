@@ -3,15 +3,15 @@
 {% block content %}
 <section class="hero-card">
     <div>
-        <div class="eyebrow">Cached Tender Intelligence</div>
-        <h1>Live tender browsing without live page-render API dependency.</h1>
+        <div class="eyebrow">Stabilized Mode</div>
+        <h1>Cached tender browsing, no live upstream fetch during page render.</h1>
         <p class="hero-copy">
-            TenderAI now reads current tenders from the PostgreSQL cache, ranks them against your active supplier profile,
-            and stays usable even when upstream services fail.
+            TenderAI is currently running in stabilization mode. Browsing pages use the PostgreSQL cache only.
+            If the cache is empty, the UI stays functional instead of hanging on the eTenders API.
         </p>
         <div class="hero-actions">
-            <a class="btn btn-primary" href="{{ url_for('feed') }}">Browse Tenders</a>
-            <a class="btn btn-secondary" href="{{ url_for('profiles') }}">Manage Profiles</a>
+            <a class="btn btn-primary" href="{{ url_for('tenders') }}">Browse Tenders</a>
+            <a class="btn btn-secondary" href="{{ url_for('profiles') }}">Profiles</a>
         </div>
     </div>
     <div class="stat-grid">
@@ -19,15 +19,11 @@
             <span>Total Live Tenders</span>
             <strong>{{ total_live }}</strong>
         </div>
-        <div class="stat-card">
-            <span>OpenAI Mode</span>
-            <strong>{{ "Enabled" if config.get("OPENAI_API_KEY") else "Fallback" }}</strong>
-        </div>
     </div>
 </section>
 
 <section class="section-head">
-    <h2>Featured Current Tenders</h2>
+    <h2>Featured Cached Tenders</h2>
 </section>
 
 <div class="card-grid">
@@ -71,8 +67,7 @@
     {% else %}
         <div class="empty-state">
             <h3>No cached tenders yet</h3>
-            <p>Run ingest to pull the current tender feed into PostgreSQL.</p>
-            <a class="btn btn-primary" href="{{ url_for('admin_run_ingest') }}" data-loading="true">Run Ingest</a>
+            <p>The app is stable, but the tender cache is empty. Use the admin ingest endpoint to fill it.</p>
         </div>
     {% endfor %}
 </div>
