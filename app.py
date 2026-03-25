@@ -65,6 +65,7 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
 
     return max(0.0, min(score, 100.0))
 
+
 @app.context_processor
 def inject_globals():
     with get_db_session() as session:
@@ -75,7 +76,6 @@ def inject_globals():
             .limit(1)
         ).scalars().first()
 
-        # FIX: Convert ORM objects to dicts while session is active
         active_profile_dict = None
         if active_profile:
             active_profile_dict = {
@@ -83,36 +83,12 @@ def inject_globals():
                 "is_active": active_profile.is_active,
                 "updated_at": active_profile.updated_at,
                 "industry": active_profile.industry,
-                "capabilities": active_profile.capabilities,
-                "locations": active_profile.locations,
+                "capabilities_text": active_profile.capabilities_text,
+                "locations_text": active_profile.locations_text,
             }
 
         latest_ingest_dict = None
         if latest_ingest:
-            latest_ingest_dict = {
-                "status": latest_ingest.status,
-                "started_at": latest_ingest.started_at,
-            }
-
-        return {
-            "active_profile": active_profile_dict,
-            "latest_ingest": latest_ingest_dict,
-            "today": date.today(),
-        }
-            active_profile_dict = {
-                "company_name": active_profile.company_name,
-                "is_active": active_profile.is_active,
-                "updated_at": active_profile.updated_at,
-                "industry": active_profile.industry,
-                "capabilities": active_profile.capabilities,
-                "locations": active_profile.locations,
-            }
-
-        latest_ingest_dict = None
-        if latest_ingest:
-            # Force load all attributes before session closes
-            _ = latest_ingest.status
-            _ = latest_ingest.started_at
             latest_ingest_dict = {
                 "status": latest_ingest.status,
                 "started_at": latest_ingest.started_at,
