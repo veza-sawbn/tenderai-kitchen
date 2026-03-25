@@ -7,9 +7,9 @@
     <h1>Tender intelligence</h1>
     <p>
       {% if active_profile %}
-        Most aligned tenders for <strong>{{ active_profile.company_name or active_profile.file_name }}</strong>, based on pre-inspection of profile industry and capability overlap.
+        Most aligned live tenders for <strong>{{ active_profile.company_name or active_profile.file_name }}</strong>, based on pre-inspection of profile industry and capability overlap.
       {% else %}
-        Browse live tenders. Activate a supplier profile to get aligned tender suggestions.
+        Browse all currently advertised live tenders. Activate a supplier profile to get aligned recommendations.
       {% endif %}
     </p>
   </div>
@@ -25,20 +25,46 @@
     </div>
   {% endif %}
 
+  <div class="insights-grid">
+    <div class="card insight-card">
+      <h3>Live tenders</h3>
+      <div class="score-number">{{ insights.live_count }}</div>
+    </div>
+    <div class="card insight-card">
+      <h3>Closing within 7 days</h3>
+      <div class="score-number">{{ insights.urgent_count }}</div>
+    </div>
+    <div class="card insight-card">
+      <h3>Top provinces</h3>
+      <ul class="clean-list">
+        {% for item, count in insights.top_provinces %}
+          <li>{{ item }} · {{ count }}</li>
+        {% else %}
+          <li>No province insight yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="card insight-card">
+      <h3>Top categories</h3>
+      <ul class="clean-list">
+        {% for item, count in insights.top_types %}
+          <li>{{ item }} · {{ count }}</li>
+        {% else %}
+          <li>No category insight yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
   <form method="get" action="{{ url_for('tenders_page') }}" class="card filter-card">
     {% if profile_id %}
       <input type="hidden" name="profile_id" value="{{ profile_id }}">
     {% endif %}
 
-    <div class="filters-grid">
+    <div class="filters-grid filters-grid-4">
       <div class="filter-field">
         <label for="date_from">Issued from</label>
         <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
-      </div>
-
-      <div class="filter-field">
-        <label for="date_to">Issued to</label>
-        <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
       </div>
 
       <div class="filter-field">
@@ -129,7 +155,7 @@
 
         <div class="card-foot">
           <span>{{ tender.main_procurement_category or "Tender" }}</span>
-          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid, profile_id=profile_id) }}">Open detail</a>
+          <a href="{{ url_for('tender_detail_page', tender_id=tender.release_id or tender.tender_id or tender.ocid, profile_id=profile_id) }}">Open detail</a>
         </div>
       </article>
     {% else %}
