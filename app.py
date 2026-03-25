@@ -5,34 +5,39 @@ import re
 import threading
 import traceback
 import uuid
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urljoin
 
 import requests
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt
 from flask import (
     Flask,
     abort,
-    flash,
     jsonify,
     make_response,
     redirect,
     render_template,
     request,
+    send_file,
     url_for,
+    flash,
 )
 from pypdf import PdfReader
-from sqlalchemy import Boolean, DateTime, String, Text, create_engine, select
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from werkzeug.utils import secure_filename
 
 
-APP_VERSION = os.getenv("APP_VERSION", "20260324-beta-19")
+APP_VERSION = os.getenv("APP_VERSION", "20260325-beta-20")
 ETENDERS_BASE_URL = os.getenv("ETENDERS_BASE_URL", "https://ocds-api.etenders.gov.za")
 ETENDERS_RELEASES_PATH = os.getenv("ETENDERS_RELEASES_PATH", "/api/OCDSReleases")
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "45"))
-MAX_TENDERS = int(os.getenv("MAX_TENDERS", "80"))
+MAX_TENDERS = int(os.getenv("MAX_TENDERS", "200"))
+MAX_PAGES = int(os.getenv("MAX_PAGES", "20"))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or "sqlite:///tenderai.db"
 LOCAL_UPLOAD_DIR = os.getenv("LOCAL_UPLOAD_DIR", "/tmp/uploads")
 MAX_CONTENT_LENGTH = 20 * 1024 * 1024
@@ -42,13 +47,6 @@ OPENAI_PARSER_MODEL = os.getenv("OPENAI_PARSER_MODEL", "gpt-4o-mini").strip()
 PARSER_MODE = os.getenv("PARSER_MODE", "auto").strip().lower()
 
 ALLOWED_PROFILE_EXTENSIONS = {"pdf"}
-
-print("=== TenderAI Boot Starting ===")
-print(f"APP_VERSION={APP_VERSION}")
-print(f"OPENAI_CONFIGURED={bool(OPENAI_API_KEY)}")
-print(f"DATABASE_URL_CONFIGURED={bool(DATABASE_URL)}")
-print(f"PARSER_MODE={PARSER_MODE}")
-print(f"OPENAI_PARSER_MODEL={OPENAI_PARSER_MODEL}")
 
 http = requests.Session()
 http.headers.update({"User-Agent": "TenderAI/1.0"})
@@ -149,9 +147,7 @@ class Profile(Base):
     parsed_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     summary_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
-    uploaded_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
-    )
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class AnalysisJob(Base):
@@ -163,9 +159,19 @@ class AnalysisJob(Base):
     status: Mapped[str] = mapped_column(String(32), default="queued")
     result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class ProfileIssue(Base):
+    __tablename__ = "profile_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(String(36), index=True)
+    issue_key: Mapped[str] = mapped_column(String(255), index=True)
+    issue_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    source_tender_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 engine = None
@@ -177,7 +183,6 @@ def configure_database() -> None:
     global engine, SessionLocal, DB_INIT_ERROR
     if engine is not None:
         return
-
     try:
         connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
         local_engine = create_engine(
@@ -191,12 +196,10 @@ def configure_database() -> None:
         engine = local_engine
         SessionLocal = local_session
         DB_INIT_ERROR = None
-        print("Database initialized successfully")
     except Exception as exc:
         DB_INIT_ERROR = str(exc)
         engine = None
         SessionLocal = None
-        print(f"Database initialization failed: {DB_INIT_ERROR}")
         traceback.print_exc()
 
 
@@ -297,6 +300,18 @@ def compute_days_left(value: Optional[str]) -> Optional[int]:
     return (dt.date() - today).days
 
 
+def sanitize_document_url(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    text = str(value).strip()
+    lowered = text.lower()
+    if lowered in {"url not found", "not found", "none", "null", "nan", "-"}:
+        return None
+    if not lowered.startswith("http"):
+        return None
+    return text
+
+
 def extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
@@ -312,6 +327,7 @@ def extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
 
 
 def download_pdf_text_from_url(url: str) -> str:
+    url = sanitize_document_url(url)
     if not url:
         return ""
     try:
@@ -378,22 +394,16 @@ def openai_responses_json_schema(
         }
 
     try:
-        response = http.post(
-            "https://api.openai.com/v1/responses",
-            headers=headers,
-            json=payload,
-            timeout=120,
-        )
+        response = http.post("https://api.openai.com/v1/responses", headers=headers, json=payload, timeout=120)
         request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
 
         if not response.ok:
-            excerpt = response.text[:1000]
             ai_mark_failure(
                 stage,
                 f"OpenAI request failed with status {response.status_code}",
                 status_code=response.status_code,
                 request_id=request_id,
-                response_excerpt=excerpt,
+                response_excerpt=response.text[:1000],
             )
             return None
 
@@ -451,10 +461,7 @@ def supplier_extraction_schema() -> dict[str, Any]:
                     "country": {"type": ["string", "null"]},
                     "province": {"type": ["string", "null"]},
                 },
-                "required": [
-                    "legal_name", "trading_name", "registration_number", "vat_number",
-                    "csd_number", "entity_type", "country", "province",
-                ],
+                "required": ["legal_name", "trading_name", "registration_number", "vat_number", "csd_number", "entity_type", "country", "province"],
             },
             "core_capabilities": {"type": "array", "items": {"type": "string"}},
             "services_offered": {"type": "array", "items": {"type": "string"}},
@@ -514,10 +521,7 @@ def tender_extraction_schema() -> dict[str, Any]:
                     "issued_date_text": {"type": ["string", "null"]},
                     "closing_date_text": {"type": ["string", "null"]},
                 },
-                "required": [
-                    "tender_number", "title", "buyer_name", "buyer_type",
-                    "province", "issued_date_text", "closing_date_text",
-                ],
+                "required": ["tender_number", "title", "buyer_name", "buyer_type", "province", "issued_date_text", "closing_date_text"],
             },
             "scope_summary": {"type": ["string", "null"]},
             "deliverables": {"type": "array", "items": {"type": "string"}},
@@ -526,10 +530,7 @@ def tender_extraction_schema() -> dict[str, Any]:
             "compliance_requirements": {"type": "array", "items": {"type": "string"}},
             "functionality_criteria": {"type": "array", "items": {"type": "string"}},
             "evaluation_criteria": {"type": "array", "items": {"type": "string"}},
-            "price_preference_system": {
-                "type": ["string", "null"],
-                "enum": ["80/20", "90/10", "other", None],
-            },
+            "price_preference_system": {"type": ["string", "null"], "enum": ["80/20", "90/10", "other", None]},
             "specific_goals_or_preference_cues": {"type": "array", "items": {"type": "string"}},
             "briefing": {
                 "type": "object",
@@ -572,10 +573,7 @@ def bid_assessment_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "properties": {
             "decision_summary": {"type": "string"},
-            "qualification_status": {
-                "type": "string",
-                "enum": ["likely_qualifies", "partially_qualifies", "unlikely_to_qualify"],
-            },
+            "qualification_status": {"type": "string", "enum": ["likely_qualifies", "partially_qualifies", "unlikely_to_qualify"]},
             "fit_score": {"type": "integer", "minimum": 0, "maximum": 100},
             "win_probability_band": {"type": "string", "enum": ["low", "moderate", "strong"]},
             "bid_recommendation": {"type": "string", "enum": ["go", "go_with_caution", "no_go"]},
@@ -599,30 +597,16 @@ def bid_assessment_schema() -> dict[str, Any]:
 
 
 def llm_extract_supplier_profile(text: str) -> Optional[dict[str, Any]]:
-    system_prompt = """
-You are TenderAI's supplier-profile interpreter for South African procurement.
-Extract only facts supported by the supplier profile.
-Do not guess.
-Use null or empty arrays when evidence is missing.
-Focus on capabilities, compliance cues, accreditations, geographic fit, and past performance signals.
-Return only valid JSON matching the schema.
-""".strip()
-
-    user_prompt = f"""
-Interpret this supplier profile for procurement intelligence.
-
-Context:
-- country: South Africa
-- objective: determine whether this supplier can qualify and compete for tenders
-
-Supplier profile text:
-{normalize_whitespace(text)[:30000]}
-""".strip()
-
     return openai_responses_json_schema(
         stage="supplier_extraction",
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        system_prompt=(
+            "You are TenderAI's supplier-profile interpreter for South African procurement. "
+            "Extract only facts supported by the supplier profile. Do not guess. "
+            "Use null or empty arrays when evidence is missing. "
+            "Focus on capabilities, compliance cues, accreditations, geographic fit, and past performance signals. "
+            "Return only valid JSON matching the schema."
+        ),
+        user_prompt=f"Interpret this supplier profile for procurement intelligence.\n\n{text[:30000]}",
         schema_name="supplier_profile_extraction",
         schema=supplier_extraction_schema(),
         temperature=0.1,
@@ -630,66 +614,63 @@ Supplier profile text:
 
 
 def llm_extract_tender_document(text: str) -> Optional[dict[str, Any]]:
-    system_prompt = """
-You are TenderAI's tender-document interpreter for South African procurement.
-Extract only facts supported by the tender document.
-Do not guess.
-Use null or empty arrays when evidence is missing.
-Focus on scope, required capabilities, mandatory documents, compliance obligations, functionality criteria, preference point cues, briefing obligations, special conditions, and whether a written proposal/technical response appears required.
-Return only valid JSON matching the schema.
-""".strip()
-
-    user_prompt = f"""
-Interpret this tender document for procurement intelligence.
-
-Context:
-- country: South Africa
-- objective: determine qualification requirements, evaluation criteria, compliance obligations, scope, proposal requirements, and bid risks
-
-Tender document text:
-{normalize_whitespace(text)[:30000]}
-""".strip()
-
     return openai_responses_json_schema(
         stage="tender_extraction",
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        system_prompt=(
+            "You are TenderAI's tender-document interpreter for South African procurement. "
+            "Extract only facts supported by the tender document. Do not guess. "
+            "Use null or empty arrays when evidence is missing. "
+            "Focus on scope, required capabilities, mandatory documents, compliance obligations, functionality criteria, "
+            "preference point cues, briefing obligations, special conditions, and whether a written proposal or technical response appears required. "
+            "Return only valid JSON matching the schema."
+        ),
+        user_prompt=f"Interpret this tender document for procurement intelligence.\n\n{text[:30000]}",
         schema_name="tender_document_extraction",
         schema=tender_extraction_schema(),
         temperature=0.1,
     )
 
 
-def llm_assess_bid(supplier_obj: dict[str, Any], tender_obj: dict[str, Any]) -> Optional[dict[str, Any]]:
-    system_prompt = """
-You are TenderAI's bid assessment engine for South African procurement.
-Compare the supplier profile against the tender requirements.
-Do not invent strengths or qualifications that are not supported by the extracted objects.
-Be conservative when evidence is incomplete.
-Return only valid JSON matching the schema.
-""".strip()
+def get_profile_issue_context(profile_id: str) -> dict[str, list[str]]:
+    with db_session() as session:
+        issues = session.scalars(select(ProfileIssue).where(ProfileIssue.profile_id == profile_id)).all()
+    fixed = [i.issue_text for i in issues if i.status == "fixed"]
+    pending = [i.issue_text for i in issues if i.status == "pending"]
+    return {"fixed": fixed, "pending": pending}
 
-    user_prompt = f"""
-Assess whether this supplier is a strong candidate for this tender.
 
-Supplier object:
-{json.dumps(supplier_obj, ensure_ascii=False)}
-
-Tender object:
-{json.dumps(tender_obj, ensure_ascii=False)}
-
-Required output:
-- determine likely qualification status
-- assign fit score
-- estimate win probability band
-- recommend go, go_with_caution, or no_go
-- explain key strengths, gaps, and improvements
-""".strip()
-
+def llm_assess_bid(
+    supplier_obj: dict[str, Any],
+    tender_obj: dict[str, Any],
+    issue_context: Optional[dict[str, list[str]]] = None,
+) -> Optional[dict[str, Any]]:
+    fixed = (issue_context or {}).get("fixed", [])
+    pending = (issue_context or {}).get("pending", [])
     return openai_responses_json_schema(
         stage="bid_assessment",
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        system_prompt=(
+            "You are TenderAI's bid assessment engine for South African procurement. "
+            "Compare the supplier profile against the tender requirements. "
+            "Do not invent strengths or qualifications that are not supported by the extracted objects. "
+            "Be conservative when evidence is incomplete. "
+            "If certain profile issues are marked FIXED, treat them as remedied for opportunity-planning purposes, "
+            "but still be transparent that verification may still be needed. "
+            "Pending issues remain active risks. "
+            "Return only valid JSON matching the schema."
+        ),
+        user_prompt=(
+            f"Assess whether this supplier is a strong candidate for this tender.\n\n"
+            f"Supplier object:\n{json.dumps(supplier_obj, ensure_ascii=False)}\n\n"
+            f"Tender object:\n{json.dumps(tender_obj, ensure_ascii=False)}\n\n"
+            f"Profile issues marked FIXED:\n{json.dumps(fixed, ensure_ascii=False)}\n\n"
+            f"Profile issues marked PENDING:\n{json.dumps(pending, ensure_ascii=False)}\n\n"
+            f"Required output:\n"
+            f"- determine likely qualification status\n"
+            f"- assign fit score\n"
+            f"- estimate win probability band\n"
+            f"- recommend go, go_with_caution, or no_go\n"
+            f"- explain key strengths, gaps, and improvements"
+        ),
         schema_name="bid_assessment",
         schema=bid_assessment_schema(),
         temperature=0.1,
@@ -701,43 +682,31 @@ def llm_write_proposal(
     tender_obj: dict[str, Any],
     assessment_obj: dict[str, Any],
 ) -> Optional[str]:
-    system_prompt = """
-You are TenderAI's proposal writer for South African tenders.
-Write a practical first-draft tender proposal in clear professional English.
-Use only facts supported by the supplier extraction, tender extraction, and bid assessment.
-Do not invent company credentials, project history, or compliance details.
-If certain evidence is missing, leave placeholders in square brackets.
-Structure the proposal so it can be edited and submitted by the supplier.
-""".strip()
-
-    user_prompt = f"""
-Write a tender proposal draft.
-
-Supplier extraction:
-{json.dumps(supplier_obj, ensure_ascii=False)}
-
-Tender extraction:
-{json.dumps(tender_obj, ensure_ascii=False)}
-
-Bid assessment:
-{json.dumps(assessment_obj, ensure_ascii=False)}
-
-Draft requirements:
-- executive cover/introduction
-- supplier understanding of the scope
-- approach and methodology
-- capability alignment
-- compliance and documentation checklist
-- project team / capacity section with placeholders where needed
-- risk and mitigation section
-- closing statement
-- add placeholders in square brackets for any missing information that the supplier must fill in
-""".strip()
-
     result = openai_responses_json_schema(
         stage="proposal_writer",
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        system_prompt=(
+            "You are TenderAI's proposal writer for South African tenders. "
+            "Write a practical first-draft tender proposal in clear professional English. "
+            "Use only facts supported by the supplier extraction, tender extraction, and bid assessment. "
+            "Do not invent company credentials, project history, or compliance details. "
+            "If certain evidence is missing, leave placeholders in square brackets. "
+            "Structure the proposal so it can be edited and submitted by the supplier."
+        ),
+        user_prompt=(
+            f"Write a tender proposal draft.\n\n"
+            f"Supplier extraction:\n{json.dumps(supplier_obj, ensure_ascii=False)}\n\n"
+            f"Tender extraction:\n{json.dumps(tender_obj, ensure_ascii=False)}\n\n"
+            f"Bid assessment:\n{json.dumps(assessment_obj, ensure_ascii=False)}\n\n"
+            f"Draft requirements:\n"
+            f"- executive cover/introduction\n"
+            f"- supplier understanding of the scope\n"
+            f"- approach and methodology\n"
+            f"- capability alignment\n"
+            f"- compliance and documentation checklist\n"
+            f"- project team / capacity section with placeholders where needed\n"
+            f"- risk and mitigation section\n"
+            f"- closing statement"
+        ),
         schema_name="",
         schema=None,
         temperature=0.2,
@@ -789,11 +758,7 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
     compliance = profile["compliance_signals"]
 
     identity["legal_name"] = first_match(
-        [
-            r"(?:legal\s*name|supplier\s*name|enterprise\s*name)\s*[:\-]\s*(.+)",
-            r"registered\s*name\s*[:\-]\s*(.+)",
-        ],
-        text,
+        [r"(?:legal\s*name|supplier\s*name|enterprise\s*name)\s*[:\-]\s*(.+)", r"registered\s*name\s*[:\-]\s*(.+)"], text
     )
     identity["trading_name"] = first_match([r"(?:trading\s*name|business\s*name)\s*[:\-]\s*(.+)"], text)
     identity["registration_number"] = first_match([r"(?:registration\s*(?:number|no\.?))\s*[:\-]\s*([A-Z0-9/\-]+)"], text)
@@ -801,10 +766,7 @@ def parse_profile_pdf_text_heuristic(text: str) -> dict[str, Any]:
     identity["csd_number"] = first_match([r"(?:csd\s*(?:number|no\.?))\s*[:\-]?\s*([A-Z0-9/\-]+)"], text)
     identity["entity_type"] = first_match([r"(?:supplier\s*type|entity\s*type)\s*[:\-]\s*(.+)"], text)
 
-    provinces = [
-        "Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo",
-        "Mpumalanga", "Northern Cape", "North West", "Western Cape",
-    ]
+    provinces = ["Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo", "Mpumalanga", "Northern Cape", "North West", "Western Cape"]
     found_provinces = [province for province in provinces if province.lower() in text_lower]
     identity["province"] = found_provinces[0] if found_provinces else None
     profile["geographic_coverage"] = found_provinces
@@ -852,12 +814,10 @@ def normalize_supplier_profile(profile: dict[str, Any]) -> dict[str, Any]:
     normalized["document_type"] = "supplier_profile"
     normalized.setdefault("supplier_identity", {})
     normalized.setdefault("compliance_signals", {})
-
     for key, value in build_empty_profile_schema()["supplier_identity"].items():
         normalized["supplier_identity"].setdefault(key, value)
     for key, value in build_empty_profile_schema()["compliance_signals"].items():
         normalized["compliance_signals"].setdefault(key, value)
-
     for key in [
         "core_capabilities", "services_offered", "sector_tags", "commodity_tags",
         "geographic_coverage", "certifications_and_accreditations",
@@ -866,10 +826,8 @@ def normalize_supplier_profile(profile: dict[str, Any]) -> dict[str, Any]:
     ]:
         if not isinstance(normalized.get(key), list):
             normalized[key] = []
-
     if not isinstance(normalized.get("confidence"), (int, float)):
         normalized["confidence"] = 0.5
-
     return normalized
 
 
@@ -924,59 +882,57 @@ def is_live_tender_release(item: dict[str, Any]) -> bool:
     tender = item.get("tender") or {}
     title = (tender.get("title") or "").strip().lower()
     description = (tender.get("description") or "").strip().lower()
-
     if not tender or not title:
         return False
-
     exclude_terms = [
         "award notice",
         "awarded bid",
         "contract award",
-        "appointment of service provider",
-        "bid awarded",
         "notice of award",
+        "appointment of service provider",
+        "successful bidder",
     ]
-    if any(term in title or term in description for term in exclude_terms):
-        return False
-
-    return True
+    return not any(term in title or term in description for term in exclude_terms)
 
 
-def fetch_tenders(
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    page_number: int = 1,
-    page_size: int = 20,
-) -> list[dict[str, Any]]:
+def fetch_tender_page(page_number: int, page_size: int = 100) -> list[dict[str, Any]]:
     url = urljoin(ETENDERS_BASE_URL, ETENDERS_RELEASES_PATH)
-    params = {"pageNumber": page_number, "pageSize": page_size}
-    if date_from:
-        params["dateFrom"] = date_from
-    if date_to:
-        params["dateTo"] = date_to
-
-    response = http.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    response = http.get(url, params={"pageNumber": page_number, "pageSize": page_size}, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
-    releases = extract_releases(response.json())
-    return [item for item in releases if is_live_tender_release(item)]
+    return extract_releases(response.json())
 
 
-def document_url(doc: dict[str, Any]) -> Optional[str]:
-    for key in ["url", "downloadUrl", "uri", "href"]:
-        if doc.get(key):
-            return doc[key]
-    return None
+def fetch_all_current_tenders(max_pages: int = MAX_PAGES, page_size: int = 100) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    all_items: list[dict[str, Any]] = []
+
+    for page in range(1, max_pages + 1):
+        try:
+            items = fetch_tender_page(page, page_size=page_size)
+        except Exception:
+            traceback.print_exc()
+            break
+
+        if not items:
+            break
+
+        live_items = [item for item in items if is_live_tender_release(item)]
+        for item in live_items:
+            key = str(item.get("id") or item.get("ocid") or uuid.uuid4())
+            if key not in seen:
+                seen.add(key)
+                all_items.append(item)
+
+    return all_items
 
 
 def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not documents:
         return None
-
     scored = []
     for doc in documents:
         title = " ".join(str(doc.get(key, "")) for key in ["title", "description", "documentType"]).lower()
-        url = (document_url(doc) or "").lower()
-
+        url = (sanitize_document_url(doc.get("url")) or sanitize_document_url(doc.get("downloadUrl")) or sanitize_document_url(doc.get("uri")) or sanitize_document_url(doc.get("href")) or "").lower()
         score = 0
         if "pdf" in url or url.endswith(".pdf"):
             score += 10
@@ -994,9 +950,7 @@ def pick_best_tender_document(documents: list[dict[str, Any]]) -> Optional[dict[
             score += 5
         if "advert" in title or "invitation" in title or "notice" in title:
             score -= 4
-
         scored.append((score, doc))
-
     scored.sort(key=lambda item: item[0], reverse=True)
     return scored[0][1]
 
@@ -1032,8 +986,8 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
         return {
             "document_type": "tender_document",
             "tender_identity": {
-                "tender_number": None, "title": None, "buyer_name": None,
-                "buyer_type": None, "province": None, "issued_date_text": None, "closing_date_text": None,
+                "tender_number": None, "title": None, "buyer_name": None, "buyer_type": None,
+                "province": None, "issued_date_text": None, "closing_date_text": None,
             },
             "scope_summary": None,
             "deliverables": [],
@@ -1045,12 +999,7 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
             "price_preference_system": None,
             "specific_goals_or_preference_cues": [],
             "briefing": {"briefing_required": None, "briefing_compulsory": None, "briefing_date_text": None},
-            "submission": {
-                "deadline_text": None,
-                "validity_period_text": None,
-                "proposal_required": None,
-                "proposal_format_cues": [],
-            },
+            "submission": {"deadline_text": None, "validity_period_text": None, "proposal_required": None, "proposal_format_cues": []},
             "special_conditions": [],
             "risk_flags": [],
             "confidence": 0.0,
@@ -1062,29 +1011,14 @@ def parse_tender_document_text_heuristic(text: str) -> dict[str, Any]:
     compliance = find_keyword_lines(text, ["tax compliance", "csd", "pin", "declaration", "cidb", "bbbee"], limit=10)
     evaluation = find_keyword_lines(text, ["pppfa", "80/20", "90/10", "specific goals", "functionality", "evaluation"], limit=10)
     proposal_cues = find_keyword_lines(text, ["proposal", "technical proposal", "methodology", "approach", "implementation plan"], limit=8)
-
-    scope = extract_section(
-        text,
-        ["scope of work", "specification", "specifications", "terms of reference", "deliverables", "project scope"],
-        ["special conditions", "evaluation", "briefing", "contact person", "closing date", "mandatory requirements"],
-    )[:10]
-
-    special = extract_section(
-        text,
-        ["special conditions", "conditions of tender", "conditions", "special condition"],
-        ["evaluation", "briefing", "scope of work", "specification", "contact person", "closing date"],
-    )[:8]
+    scope = extract_section(text, ["scope of work", "specification", "specifications", "terms of reference", "deliverables", "project scope"], ["special conditions", "evaluation", "briefing", "contact person", "closing date", "mandatory requirements"])[:10]
+    special = extract_section(text, ["special conditions", "conditions of tender", "conditions", "special condition"], ["evaluation", "briefing", "scope of work", "specification", "contact person", "closing date"])[:8]
 
     return {
         "document_type": "tender_document",
         "tender_identity": {
-            "tender_number": None,
-            "title": None,
-            "buyer_name": None,
-            "buyer_type": None,
-            "province": None,
-            "issued_date_text": None,
-            "closing_date_text": None,
+            "tender_number": None, "title": None, "buyer_name": None, "buyer_type": None,
+            "province": None, "issued_date_text": None, "closing_date_text": None,
         },
         "scope_summary": " ".join(scope[:3]) if scope else None,
         "deliverables": scope,
@@ -1135,23 +1069,11 @@ def normalize_tender_extraction(parsed: dict[str, Any], tender: Optional[dict[st
     if not isinstance(normalized.get("briefing"), dict):
         normalized["briefing"] = {"briefing_required": None, "briefing_compulsory": None, "briefing_date_text": None}
     if not isinstance(normalized.get("submission"), dict):
-        normalized["submission"] = {
-            "deadline_text": None,
-            "validity_period_text": None,
-            "proposal_required": None,
-            "proposal_format_cues": [],
-        }
+        normalized["submission"] = {"deadline_text": None, "validity_period_text": None, "proposal_required": None, "proposal_format_cues": []}
     if not isinstance(normalized["submission"].get("proposal_format_cues"), list):
         normalized["submission"]["proposal_format_cues"] = []
     if not isinstance(normalized.get("confidence"), (int, float)):
         normalized["confidence"] = 0.5
-
-    normalized["scoring_criteria"] = list(dict.fromkeys(normalized["functionality_criteria"] + normalized["evaluation_criteria"]))[:10]
-    normalized["mandatory_requirements"] = normalized["mandatory_documents"][:]
-    normalized["specifications_scope"] = normalized["deliverables"][:]
-    normalized["briefing_details"] = [normalized["briefing"].get("briefing_date_text")] if normalized["briefing"].get("briefing_date_text") else []
-    normalized["compliance_cues"] = normalized["compliance_requirements"][:]
-    normalized["evaluation_cues"] = normalized["evaluation_criteria"][:]
 
     return normalized
 
@@ -1182,10 +1104,7 @@ def prefit_score_from_profile(tender: dict[str, Any], profile_data: Optional[dic
     ]).lower()
 
     overlap = sorted({token for token in profile_terms if len(token) > 3 and token in tender_text})
-    score = min(25 + len(overlap) * 9, 95)
-
-    if not overlap:
-        score = 20
+    score = 20 if not overlap else min(25 + len(overlap) * 9, 95)
 
     if score >= 70:
         band = "High alignment"
@@ -1197,12 +1116,55 @@ def prefit_score_from_profile(tender: dict[str, Any], profile_data: Optional[dic
     return {"score": score, "band": band, "reasons": overlap[:6]}
 
 
-def score_fit(
-    tender: dict[str, Any],
-    parsed_doc: dict[str, Any],
-    profile_data: Optional[dict[str, Any]],
-    prompt: str,
-) -> dict[str, Any]:
+def upsert_profile_issues(profile_id: str, tender_id: str, issues: list[str]) -> None:
+    cleaned = [issue.strip() for issue in issues if issue and issue.strip()]
+    if not cleaned:
+        return
+
+    with db_session() as session:
+        for issue_text in cleaned:
+            issue_key = issue_text.lower()[:255]
+            existing = session.scalar(
+                select(ProfileIssue).where(
+                    ProfileIssue.profile_id == profile_id,
+                    ProfileIssue.issue_key == issue_key,
+                )
+            )
+            if existing:
+                existing.issue_text = issue_text
+                existing.source_tender_id = tender_id
+                existing.updated_at = datetime.now(timezone.utc)
+            else:
+                session.add(
+                    ProfileIssue(
+                        profile_id=profile_id,
+                        issue_key=issue_key,
+                        issue_text=issue_text,
+                        status="pending",
+                        source_tender_id=tender_id,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                )
+        session.commit()
+
+
+def get_profile_issues(profile_id: str) -> list[dict[str, Any]]:
+    with db_session() as session:
+        rows = session.scalars(select(ProfileIssue).where(ProfileIssue.profile_id == profile_id).order_by(ProfileIssue.updated_at.desc())).all()
+    return [
+        {
+            "id": row.id,
+            "issue_key": row.issue_key,
+            "issue_text": row.issue_text,
+            "status": row.status,
+            "source_tender_id": row.source_tender_id,
+            "updated_at": row.updated_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def score_fit(tender: dict[str, Any], parsed_doc: dict[str, Any], profile_data: Optional[dict[str, Any]], prompt: str, profile_id: Optional[str] = None) -> dict[str, Any]:
     if not profile_data:
         return {
             "fit_score": None,
@@ -1222,9 +1184,10 @@ def score_fit(
             "confidence": 0.0,
         }
 
+    issue_context = get_profile_issue_context(profile_id) if profile_id else {"fixed": [], "pending": []}
     assessment = None
     if PARSER_MODE in {"auto", "llm"} and OPENAI_API_KEY:
-        assessment = llm_assess_bid(profile_data, parsed_doc)
+        assessment = llm_assess_bid(profile_data, parsed_doc, issue_context=issue_context)
 
     if assessment:
         fit_score = assessment.get("fit_score")
@@ -1283,16 +1246,8 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
         documents = []
 
     issue_date = item.get("date") or tender.get("datePublished") or tender.get("publishedDate")
-    closing_date = (
-        tender.get("closingDate")
-        or ((tender.get("tenderPeriod") or {}).get("endDate") if isinstance(tender.get("tenderPeriod"), dict) else None)
-    )
-
-    category = (
-        tender.get("mainProcurementCategory")
-        or tender.get("procurementMethodDetails")
-        or tender.get("procurementMethod")
-    )
+    closing_date = tender.get("closingDate") or ((tender.get("tenderPeriod") or {}).get("endDate") if isinstance(tender.get("tenderPeriod"), dict) else None)
+    category = tender.get("mainProcurementCategory") or tender.get("procurementMethodDetails") or tender.get("procurementMethod")
 
     return {
         "ocid": item.get("ocid"),
@@ -1320,108 +1275,80 @@ def normalize_tender_release(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def filter_tenders(
-    tenders: list[dict[str, Any]],
-    province: str = "",
-    tender_type: str = "",
-    industry: str = "",
-    date_from: str = "",
-    date_to: str = "",
-) -> list[dict[str, Any]]:
+def filter_tenders(tenders: list[dict[str, Any]], province: str = "", tender_type: str = "", industry: str = "", date_from: str = "") -> list[dict[str, Any]]:
     province = province.strip().lower()
     tender_type = tender_type.strip().lower()
     industry = industry.strip().lower()
     date_from_dt = parse_iso_datetime(date_from) if date_from else None
-    date_to_dt = parse_iso_datetime(date_to) if date_to else None
 
     filtered = []
     for tender in tenders:
         if province:
-            province_text = (tender.get("province") or "").lower()
-            if province not in province_text:
+            if province not in (tender.get("province") or "").lower():
                 continue
-
         if tender_type:
-            type_text = " ".join([
-                str(tender.get("tender_type") or ""),
-                str(tender.get("main_procurement_category") or ""),
-            ]).lower()
+            type_text = " ".join([str(tender.get("tender_type") or ""), str(tender.get("main_procurement_category") or "")]).lower()
             if tender_type not in type_text:
                 continue
-
         if industry:
-            industry_text = " ".join([
-                str(tender.get("title") or ""),
-                str(tender.get("description") or ""),
-                str(tender.get("main_procurement_category") or ""),
-                str(tender.get("tender_type") or ""),
-            ]).lower()
+            industry_text = " ".join([str(tender.get("title") or ""), str(tender.get("description") or ""), str(tender.get("main_procurement_category") or ""), str(tender.get("tender_type") or "")]).lower()
             if industry not in industry_text:
                 continue
-
         issue_dt = parse_iso_datetime(tender.get("issue_date"))
         if date_from_dt and issue_dt and issue_dt.date() < date_from_dt.date():
             continue
-        if date_to_dt and issue_dt and issue_dt.date() > date_to_dt.date():
-            continue
-
         filtered.append(tender)
 
     return filtered
 
 
-def get_profile_record(profile_id: str) -> Optional[Profile]:
-    with db_session() as session:
-        return session.get(Profile, profile_id)
+def all_current_tender_records() -> list[dict[str, Any]]:
+    items = fetch_all_current_tenders(max_pages=MAX_PAGES, page_size=100)
+    return [normalize_tender_release(item) for item in items]
 
 
-def get_active_profile_record() -> Optional[Profile]:
-    with db_session() as session:
-        statement = select(Profile).where(Profile.is_active.is_(True)).order_by(Profile.uploaded_at.desc())
-        return session.scalar(statement)
+def find_tender_item(identifier: str) -> Optional[dict[str, Any]]:
+    items = fetch_all_current_tenders(max_pages=MAX_PAGES, page_size=100)
+    for item in items:
+        tender = normalize_tender_release(item)
+        if identifier in {str(tender.get("tender_id")), str(tender.get("ocid")), str(tender.get("release_id"))}:
+            return item
+    return None
 
 
-def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
-    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
-    if not record:
-        return None
-    return json_loads_safe(record.parsed_json, {})
-
-
-def get_profile_summary(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
-    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
-    if not record:
-        return None
+def compute_insights(tenders: list[dict[str, Any]]) -> dict[str, Any]:
+    province_counts = Counter((t.get("province") or "Unknown") for t in tenders)
+    type_counts = Counter((t.get("tender_type") or t.get("main_procurement_category") or "Unknown") for t in tenders)
+    urgent = sum(1 for t in tenders if t.get("days_left") is not None and t["days_left"] >= 0 and t["days_left"] <= 7)
+    live = sum(1 for t in tenders if t.get("days_left") is None or t["days_left"] >= 0)
     return {
-        "id": record.id,
-        "file_name": record.file_name,
-        "company_name": record.company_name,
-        "is_active": record.is_active,
-        "uploaded_at": record.uploaded_at.isoformat(),
-        **json_loads_safe(record.summary_json, {}),
+        "live_count": live,
+        "urgent_count": urgent,
+        "top_provinces": province_counts.most_common(4),
+        "top_types": type_counts.most_common(4),
     }
 
 
-def enrich_tender(item: dict[str, Any], profile: Optional[dict[str, Any]] = None, prompt: str = "") -> dict[str, Any]:
+def enrich_tender(item: dict[str, Any], profile: Optional[dict[str, Any]] = None, prompt: str = "", profile_id: Optional[str] = None) -> dict[str, Any]:
     tender = normalize_tender_release(item)
     best_doc = pick_best_tender_document(tender.get("documents", []))
-    best_doc_url = document_url(best_doc or {})
-    parsed_doc = normalize_tender_extraction(parse_tender_document_text_heuristic(""), tender=tender)
+    best_doc_url = None
+    if best_doc:
+        best_doc_url = sanitize_document_url(best_doc.get("url")) or sanitize_document_url(best_doc.get("downloadUrl")) or sanitize_document_url(best_doc.get("uri")) or sanitize_document_url(best_doc.get("href"))
 
+    parsed_doc = normalize_tender_extraction(parse_tender_document_text_heuristic(""), tender=tender)
     if best_doc_url:
         parsed_text = download_pdf_text_from_url(best_doc_url)
         if parsed_text:
             parsed_doc = parse_tender_document_text(parsed_text, tender=tender)
 
-    fit = score_fit(tender, parsed_doc, profile, prompt)
-    proposal_required = parsed_doc.get("submission", {}).get("proposal_required")
-
+    fit = score_fit(tender, parsed_doc, profile, prompt, profile_id=profile_id)
     tender["document_url"] = best_doc_url
     tender["document_title"] = (best_doc or {}).get("title")
     tender["parsed_document"] = parsed_doc
     tender["document_parser_confidence"] = parsed_doc.get("confidence")
     tender["analysis"] = fit
-    tender["proposal_required"] = proposal_required
+    tender["proposal_required"] = parsed_doc.get("submission", {}).get("proposal_required")
     return tender
 
 
@@ -1438,25 +1365,12 @@ def run_analysis_job(job_id: str, tender_id: str, profile_id: str, prompt: str =
         if not profile_data:
             raise RuntimeError("Selected profile not found")
 
-        today = datetime.now(timezone.utc).date()
-        releases = fetch_tenders(
-            date_from=(today - timedelta(days=60)).isoformat(),
-            date_to=(today + timedelta(days=90)).isoformat(),
-            page_number=1,
-            page_size=MAX_TENDERS,
-        )
-
-        matched = None
-        for item in releases:
-            tender = normalize_tender_release(item)
-            if str(tender.get("tender_id")) == tender_id or str(tender.get("ocid")) == tender_id:
-                matched = item
-                break
-
+        matched = find_tender_item(tender_id)
         if not matched:
             raise RuntimeError("Tender not found")
 
-        enriched = enrich_tender(matched, profile=profile_data, prompt=prompt)
+        enriched = enrich_tender(matched, profile=profile_data, prompt=prompt, profile_id=profile_id)
+        upsert_profile_issues(profile_id, tender_id, enriched.get("analysis", {}).get("risk_flags", []))
 
         with db_session() as session:
             job = session.get(AnalysisJob, job_id)
@@ -1477,22 +1391,88 @@ def run_analysis_job(job_id: str, tender_id: str, profile_id: str, prompt: str =
             session.commit()
 
 
+def get_profile_record(profile_id: str) -> Optional[Profile]:
+    with db_session() as session:
+        return session.get(Profile, profile_id)
+
+
+def get_active_profile_record() -> Optional[Profile]:
+    with db_session() as session:
+        return session.scalar(select(Profile).where(Profile.is_active.is_(True)).order_by(Profile.uploaded_at.desc()))
+
+
+def get_profile_data(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
+    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
+    if not record:
+        return None
+    return json_loads_safe(record.parsed_json, {})
+
+
+def get_profile_summary(profile_id: Optional[str]) -> Optional[dict[str, Any]]:
+    record = get_profile_record(profile_id) if profile_id else get_active_profile_record()
+    if not record:
+        return None
+    summary = json_loads_safe(record.summary_json, {})
+    summary.update(
+        {
+            "id": record.id,
+            "file_name": record.file_name,
+            "company_name": record.company_name,
+            "is_active": record.is_active,
+            "uploaded_at": record.uploaded_at.isoformat(),
+            "issues": get_profile_issues(record.id),
+        }
+    )
+    return summary
+
+
+def build_proposal_docx_bytes(title: str, company_name: str, proposal_text: str) -> io.BytesIO:
+    doc = Document()
+    styles = doc.styles
+    styles["Normal"].font.name = "Calibri"
+    styles["Normal"].font.size = Pt(11)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("TenderAI Proposal Draft")
+    run.bold = True
+    run.font.size = Pt(18)
+
+    p2 = doc.add_paragraph()
+    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p2.add_run(title or "Tender Proposal Draft").bold = True
+
+    p3 = doc.add_paragraph()
+    p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p3.add_run(company_name or "Supplier")
+
+    doc.add_paragraph("")
+
+    for block in proposal_text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        if len(block) < 90 and block.endswith(":"):
+            para = doc.add_paragraph()
+            run = para.add_run(block)
+            run.bold = True
+        else:
+            doc.add_paragraph(block)
+
+    bio = io.BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio
+
+
 @app.get("/")
 def home():
     tenders = []
     active_profile = get_profile_summary(None)
     try:
-        today = datetime.now(timezone.utc).date()
-        releases = fetch_tenders(
-            date_from=(today - timedelta(days=14)).isoformat(),
-            date_to=(today + timedelta(days=30)).isoformat(),
-            page_number=1,
-            page_size=12,
-        )
-        tenders = [normalize_tender_release(item) for item in releases[:8]]
+        tenders = all_current_tender_records()[:8]
     except Exception:
         traceback.print_exc()
-
     return render_template("home.html", tenders=tenders, active_profile=active_profile)
 
 
@@ -1501,25 +1481,24 @@ def profiles_page():
     profiles = []
     try:
         with db_session() as session:
-            records = session.scalars(
-                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
-            ).all()
+            records = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
     except Exception:
         traceback.print_exc()
         records = []
 
     for profile in records:
         summary = json_loads_safe(profile.summary_json, {})
-        profiles.append(
+        summary.update(
             {
                 "id": profile.id,
                 "file_name": profile.file_name,
                 "company_name": profile.company_name,
                 "is_active": profile.is_active,
                 "uploaded_at": profile.uploaded_at.isoformat(),
-                **summary,
+                "issues": get_profile_issues(profile.id),
             }
         )
+        profiles.append(summary)
 
     active_profile = next((p for p in profiles if p.get("is_active")), None)
     return render_template("profiles.html", profiles=profiles, active_profile=active_profile)
@@ -1532,10 +1511,7 @@ def tenders_page():
     province = request.args.get("province", "").strip()
     tender_type = request.args.get("tender_type", "").strip()
     industry = request.args.get("industry", "").strip()
-
-    today = datetime.now(timezone.utc).date()
-    date_from = request.args.get("date_from", (today - timedelta(days=14)).isoformat())
-    date_to = request.args.get("date_to", today.isoformat())
+    date_from = request.args.get("date_from", "")
 
     active_profile = get_profile_summary(profile_id)
     profile_data = get_profile_data(profile_id)
@@ -1546,31 +1522,20 @@ def tenders_page():
         return redirect(url_for("profiles_page"))
 
     try:
-        releases = fetch_tenders(
-            date_from=(today - timedelta(days=60)).isoformat(),
-            date_to=(today + timedelta(days=90)).isoformat(),
-            page_number=1,
-            page_size=MAX_TENDERS,
-        )
-        tenders = [normalize_tender_release(item) for item in releases]
+        tenders = all_current_tender_records()
         for tender in tenders:
             tender["prefit"] = prefit_score_from_profile(tender, profile_data)
-        tenders = filter_tenders(
-            tenders,
-            province=province,
-            tender_type=tender_type,
-            industry=industry,
-            date_from=date_from,
-            date_to=date_to,
-        )
+        tenders = filter_tenders(tenders, province=province, tender_type=tender_type, industry=industry, date_from=date_from)
         if profile_data:
             tenders.sort(key=lambda x: (x["prefit"]["score"] is None, -(x["prefit"]["score"] or 0), x.get("days_left") if x.get("days_left") is not None else 99999))
         else:
             tenders.sort(key=lambda x: (x.get("days_left") is None, x.get("days_left", 99999)))
+        insights = compute_insights(tenders)
         error_message = None
     except Exception as exc:
         traceback.print_exc()
         tenders = []
+        insights = {"live_count": 0, "urgent_count": 0, "top_provinces": [], "top_types": []}
         error_message = str(exc)
 
     return render_template(
@@ -1581,13 +1546,8 @@ def tenders_page():
         active_profile=active_profile,
         error_message=error_message,
         analysis_enabled=analysis_enabled,
-        filters={
-            "province": province,
-            "tender_type": tender_type,
-            "industry": industry,
-            "date_from": date_from,
-            "date_to": date_to,
-        },
+        insights=insights,
+        filters={"province": province, "tender_type": tender_type, "industry": industry, "date_from": date_from},
     )
 
 
@@ -1596,27 +1556,14 @@ def tender_detail_page(tender_id: str):
     profile_id = request.args.get("profile_id", "").strip() or None
     active_profile = get_profile_summary(profile_id)
 
-    today = datetime.now(timezone.utc).date()
-    releases = fetch_tenders(
-        date_from=(today - timedelta(days=60)).isoformat(),
-        date_to=(today + timedelta(days=90)).isoformat(),
-        page_number=1,
-        page_size=MAX_TENDERS,
-    )
-
-    matched = None
-    for item in releases:
-        tender = normalize_tender_release(item)
-        if str(tender.get("tender_id")) == tender_id or str(tender.get("ocid")) == tender_id:
-            matched = tender
-            break
-
+    matched = find_tender_item(tender_id)
     if not matched:
         abort(404)
 
+    tender = normalize_tender_release(matched)
     return render_template(
         "tender_detail.html",
-        tender=matched,
+        tender=tender,
         analysis_enabled=bool(active_profile),
         active_profile=active_profile,
         profile_id=profile_id,
@@ -1644,77 +1591,28 @@ def debug_ai_status():
     return render_json_response(payload)
 
 
-@app.get("/debug/test-openai")
-def debug_test_openai():
-    if not OPENAI_API_KEY:
-        return render_json_response({"error": "OPENAI_API_KEY not configured"}, 400)
-
-    result = openai_responses_json_schema(
-        stage="debug_ping",
-        system_prompt="Return valid JSON matching the schema.",
-        user_prompt="Confirm the OpenAI pipeline is working for TenderAI.",
-        schema_name="debug_ping",
-        schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "status": {"type": "string"},
-                "message": {"type": "string"},
-            },
-            "required": ["status", "message"],
-        },
-        temperature=0,
-    )
-
-    if not result:
-        return render_json_response(
-            {
-                "status": "failed",
-                "message": "OpenAI debug ping failed",
-                "telemetry": {
-                    "last_error": AI_TELEMETRY["last_error"],
-                    "last_status_code": AI_TELEMETRY["last_status_code"],
-                    "last_request_id": AI_TELEMETRY["last_request_id"],
-                },
-            },
-            500,
-        )
-
-    return render_json_response(
-        {
-            "status": "ok",
-            "result": result,
-            "telemetry": {
-                "last_status_code": AI_TELEMETRY["last_status_code"],
-                "last_request_id": AI_TELEMETRY["last_request_id"],
-                "last_success_at": AI_TELEMETRY["last_success_at"],
-            },
-        }
-    )
-
-
 @app.get("/api/profiles")
 def api_profiles_list():
     try:
         with db_session() as session:
-            profiles = session.scalars(
-                select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())
-            ).all()
+            profiles = session.scalars(select(Profile).order_by(Profile.is_active.desc(), Profile.uploaded_at.desc())).all()
     except Exception as exc:
         return render_json_response({"error": str(exc)}, 500)
 
     payload = []
     for profile in profiles:
-        payload.append(
+        summary = json_loads_safe(profile.summary_json, {})
+        summary.update(
             {
                 "id": profile.id,
                 "file_name": profile.file_name,
                 "is_active": profile.is_active,
                 "uploaded_at": profile.uploaded_at.isoformat(),
                 "company_name": profile.company_name,
-                **json_loads_safe(profile.summary_json, {}),
+                "issues": get_profile_issues(profile.id),
             }
         )
+        payload.append(summary)
     return render_json_response(payload)
 
 
@@ -1783,11 +1681,9 @@ def api_profiles_activate(profile_id: str):
             target = session.get(Profile, profile_id)
             if not target:
                 return render_json_response({"error": "Profile not found"}, 404)
-
             all_profiles = session.scalars(select(Profile)).all()
             for profile in all_profiles:
                 profile.is_active = profile.id == profile_id
-
             session.commit()
     except Exception as exc:
         traceback.print_exc()
@@ -1822,54 +1718,52 @@ def api_profiles_delete(profile_id: str):
     return render_json_response({"status": "deleted", "id": profile_id, "active_profile_id": next_active_id})
 
 
+@app.get("/api/profile-issues/<profile_id>")
+def api_profile_issues(profile_id: str):
+    if not get_profile_record(profile_id):
+        return render_json_response({"error": "Profile not found"}, 404)
+    return render_json_response(get_profile_issues(profile_id))
+
+
+@app.post("/api/profile-issues/<profile_id>/<int:issue_id>")
+def api_update_profile_issue(profile_id: str, issue_id: int):
+    payload = request.get_json(silent=True) or {}
+    new_status = (payload.get("status") or "").strip().lower()
+    if new_status not in {"fixed", "pending"}:
+        return render_json_response({"error": "status must be fixed or pending"}, 400)
+
+    try:
+        with db_session() as session:
+            issue = session.get(ProfileIssue, issue_id)
+            if not issue or issue.profile_id != profile_id:
+                return render_json_response({"error": "Issue not found"}, 404)
+            issue.status = new_status
+            issue.updated_at = datetime.now(timezone.utc)
+            session.commit()
+    except Exception as exc:
+        traceback.print_exc()
+        return render_json_response({"error": str(exc)}, 500)
+
+    return render_json_response({"status": "ok", "issue_id": issue_id, "new_status": new_status})
+
+
 @app.get("/api/tenders")
 def api_tenders():
-    today = datetime.now(timezone.utc).date()
-    date_from = request.args.get("date_from", (today - timedelta(days=14)).isoformat())
-    date_to = request.args.get("date_to", today.isoformat())
     province = request.args.get("province", "")
     tender_type = request.args.get("tender_type", "")
     industry = request.args.get("industry", "")
-
-    releases = fetch_tenders(
-        date_from=(today - timedelta(days=60)).isoformat(),
-        date_to=(today + timedelta(days=90)).isoformat(),
-        page_number=int(request.args.get("page_number", "1")),
-        page_size=int(request.args.get("page_size", "80")),
-    )
-    tenders = [normalize_tender_release(item) for item in releases]
-    tenders = filter_tenders(
-        tenders,
-        province=province,
-        tender_type=tender_type,
-        industry=industry,
-        date_from=date_from,
-        date_to=date_to,
-    )
+    date_from = request.args.get("date_from", "")
+    tenders = all_current_tender_records()
+    tenders = filter_tenders(tenders, province=province, tender_type=tender_type, industry=industry, date_from=date_from)
     return render_json_response(tenders)
 
 
 @app.get("/api/tender/<path:tender_id>")
 def api_tender_detail(tender_id: str):
-    today = datetime.now(timezone.utc).date()
-    releases = fetch_tenders(
-        date_from=(today - timedelta(days=60)).isoformat(),
-        date_to=(today + timedelta(days=90)).isoformat(),
-        page_number=1,
-        page_size=MAX_TENDERS,
-    )
-
-    matched = None
-    for item in releases:
-        tender = normalize_tender_release(item)
-        if str(tender.get("tender_id")) == tender_id or str(tender.get("ocid")) == tender_id:
-            matched = tender
-            break
-
+    matched = find_tender_item(tender_id)
     if not matched:
         return render_json_response({"error": "Tender not found"}, 404)
-
-    return render_json_response(matched)
+    return render_json_response(normalize_tender_release(matched))
 
 
 @app.post("/api/analyze-tender")
@@ -1883,7 +1777,6 @@ def api_analyze_tender():
         return render_json_response({"error": "tender_id is required"}, 400)
     if not profile_id:
         return render_json_response({"error": "profile_id is required"}, 400)
-
     if not get_profile_data(profile_id):
         return render_json_response({"error": "Selected profile not found or not active"}, 404)
 
@@ -1891,20 +1784,10 @@ def api_analyze_tender():
 
     try:
         with db_session() as session:
-            job = AnalysisJob(
-                id=job_id,
-                tender_id=tender_id,
-                profile_id=profile_id,
-                status="queued",
-            )
-            session.add(job)
+            session.add(AnalysisJob(id=job_id, tender_id=tender_id, profile_id=profile_id, status="queued"))
             session.commit()
 
-        thread = threading.Thread(
-            target=run_analysis_job,
-            args=(job_id, tender_id, profile_id, prompt),
-            daemon=True,
-        )
+        thread = threading.Thread(target=run_analysis_job, args=(job_id, tender_id, profile_id, prompt), daemon=True)
         thread.start()
 
         return render_json_response({"job_id": job_id, "status": "queued"}, 202)
@@ -1920,7 +1803,6 @@ def api_analyze_status(job_id: str):
             job = session.get(AnalysisJob, job_id)
             if not job:
                 return render_json_response({"error": "Job not found"}, 404)
-
             return render_json_response(
                 {
                     "job_id": job.id,
@@ -1934,8 +1816,8 @@ def api_analyze_status(job_id: str):
         return render_json_response({"error": str(exc)}, 500)
 
 
-@app.post("/api/write-proposal")
-def api_write_proposal():
+@app.post("/api/write-proposal-docx")
+def api_write_proposal_docx():
     payload = request.get_json(silent=True) or {}
     tender_id = (payload.get("tender_id") or "").strip()
     profile_id = (payload.get("profile_id") or "").strip()
@@ -1944,29 +1826,15 @@ def api_write_proposal():
         return render_json_response({"error": "tender_id and profile_id are required"}, 400)
 
     profile_data = get_profile_data(profile_id)
+    profile_summary = get_profile_summary(profile_id)
     if not profile_data:
         return render_json_response({"error": "Profile not found"}, 404)
 
-    today = datetime.now(timezone.utc).date()
-    releases = fetch_tenders(
-        date_from=(today - timedelta(days=60)).isoformat(),
-        date_to=(today + timedelta(days=90)).isoformat(),
-        page_number=1,
-        page_size=MAX_TENDERS,
-    )
-
-    matched = None
-    for item in releases:
-        tender = normalize_tender_release(item)
-        if str(tender.get("tender_id")) == tender_id or str(tender.get("ocid")) == tender_id:
-            matched = item
-            break
-
+    matched = find_tender_item(tender_id)
     if not matched:
         return render_json_response({"error": "Tender not found"}, 404)
 
-    enriched = enrich_tender(matched, profile=profile_data)
-
+    enriched = enrich_tender(matched, profile=profile_data, profile_id=profile_id)
     proposal_text = llm_write_proposal(
         profile_data,
         enriched.get("parsed_document", {}),
@@ -1976,17 +1844,18 @@ def api_write_proposal():
     if not proposal_text:
         return render_json_response({"error": "Proposal draft could not be generated"}, 500)
 
-    return render_json_response(
-        {
-            "tender_id": tender_id,
-            "profile_id": profile_id,
-            "proposal_text": proposal_text,
-            "proposal_required": enriched.get("proposal_required"),
-        }
+    company_name = (profile_summary or {}).get("company_name") or "Supplier"
+    filename = secure_filename(f"{company_name}_{tender_id}_proposal_draft.docx")
+    fileobj = build_proposal_docx_bytes(enriched.get("title") or "Tender Proposal Draft", company_name, proposal_text)
+
+    return send_file(
+        fileobj,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
-    print(f"Starting TenderAI on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
