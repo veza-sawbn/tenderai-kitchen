@@ -1,92 +1,79 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
+<head>
     <meta charset="utf-8">
-    <title>{{ title or "TenderAI Beta" }}</title>
+    <title>TenderAI</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#070b14">
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v={{ app_version }}">
-  </head>
-  <body>
-    <div class="ambient ambient-cyan"></div>
-    <div class="ambient ambient-purple"></div>
-
-    <header class="site-header">
-      <a class="brand" href="{{ url_for('home') }}">
-        <span>TenderAI Beta</span>
-      </a>
-
-      <nav class="site-nav">
-        <a href="{{ url_for('home') }}">Home</a>
-        <a href="{{ url_for('profiles_page') }}">Profiles</a>
-        <a href="{{ url_for('tenders_page') }}">Tenders</a>
-      </nav>
-    </header>
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <section class="flash-stack shell">
-          {% for category, message in messages %}
-            <div class="flash flash-{{ category }}">{{ message }}</div>
-          {% endfor %}
-        </section>
-      {% endif %}
-    {% endwith %}
-
-    <main>
-      {% block content %}{% endblock %}
-    </main>
-
-    <div id="processing-overlay" class="processing-overlay" hidden>
-      <div class="processing-panel">
-        <div class="processing-ring-wrap" aria-hidden="true">
-          <div class="processing-ring"></div>
-          <div class="processing-core"></div>
-        </div>
-        <h2 id="processing-title">Processing…</h2>
-        <p id="processing-copy">Please wait while TenderAI processes your request.</p>
-      </div>
+    <meta name="theme-color" content="#090b12">
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="neon-ring"></div>
+        <div class="loading-text">Processing</div>
     </div>
 
-    <footer class="site-footer shell">
-      <div>Build {{ app_version }}</div>
-      <div>TenderAI Beta</div>
-    </footer>
+    <header class="site-header">
+        <div class="container nav-wrap">
+            <a href="{{ url_for('home') }}" class="brand">TenderAI</a>
+            <nav class="nav">
+                <a href="{{ url_for('home') }}">Home</a>
+                <a href="{{ url_for('feed') }}">Tenders</a>
+                <a href="{{ url_for('profiles') }}">Profiles</a>
+                <a href="{{ url_for('admin_run_ingest') }}">Run Ingest</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container page-shell">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-stack">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <section class="top-strip">
+            <div class="top-card">
+                <span class="top-label">Active Profile</span>
+                <strong>{{ active_profile.company_name if active_profile else "None selected" }}</strong>
+            </div>
+            <div class="top-card">
+                <span class="top-label">Last Ingest</span>
+                <strong>
+                    {% if latest_ingest %}
+                        {{ latest_ingest.status }} · {{ latest_ingest.started_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% else %}
+                        Not run yet
+                    {% endif %}
+                </strong>
+            </div>
+        </section>
+
+        {% block content %}{% endblock %}
+    </main>
 
     <script>
-      window.TenderAI = {
-        showProcessing(title, copy) {
-          const overlay = document.getElementById("processing-overlay");
-          const titleEl = document.getElementById("processing-title");
-          const copyEl = document.getElementById("processing-copy");
-
-          if (titleEl && title) titleEl.textContent = title;
-          if (copyEl && copy) copyEl.textContent = copy;
-
-          if (overlay) {
-            overlay.hidden = false;
-            overlay.style.display = "grid";
-            document.body.classList.add("is-processing");
-          }
-        },
-
-        hideProcessing() {
-          const overlay = document.getElementById("processing-overlay");
-          if (overlay) {
-            overlay.hidden = true;
-            overlay.style.display = "none";
-          }
-          document.body.classList.remove("is-processing");
+        function showLoading() {
+            document.getElementById('loadingOverlay').classList.remove('hidden');
         }
-      };
 
-      document.addEventListener("DOMContentLoaded", () => {
-        window.TenderAI.hideProcessing();
-      });
+        document.addEventListener('DOMContentLoaded', function () {
+            document.querySelectorAll('form[data-loading="true"]').forEach(function (form) {
+                form.addEventListener('submit', function () {
+                    showLoading();
+                });
+            });
 
-      window.addEventListener("pageshow", () => {
-        window.TenderAI.hideProcessing();
-      });
+            document.querySelectorAll('a[data-loading="true"]').forEach(function (link) {
+                link.addEventListener('click', function () {
+                    showLoading();
+                });
+            });
+        });
     </script>
-  </body>
+</body>
 </html>
