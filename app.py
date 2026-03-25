@@ -1,7 +1,7 @@
 import os
 from datetime import date, datetime, timezone
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, render_template, request
 from sqlalchemy import desc, func, or_, select
 
 from database import get_db_session, init_db
@@ -22,8 +22,11 @@ init_db()
 
 def get_active_profile(session):
     return session.execute(
-        select(Profile).where(Profile.is_active.is_(True)).order_by(desc(Profile.updated_at))
-    ).scalar_one_or_none()
+        select(Profile)
+        .where(Profile.is_active.is_(True))
+        .order_by(desc(Profile.updated_at))
+        .limit(1)
+    ).scalars().first()
 
 
 def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float | None:
@@ -68,8 +71,11 @@ def inject_globals():
     with get_db_session() as session:
         active_profile = get_active_profile(session)
         latest_ingest = session.execute(
-            select(IngestRun).order_by(desc(IngestRun.started_at))
-        ).scalar_one_or_none()
+            select(IngestRun)
+            .order_by(desc(IngestRun.started_at), desc(IngestRun.id))
+            .limit(1)
+        ).scalars().first()
+
         return {
             "active_profile": active_profile,
             "latest_ingest": latest_ingest,
@@ -101,6 +107,7 @@ def health():
 def home():
     with get_db_session() as session:
         active_profile = get_active_profile(session)
+
         total_live = session.execute(
             select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))
         ).scalar_one()
