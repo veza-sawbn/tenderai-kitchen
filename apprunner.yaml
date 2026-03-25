@@ -9,7 +9,7 @@ build:
 
 run:
   runtime-version: "3.11"
-  command: gunicorn app:app --bind 0.0.0.0:8080 --workers 2 --threads 4 --timeout 120
+  command: python3 -m gunicorn app:app --bind 0.0.0.0:8080 --workers 2 --threads 4 --timeout 120
   network:
     port: 8080
   env:
