@@ -48,9 +48,8 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
     elif profile.industry and profile.industry.lower() in tender_blob:
         score += 15.0
 
-    capabilities = profile.capability_list()
     matches = 0
-    for capability in capabilities:
+    for capability in profile.capability_list():
         if capability.lower() in tender_blob:
             matches += 1
     score += min(matches * 6.0, 30.0)
@@ -268,7 +267,7 @@ def api_run_ingest():
     with get_db_session() as session:
         result = ingest_tenders(
             session=session,
-            max_pages=int(os.getenv("INGEST_MAX_PAGES", "3")),
+            max_pages=int(os.getenv("INGEST_MAX_PAGES", "2")),
         )
         return jsonify(result)
 
