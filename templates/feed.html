@@ -1,169 +1,92 @@
 {% extends "base.html" %}
-{% set title = "Tender intelligence · TenderAI Beta" %}
 
 {% block content %}
-<section class="section shell shell-wide">
-  <div class="section-head">
-    <h1>Tender intelligence</h1>
-    <p>
-      {% if active_profile %}
-        Most aligned live tenders for <strong>{{ active_profile.company_name or active_profile.file_name }}</strong>, based on pre-inspection of profile industry and capability overlap.
-      {% else %}
-        Browse all currently advertised live tenders. Activate a supplier profile to get aligned recommendations.
-      {% endif %}
-    </p>
-  </div>
-
-  {% if error_message %}
-    <div class="flash flash-error">{{ error_message }}</div>
-  {% endif %}
-
-  {% if not analysis_enabled %}
-    <div class="flash flash-error">
-      No active supplier profile is loaded. Tenders are listed without profile alignment.
-      <a class="text-link" href="{{ url_for('profiles_page') }}">Go to profiles</a>
-    </div>
-  {% endif %}
-
-  <div class="insights-grid">
-    <div class="card insight-card">
-      <h3>Live tenders</h3>
-      <div class="score-number">{{ insights.live_count }}</div>
-    </div>
-    <div class="card insight-card">
-      <h3>Closing within 7 days</h3>
-      <div class="score-number">{{ insights.urgent_count }}</div>
-    </div>
-    <div class="card insight-card">
-      <h3>Top provinces</h3>
-      <ul class="clean-list">
-        {% for item, count in insights.top_provinces %}
-          <li>{{ item }} · {{ count }}</li>
-        {% else %}
-          <li>No province insight yet.</li>
-        {% endfor %}
-      </ul>
-    </div>
-    <div class="card insight-card">
-      <h3>Top categories</h3>
-      <ul class="clean-list">
-        {% for item, count in insights.top_types %}
-          <li>{{ item }} · {{ count }}</li>
-        {% else %}
-          <li>No category insight yet.</li>
-        {% endfor %}
-      </ul>
-    </div>
-  </div>
-
-  <form method="get" action="{{ url_for('tenders_page') }}" class="card filter-card">
-    {% if profile_id %}
-      <input type="hidden" name="profile_id" value="{{ profile_id }}">
-    {% endif %}
-
-    <div class="filters-grid filters-grid-4">
-      <div class="filter-field">
-        <label for="date_from">Issued from</label>
-        <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
-      </div>
-
-      <div class="filter-field">
-        <label for="province">Province</label>
-        <input id="province" name="province" type="text" placeholder="e.g. Gauteng" value="{{ filters.province }}">
-      </div>
-
-      <div class="filter-field">
-        <label for="tender_type">Type / category</label>
-        <input id="tender_type" name="tender_type" type="text" placeholder="e.g. services, construction" value="{{ filters.tender_type }}">
-      </div>
-
-      <div class="filter-field">
-        <label for="industry">Industry</label>
-        <input id="industry" name="industry" type="text" placeholder="e.g. engineering, consulting" value="{{ filters.industry }}">
-      </div>
-    </div>
-
-    <div class="card-actions">
-      <button class="btn btn-primary" type="submit">Apply filters</button>
-      <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=profile_id) if profile_id else url_for('tenders_page') }}">Clear filters</a>
-    </div>
-  </form>
-
-  <div class="analysis-grid">
-    {% for tender in tenders %}
-      <article class="card intelligence-card">
-        <div class="card-top">
-          <div>
-            <div class="meta-row">
-              <span class="meta-pill">{{ tender.status or "Open" }}</span>
-              {% if tender.province %}<span class="meta-muted">{{ tender.province }}</span>{% endif %}
-              {% if tender.tender_type %}<span class="meta-muted">{{ tender.tender_type }}</span>{% endif %}
-            </div>
-            <h2>{{ tender.title or "Untitled tender" }}</h2>
-          </div>
-
-          {% if tender.prefit and tender.prefit.score is not none %}
-            <div class="fit-badge {% if tender.prefit.score >= 70 %}fit-high-fit{% elif tender.prefit.score >= 45 %}fit-medium-fit{% else %}fit-low-fit{% endif %}">
-              {{ tender.prefit.band }}
-            </div>
-          {% else %}
-            <div class="fit-badge fit-neutral">Browse</div>
-          {% endif %}
-        </div>
-
-        <p class="card-copy">
-          {{ tender.description[:260] ~ ("..." if tender.description and tender.description|length > 260 else "") }}
-        </p>
-
-        <div class="detail-stack">
-          <div>
-            <strong>Issued</strong>
-            <p>{{ tender.issue_date_display or "Not supplied" }}</p>
-          </div>
-
-          <div>
-            <strong>Closes</strong>
-            <p>
-              {{ tender.closing_date_display or "Not supplied" }}
-              {% if tender.days_left is not none %}
-                ·
-                {% if tender.days_left < 0 %}
-                  Closed
-                {% elif tender.days_left == 0 %}
-                  Closes today
-                {% elif tender.days_left == 1 %}
-                  1 day left
-                {% else %}
-                  {{ tender.days_left }} days left
-                {% endif %}
-              {% endif %}
-            </p>
-          </div>
-
-          <div>
-            <strong>Buyer</strong>
-            <p>{{ tender.buyer_name or "Unknown buyer" }}</p>
-          </div>
-
-          {% if tender.prefit and tender.prefit.reasons %}
-          <div>
-            <strong>Pre-inspection overlap</strong>
-            <p>{{ tender.prefit.reasons | join(", ") }}</p>
-          </div>
-          {% endif %}
-        </div>
-
-        <div class="card-foot">
-          <span>{{ tender.main_procurement_category or "Tender" }}</span>
-          <a href="{{ url_for('tender_detail_page', tender_id=tender.release_id or tender.tender_id or tender.ocid, profile_id=profile_id) }}">Open detail</a>
-        </div>
-      </article>
-    {% else %}
-      <div class="card empty-card">
-        <h2>No tenders matched</h2>
-        <p>Try adjusting the issue-date, province, type, or industry filters.</p>
-      </div>
-    {% endfor %}
-  </div>
+<section class="section-head">
+    <h1>Current Tenders</h1>
+    <p class="muted">All results here come from the PostgreSQL cache, not from live page-render fetching.</p>
 </section>
+
+<section class="glass-card">
+    <form method="get" action="{{ url_for('feed') }}" class="filter-grid">
+        <input type="text" name="q" placeholder="Search title, buyer, industry..." value="{{ filters.q }}">
+        <input type="date" name="issued_from" value="{{ filters.issued_from }}">
+
+        <select name="province">
+            <option value="">All Provinces</option>
+            {% for item in provinces %}
+                <option value="{{ item }}" {% if filters.province == item %}selected{% endif %}>{{ item }}</option>
+            {% endfor %}
+        </select>
+
+        <select name="tender_type">
+            <option value="">All Tender Types</option>
+            {% for item in tender_types %}
+                <option value="{{ item }}" {% if filters.tender_type == item %}selected{% endif %}>{{ item }}</option>
+            {% endfor %}
+        </select>
+
+        <select name="industry">
+            <option value="">All Industries</option>
+            {% for item in industries %}
+                <option value="{{ item }}" {% if filters.industry == item %}selected{% endif %}>{{ item }}</option>
+            {% endfor %}
+        </select>
+
+        <button class="btn btn-primary" type="submit">Apply Filters</button>
+    </form>
+</section>
+
+<div class="stack-list">
+    {% for item in ranked_tenders %}
+        {% set tender = item.tender %}
+        <article class="glass-card tender-row">
+            <div class="tender-main">
+                <div class="card-meta">
+                    <span>{{ tender.tender_type or "Tender" }}</span>
+                    <span>{{ tender.industry or "General" }}</span>
+                    <span>{{ tender.province or "Province n/a" }}</span>
+                </div>
+
+                <h3><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h3>
+                <p class="muted clamp">{{ tender.description or "No description available." }}</p>
+
+                <div class="tender-dates">
+                    <div>
+                        <label>Issued</label>
+                        <strong>{{ tender.issued_date or "n/a" }}</strong>
+                    </div>
+                    <div>
+                        <label>Closing</label>
+                        <strong>{{ tender.closing_date or "n/a" }}</strong>
+                    </div>
+                    <div>
+                        <label>Days Left</label>
+                        <strong>
+                            {% if tender.closing_date %}
+                                {{ tender.closing_date|days_left }}
+                            {% else %}
+                                n/a
+                            {% endif %}
+                        </strong>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tender-side">
+                {% if item.score is not none %}
+                    <div class="score-panel glow-chip">
+                        <span>Alignment</span>
+                        <strong>{{ "%.1f"|format(item.score) }}/100</strong>
+                    </div>
+                {% endif %}
+                <a class="btn btn-secondary" href="{{ url_for('tender_detail', tender_id=tender.id) }}">Open</a>
+            </div>
+        </article>
+    {% else %}
+        <div class="empty-state">
+            <h3>No tenders matched</h3>
+            <p>Adjust your filters or run a fresh ingest.</p>
+        </div>
+    {% endfor %}
+</div>
 {% endblock %}
