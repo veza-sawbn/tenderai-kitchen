@@ -1,89 +1,79 @@
 {% extends "base.html" %}
-{% set title = "TenderAI Beta" %}
 
 {% block content %}
-<section class="hero shell shell-wide">
-  <div class="hero-inner">
-    <div class="hero-orb" aria-hidden="true"></div>
-    <div class="eyebrow">South African Procurement Intelligence</div>
-
-    <h1>Ask TenderAI…</h1>
-
-    <p class="hero-copy">
-      Browse live tenders, pre-inspect profile alignment, parse tender documents, and generate proposal drafts where required.
-    </p>
-
-    <div class="prompt-actions" style="justify-content:center; margin-top:18px;">
-      <a class="btn btn-primary" href="{{ url_for('profiles_page') }}">Manage profiles</a>
-      {% if active_profile %}
-        <a class="btn btn-secondary" href="{{ url_for('tenders_page', profile_id=active_profile.id) }}">Browse tenders with active profile</a>
-      {% else %}
-        <a class="btn btn-secondary" href="{{ url_for('tenders_page') }}">Browse tenders</a>
-      {% endif %}
-    </div>
-  </div>
-</section>
-
-<section class="section shell shell-wide">
-  <div class="section-head">
-    <h2>Recently issued opportunities</h2>
-    {% if active_profile %}
-      <p>Active profile: <strong>{{ active_profile.company_name or active_profile.file_name }}</strong></p>
-    {% else %}
-      <p>No active profile yet.</p>
-    {% endif %}
-  </div>
-
-  <div class="tender-grid">
-    {% for tender in tenders %}
-      <article class="card tender-card">
-        <div class="meta-row">
-          <span class="meta-pill">{{ tender.status or "Open" }}</span>
-          {% if tender.province %}<span class="meta-muted">{{ tender.province }}</span>{% endif %}
-        </div>
-
-        <h3>{{ tender.title or "Untitled tender" }}</h3>
-
-        <p class="card-copy">
-          {{ tender.description[:220] ~ ("..." if tender.description and tender.description|length > 220 else "") }}
+<section class="hero-card">
+    <div>
+        <div class="eyebrow">Cached Tender Intelligence</div>
+        <h1>Live tender browsing without live page-render API dependency.</h1>
+        <p class="hero-copy">
+            TenderAI now reads current tenders from the PostgreSQL cache, ranks them against your active supplier profile,
+            and stays usable even when upstream services fail.
         </p>
-
-        <div class="detail-stack">
-          <div>
-            <strong>Issued</strong>
-            <p>{{ tender.issue_date_display or "Not supplied" }}</p>
-          </div>
-          <div>
-            <strong>Closes</strong>
-            <p>
-              {{ tender.closing_date_display or "Not supplied" }}
-              {% if tender.days_left is not none %}
-                ·
-                {% if tender.days_left < 0 %}
-                  Closed
-                {% elif tender.days_left == 0 %}
-                  Closes today
-                {% elif tender.days_left == 1 %}
-                  1 day left
-                {% else %}
-                  {{ tender.days_left }} days left
-                {% endif %}
-              {% endif %}
-            </p>
-          </div>
+        <div class="hero-actions">
+            <a class="btn btn-primary" href="{{ url_for('feed') }}">Browse Tenders</a>
+            <a class="btn btn-secondary" href="{{ url_for('profiles') }}">Manage Profiles</a>
         </div>
-
-        <div class="card-foot">
-          <span>{{ tender.buyer_name or "Unknown buyer" }}</span>
-          <a href="{{ url_for('tender_detail_page', tender_id=tender.tender_id or tender.ocid, profile_id=active_profile.id if active_profile else None) }}">View</a>
+    </div>
+    <div class="stat-grid">
+        <div class="stat-card">
+            <span>Total Live Tenders</span>
+            <strong>{{ total_live }}</strong>
         </div>
-      </article>
-    {% else %}
-      <div class="card empty-card">
-        <h3>No live opportunities loaded</h3>
-        <p>Check the API connection and the deployed build version.</p>
-      </div>
-    {% endfor %}
-  </div>
+        <div class="stat-card">
+            <span>OpenAI Mode</span>
+            <strong>{{ "Enabled" if config.get("OPENAI_API_KEY") else "Fallback" }}</strong>
+        </div>
+    </div>
 </section>
+
+<section class="section-head">
+    <h2>Featured Current Tenders</h2>
+</section>
+
+<div class="card-grid">
+    {% for item in featured %}
+        {% set tender = item.tender %}
+        <article class="glass-card">
+            <div class="card-meta">
+                <span>{{ tender.industry or "General" }}</span>
+                <span>{{ tender.province or "Province n/a" }}</span>
+            </div>
+            <h3><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h3>
+            <p class="muted clamp">{{ tender.description or "No description available." }}</p>
+
+            <div class="tender-dates">
+                <div>
+                    <label>Issued</label>
+                    <strong>{{ tender.issued_date or "n/a" }}</strong>
+                </div>
+                <div>
+                    <label>Closing</label>
+                    <strong>{{ tender.closing_date or "n/a" }}</strong>
+                </div>
+                <div>
+                    <label>Days Left</label>
+                    <strong>
+                        {% if tender.closing_date %}
+                            {{ tender.closing_date|days_left }}
+                        {% else %}
+                            n/a
+                        {% endif %}
+                    </strong>
+                </div>
+            </div>
+
+            {% if item.score is not none %}
+                <div class="score-chip glow-chip">
+                    Alignment {{ "%.1f"|format(item.score) }}/100
+                </div>
+            {% endif %}
+        </article>
+    {% else %}
+        <div class="empty-state">
+            <h3>No cached tenders yet</h3>
+            <p>Run ingest to pull the current tender feed into PostgreSQL.</p>
+            <a class="btn btn-primary" href="{{ url_for('admin_run_ingest') }}" data-loading="true">Run Ingest</a>
+        </div>
+    {% endfor %}
+</div>
 {% endblock %}
