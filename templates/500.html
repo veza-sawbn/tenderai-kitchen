@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="empty-state">
+    <h1>Internal server error</h1>
+    <p>The app hit an unexpected error. Check the latest application log for the traceback.</p>
+    <a class="btn btn-primary" href="{{ url_for('home') }}">Go Home</a>
+</div>
+{% endblock %}
