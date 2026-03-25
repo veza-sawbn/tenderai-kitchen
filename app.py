@@ -301,7 +301,11 @@ def is_live_tender_release(item: dict[str, Any]) -> bool:
 
 def fetch_tender_page(page_number: int, page_size: int = PAGE_SIZE) -> list[dict[str, Any]]:
     url = urljoin(ETENDERS_BASE_URL, ETENDERS_RELEASES_PATH)
-    response = http.get(url, params={"pageNumber": page_number, "pageSize": page_size}, timeout=REQUEST_TIMEOUT)
+    response = http.get(
+        url,
+        params={"PageNumber": page_number, "PageSize": page_size},
+        timeout=REQUEST_TIMEOUT,
+    )
     response.raise_for_status()
     return extract_releases(response.json())
 
