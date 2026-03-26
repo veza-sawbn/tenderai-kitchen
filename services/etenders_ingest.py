@@ -84,7 +84,6 @@ def build_date_window():
 def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
     date_from, date_to = build_date_window()
 
-    # Try the most likely combinations first.
     variants = [
         {"PageNumber": page_number, "PageSize": page_size, "dateFrom": date_from, "dateTo": date_to},
         {"PageNumber": page_number, "PageSize": page_size, "DateFrom": date_from, "DateTo": date_to},
@@ -205,7 +204,7 @@ def infer_tender_type(release: dict):
     tender = release.get("tender") or {}
     procurement_method = tender.get("procurementMethod")
     if procurement_method:
-        return str(procurementMethod).title()
+        return str(procurement_method).title()
 
     blob = text_blob(release)
     if "rfq" in blob:
@@ -307,7 +306,7 @@ def normalize_release(release: dict):
         "description": str(description) if description else None,
         "buyer_name": infer_buyer_name(release),
         "province": infer_province(release),
-        "tender_type": "Tender",
+        "tender_type": infer_tender_type(release),
         "industry": infer_industry(release),
         "status": str(tender.get("status") or release.get("status") or "active"),
         "issued_date": issued_date,
