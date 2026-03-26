@@ -255,7 +255,6 @@ def tender_to_view_model(t: TenderCache) -> dict:
         "source_url": t.source_url,
         "updated_at": t.updated_at,
         "is_live": t.is_live,
-        "external_id": t.external_id,
     }
 
 
