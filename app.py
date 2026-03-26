@@ -1,11 +1,14 @@
+import json
 import os
+import tempfile
 from datetime import date, datetime, timezone
 
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from pypdf import PdfReader
 from sqlalchemy import desc, func, or_, select
 
 from database import get_db_session, init_db
-from models import IngestRun, Profile, TenderCache
+from models import IngestRun, Profile, ProfileIssue, TenderCache
 from services.etenders_ingest import ingest_tenders
 
 
@@ -27,6 +30,120 @@ def get_active_profile(session):
         .order_by(desc(Profile.updated_at))
         .limit(1)
     ).scalars().first()
+
+
+def extract_pdf_text(file_storage) -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        file_storage.save(tmp.name)
+        reader = PdfReader(tmp.name)
+        pages = []
+        for page in reader.pages:
+            try:
+                pages.append(page.extract_text() or "")
+            except Exception:
+                continue
+    try:
+        os.unlink(tmp.name)
+    except Exception:
+        pass
+    return "\n".join(pages).strip()
+
+
+def normalize_keywords(text: str) -> list[str]:
+    if not text:
+        return []
+    raw = text.replace("\n", ",").replace(";", ",").replace("|", ",").split(",")
+    results = []
+    seen = set()
+    for item in raw:
+        cleaned = " ".join(item.strip().split())
+        if len(cleaned) >= 3:
+            lowered = cleaned.lower()
+            if lowered not in seen:
+                seen.add(lowered)
+                results.append(cleaned)
+    return results[:30]
+
+
+def heuristic_profile_parse(text: str, filename: str | None = None) -> dict:
+    lower = text.lower()
+
+    industry = None
+    industry_rules = [
+        ("Construction", ["construction", "contractor", "civil", "infrastructure", "building"]),
+        ("ICT", ["software", "ict", "technology", "systems", "digital", "it services"]),
+        ("Transport", ["transport", "shuttle", "fleet", "vehicle", "logistics"]),
+        ("Professional Services", ["consulting", "advisory", "facilitation", "professional services"]),
+        ("Tourism", ["tourism", "travel", "adventure", "hospitality", "destination"]),
+        ("Security", ["security services", "guarding", "surveillance"]),
+        ("Education", ["training provider", "education", "learnership", "skills development"]),
+    ]
+    for label, words in industry_rules:
+        if any(word in lower for word in words):
+            industry = label
+            break
+
+    capabilities = []
+    markers = ["services", "capabilities", "core services", "scope", "specialises in", "specializes in"]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    for line in lines:
+        ll = line.lower()
+        if any(marker in ll for marker in markers):
+            capabilities.extend(normalize_keywords(line))
+
+    if not capabilities:
+        capabilities = normalize_keywords(text[:3000])[:20]
+
+    locations = []
+    provinces = [
+        "Gauteng",
+        "KwaZulu-Natal",
+        "Western Cape",
+        "Eastern Cape",
+        "Free State",
+        "Mpumalanga",
+        "Limpopo",
+        "North West",
+        "Northern Cape",
+    ]
+    for province in provinces:
+        if province.lower() in lower:
+            locations.append(province)
+
+    company_name = None
+    if lines:
+        company_name = lines[0][:255]
+    if not company_name and filename:
+        company_name = os.path.splitext(filename)[0]
+
+    issues = []
+    if not capabilities:
+        issues.append({
+            "title": "Capabilities are not clearly structured",
+            "detail": "The profile does not clearly list service capabilities.",
+            "penalty_weight": 6,
+        })
+    if not locations:
+        issues.append({
+            "title": "Operating locations are unclear",
+            "detail": "The profile does not clearly indicate service provinces or locations.",
+            "penalty_weight": 4,
+        })
+    if not industry:
+        issues.append({
+            "title": "Industry focus is unclear",
+            "detail": "The profile does not strongly indicate the primary industry.",
+            "penalty_weight": 5,
+        })
+
+    return {
+        "company_name": company_name,
+        "industry": industry,
+        "capabilities": capabilities[:20],
+        "locations": list(dict.fromkeys(locations)),
+        "issues": issues,
+    }
 
 
 def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float | None:
@@ -57,6 +174,17 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
     if tender.province and any(tender.province.lower() == loc.lower() for loc in profile.location_list()):
         score += 8.0
 
+    pending_penalty = 0.0
+    fixed_bonus = 0.0
+    for issue in profile.issues:
+        if issue.status == "pending":
+            pending_penalty += float(issue.penalty_weight or 0)
+        elif issue.status == "fixed":
+            fixed_bonus += min(float(issue.penalty_weight or 0), 2.0)
+
+    score -= pending_penalty
+    score += fixed_bonus
+
     if tender.closing_date:
         days = (tender.closing_date - date.today()).days
         if days >= 0:
@@ -78,6 +206,7 @@ def inject_globals():
         active_profile_dict = None
         if active_profile:
             active_profile_dict = {
+                "id": active_profile.id,
                 "company_name": active_profile.company_name,
                 "is_active": active_profile.is_active,
                 "updated_at": active_profile.updated_at,
@@ -133,14 +262,14 @@ def home():
             select(TenderCache)
             .where(TenderCache.is_live.is_(True))
             .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
-            .limit(12)
+            .limit(24)
         ).scalars().all()
 
         ranked = [{"tender": t, "score": keyword_overlap_score(active_profile, t)} for t in tenders]
         if active_profile:
             ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
 
-        return render_template("home.html", total_live=total_live, featured=ranked)
+        return render_template("home.html", total_live=total_live, featured=ranked[:12])
 
 
 @app.get("/tenders")
@@ -250,6 +379,85 @@ def profiles():
         return render_template("profiles.html", profiles=profiles_list)
 
 
+@app.post("/profiles/upload")
+def upload_profile():
+    uploaded = request.files.get("profile_pdf")
+    if not uploaded or not uploaded.filename.lower().endswith(".pdf"):
+        flash("Please upload a PDF profile.", "error")
+        return redirect(url_for("profiles"))
+
+    try:
+        text = extract_pdf_text(uploaded)
+    except Exception as exc:
+        flash(f"Could not read PDF: {exc}", "error")
+        return redirect(url_for("profiles"))
+
+    parsed = heuristic_profile_parse(text, uploaded.filename)
+
+    with get_db_session() as session:
+        session.execute(Profile.__table__.update().values(is_active=False))
+
+        profile = Profile(
+            name=parsed.get("company_name") or os.path.splitext(uploaded.filename)[0],
+            company_name=parsed.get("company_name"),
+            original_filename=uploaded.filename,
+            industry=parsed.get("industry"),
+            capabilities_text=", ".join(parsed.get("capabilities") or []),
+            locations_text=", ".join(parsed.get("locations") or []),
+            extracted_text=text[:200000],
+            parsed_json=json.dumps(parsed, ensure_ascii=False),
+            is_active=True,
+        )
+        session.add(profile)
+        session.flush()
+
+        for issue in parsed.get("issues") or []:
+            session.add(
+                ProfileIssue(
+                    profile_id=profile.id,
+                    issue_type="profile_gap",
+                    title=issue.get("title") or "Profile issue",
+                    detail=issue.get("detail"),
+                    penalty_weight=float(issue.get("penalty_weight") or 5),
+                    status="pending",
+                )
+            )
+
+    flash("Profile uploaded and set as active.", "success")
+    return redirect(url_for("profiles"))
+
+
+@app.post("/profiles/<int:profile_id>/activate")
+def activate_profile(profile_id: int):
+    with get_db_session() as session:
+        profile = session.get(Profile, profile_id)
+        if not profile:
+            flash("Profile not found.", "error")
+            return redirect(url_for("profiles"))
+
+        session.execute(Profile.__table__.update().values(is_active=False))
+        profile.is_active = True
+        flash("Active profile updated.", "success")
+        return redirect(url_for("profiles"))
+
+
+@app.post("/profile-issues/<int:issue_id>/status")
+def update_issue_status(issue_id: int):
+    status = (request.form.get("status") or "").strip().lower()
+    if status not in {"pending", "fixed"}:
+        flash("Invalid issue status.", "error")
+        return redirect(url_for("profiles"))
+
+    with get_db_session() as session:
+        issue = session.get(ProfileIssue, issue_id)
+        if not issue:
+            flash("Issue not found.", "error")
+            return redirect(url_for("profiles"))
+        issue.status = status
+        flash("Issue status updated.", "success")
+        return redirect(url_for("profiles"))
+
+
 def admin_allowed():
     token = os.getenv("ADMIN_TOKEN", "").strip()
     if not token:
@@ -267,7 +475,7 @@ def api_run_ingest():
     with get_db_session() as session:
         result = ingest_tenders(
             session=session,
-            max_pages=int(os.getenv("INGEST_MAX_PAGES", "2")),
+            max_pages=int(os.getenv("INGEST_MAX_PAGES", "1")),
         )
         return jsonify(result)
 
@@ -285,30 +493,3 @@ def internal_error(_):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, debug=False)
-
-@app.get("/api/admin/network-check")
-def network_check():
-    import requests
-
-    results = {}
-
-    targets = {
-        "google": "https://www.google.com",
-        "openai": "https://api.openai.com",
-        "etenders": "https://ocds-api.etenders.gov.za/api/OCDSReleases?pageNumber=1&pageSize=1",
-    }
-
-    for name, url in targets.items():
-        try:
-            r = requests.get(url, timeout=8)
-            results[name] = {
-                "ok": True,
-                "status_code": r.status_code,
-            }
-        except Exception as exc:
-            results[name] = {
-                "ok": False,
-                "error": str(exc),
-            }
-
-    return jsonify(results)
