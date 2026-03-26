@@ -16,10 +16,11 @@ DEFAULT_ETENDERS_URL = os.getenv(
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
 )
 
-DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "100"))
-DEFAULT_LOOKBACK_DAYS = int(os.getenv("ETENDERS_LOOKBACK_DAYS", "45"))
-DEFAULT_LOOKAHEAD_DAYS = int(os.getenv("ETENDERS_LOOKAHEAD_DAYS", "120"))
-DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_TIMEOUT_SECONDS", "8"))
+DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "25"))
+DEFAULT_LOOKBACK_DAYS = int(os.getenv("ETENDERS_LOOKBACK_DAYS", "14"))
+DEFAULT_LOOKAHEAD_DAYS = int(os.getenv("ETENDERS_LOOKAHEAD_DAYS", "30"))
+DEFAULT_CONNECT_TIMEOUT = int(os.getenv("ETENDERS_CONNECT_TIMEOUT_SECONDS", "8"))
+DEFAULT_READ_TIMEOUT = int(os.getenv("ETENDERS_READ_TIMEOUT_SECONDS", "30"))
 
 PROVINCES = [
     "eastern cape",
@@ -86,11 +87,9 @@ def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
 
     variants = [
         {"PageNumber": page_number, "PageSize": page_size, "dateFrom": date_from, "dateTo": date_to},
-        {"PageNumber": page_number, "PageSize": page_size, "DateFrom": date_from, "DateTo": date_to},
         {"pageNumber": page_number, "pageSize": page_size, "dateFrom": date_from, "dateTo": date_to},
+        {"PageNumber": page_number, "PageSize": page_size, "DateFrom": date_from, "DateTo": date_to},
         {"pageNumber": page_number, "pageSize": page_size, "DateFrom": date_from, "DateTo": date_to},
-        {"PageNumber": page_number, "PageSize": page_size},
-        {"pageNumber": page_number, "pageSize": page_size},
     ]
 
     headers = {
@@ -105,7 +104,7 @@ def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
             response = requests.get(
                 DEFAULT_ETENDERS_URL,
                 params=params,
-                timeout=DEFAULT_TIMEOUT,
+                timeout=(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT),
                 headers=headers,
             )
 
