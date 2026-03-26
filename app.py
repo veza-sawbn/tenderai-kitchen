@@ -16,7 +16,7 @@ except ImportError:
 
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 import requests
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import desc, func, or_, select, text
 
 try:
     from pypdf import PdfReader
@@ -912,6 +912,31 @@ def api_parse_documents():
                 doc.error_message = str(exc)
                 errors.append({"tender_id": doc.tender_id, "error": str(exc)})
         return jsonify({"ok": True, "parsed": parsed_count, "skipped": skipped, "errors": errors})
+
+
+@app.route("/api/admin/document-cache-debug", methods=["GET"])
+def api_document_cache_debug():
+    if not admin_allowed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
+    limit = int(request.args.get("limit") or 20)
+    with get_db_session() as session:
+        rows = session.execute(text("""
+            SELECT id,
+                   tender_id,
+                   fetch_status,
+                   content_type,
+                   LENGTH(COALESCE(extracted_text, '')) AS text_len,
+                   CASE WHEN parsed_json IS NOT NULL THEN true ELSE false END AS has_parsed_json,
+                   error_message,
+                   updated_at
+            FROM tender_documents_cache
+            ORDER BY updated_at DESC NULLS LAST, id DESC
+            LIMIT :limit
+        """), {"limit": limit}).mappings().all()
+        return jsonify({
+            "ok": True,
+            "rows": [dict(r) for r in rows],
+        })
 
 
 @app.route("/api/admin/reparse-profile/<int:profile_id>", methods=["GET", "POST"])
