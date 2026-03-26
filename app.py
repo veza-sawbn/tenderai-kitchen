@@ -9,6 +9,7 @@ try:
 except ImportError:
     def load_dotenv(*args, **kwargs):
         return False
+        
 
 import requests
 from flask import (
@@ -37,6 +38,11 @@ from models import (
 from services.etenders_ingest import ingest_tenders
 
 load_dotenv()
+
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
 
 try:
     from openai import OpenAI
@@ -188,6 +194,8 @@ def extract_pdf_text(path: str) -> str:
 
 
 def extract_docx_text(path: str) -> str:
+    if DocxDocument is None:
+        return ""
     try:
         doc = DocxDocument(path)
         return "\n".join([p.text for p in doc.paragraphs if p.text]).strip()
@@ -1136,3 +1144,4 @@ def admin_document_cache_debug():
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8080)
+
