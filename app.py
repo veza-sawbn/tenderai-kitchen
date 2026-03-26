@@ -3,6 +3,7 @@ import os
 import tempfile
 from datetime import date, datetime, timezone
 
+from dotenv import load_dotenv
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 from pypdf import PdfReader
 from sqlalchemy import desc, func, or_, select
@@ -10,6 +11,8 @@ from sqlalchemy import desc, func, or_, select
 from database import get_db_session, init_db
 from models import IngestRun, Profile, ProfileIssue, TenderCache
 from services.etenders_ingest import ingest_tenders
+
+load_dotenv()
 
 
 def utcnow():
@@ -182,7 +185,6 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
         elif profile.industry and profile.industry.lower() in tender_blob:
             score += 15.0
     except Exception:
-        # gracefully skip if unexpected types
         pass
 
     # Capabilities overlap
@@ -215,7 +217,6 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
             if st == "pending":
                 pending_penalty += penalty
             elif st == "fixed":
-                # small bonus for fixed issues, cap per issue
                 fixed_bonus += min(penalty, 2.0)
     except Exception:
         pass
@@ -232,30 +233,12 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
     except Exception:
         pass
 
-    # Clamp
     try:
         score = max(0.0, min(score, 100.0))
     except Exception:
         score = 0.0
 
     return score
-
-
-def tender_to_view_model(t: TenderCache) -> dict:
-    return {
-        "id": t.id,
-        "title": t.title,
-        "description": t.description,
-        "industry": t.industry,
-        "tender_type": t.tender_type,
-        "province": t.province,
-        "buyer_name": t.buyer_name,
-        "issued_date": t.issued_date,
-        "closing_date": t.closing_date,
-        "source_url": t.source_url,
-        "updated_at": t.updated_at,
-        "is_live": t.is_live,
-    }
 
 
 @app.context_processor
@@ -330,15 +313,11 @@ def home():
             .limit(24)
         ).scalars().all()
 
-        view_ranked = []
-        for t in tenders:
-            vm = tender_to_view_model(t)
-            view_ranked.append({"tender": vm, "score": keyword_overlap_score(active_profile, t)})
-
+        ranked = [{"tender": t, "score": keyword_overlap_score(active_profile, t)} for t in tenders]
         if active_profile:
-            view_ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
+            ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
 
-        return render_template("home.html", total_live=total_live, featured=view_ranked[:12])
+        return render_template("home.html", total_live=total_live, featured=ranked[:12])
 
 
 @app.get("/tenders")
@@ -381,11 +360,7 @@ def tenders():
             query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)
         ).scalars().all()
 
-        ranked = []
-        for t in items:
-            vm = tender_to_view_model(t)
-            ranked.append({"tender": vm, "score": keyword_overlap_score(active_profile, t)})
-
+        ranked = [{"tender": t, "score": keyword_overlap_score(active_profile, t)} for t in items]
         if active_profile:
             ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
 
@@ -438,7 +413,7 @@ def tender_detail(tender_id: int):
 
         return render_template(
             "tender_detail.html",
-            tender=tender_to_view_model(tender),
+            tender=tender,
             alignment_score=score,
         )
 
