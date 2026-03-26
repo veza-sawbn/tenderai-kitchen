@@ -3,15 +3,15 @@
 {% block content %}
 <section class="hero-card">
     <div>
-        <div class="eyebrow">Stabilized Mode</div>
-        <h1>Cached tender browsing, no live upstream fetch during page render.</h1>
+        <div class="eyebrow">Cached Tender Intelligence</div>
+        <h1>Browse live cached tenders and rank them against your active supplier profile.</h1>
         <p class="hero-copy">
-            TenderAI is currently running in stabilization mode. Browsing pages use the PostgreSQL cache only.
-            If the cache is empty, the UI stays functional instead of hanging on the eTenders API.
+            TenderAI now uses PostgreSQL-backed cached tenders and lightweight profile-based ranking.
+            Browsing stays stable even if upstream services are slow.
         </p>
         <div class="hero-actions">
             <a class="btn btn-primary" href="{{ url_for('tenders') }}">Browse Tenders</a>
-            <a class="btn btn-secondary" href="{{ url_for('profiles') }}">Profiles</a>
+            <a class="btn btn-secondary" href="{{ url_for('profiles') }}">Manage Profiles</a>
         </div>
     </div>
     <div class="stat-grid">
@@ -23,7 +23,7 @@
 </section>
 
 <section class="section-head">
-    <h2>Featured Cached Tenders</h2>
+    <h2>Top Cached Opportunities</h2>
 </section>
 
 <div class="card-grid">
@@ -67,7 +67,7 @@
     {% else %}
         <div class="empty-state">
             <h3>No cached tenders yet</h3>
-            <p>The app is stable, but the tender cache is empty. Use the admin ingest endpoint to fill it.</p>
+            <p>Run the admin ingest route to fill the tender cache.</p>
         </div>
     {% endfor %}
 </div>
