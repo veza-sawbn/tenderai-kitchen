@@ -935,7 +935,10 @@ def upload_profile():
         flash(f"Could not read PDF: {exc}", "error")
         return redirect(url_for("profiles"))
 
+    openai_ready = get_openai_client() is not None
     parsed = parse_profile_text(text, uploaded.filename)
+    parse_mode = "openai" if openai_ready and (parsed.get("summary") or "").lower() != "heuristic profile parse fallback." else "heuristic"
+
     with get_db_session() as session:
         session.execute(Profile.__table__.update().values(is_active=False))
         profile = Profile(
@@ -946,13 +949,20 @@ def upload_profile():
             capabilities_text=", ".join(parsed.get("capabilities") or []),
             locations_text=", ".join(parsed.get("locations") or []),
             extracted_text=text[:200000],
-            parsed_json=json.dumps(parsed, ensure_ascii=False),
+            parsed_json=json.dumps({
+                **parsed,
+                "_parse_mode": parse_mode,
+                "_parsed_at": datetime.now(timezone.utc).isoformat(),
+            }, ensure_ascii=False),
             is_active=True,
         )
         session.add(profile)
         session.flush()
         refresh_profile_issues(session, profile.id, parsed.get("issues") or [])
-    flash("Profile uploaded and set as active.", "success")
+    if parse_mode == "openai":
+        flash("Profile uploaded, parsed with OpenAI, and set as active.", "success")
+    else:
+        flash("Profile uploaded and set as active. OpenAI was unavailable, so heuristic parsing was used.", "warning")
     return redirect(url_for("profiles"))
 
 
