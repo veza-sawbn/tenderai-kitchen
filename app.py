@@ -150,6 +150,21 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
     if not profile:
         return None
 
+    # fallback methods if the profile object is missing helpers
+    def get_capabilities():
+        try:
+            return profile.capability_list()
+        except Exception:
+            text = getattr(profile, "capabilities_text", "") or ""
+            return [c.strip() for c in text.split(",") if c.strip()]
+
+    def get_locations():
+        try:
+            return profile.location_list()
+        except Exception:
+            text = getattr(profile, "locations_text", "") or ""
+            return [c.strip() for c in text.split(",") if c.strip()]
+
     score = 30.0
     tender_blob = " ".join([
         tender.title or "",
@@ -160,37 +175,70 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
         tender.buyer_name or "",
     ]).lower()
 
-    if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
-        score += 25.0
-    elif profile.industry and profile.industry.lower() in tender_blob:
-        score += 15.0
+    try:
+        # Industry match
+        if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
+            score += 25.0
+        elif profile.industry and profile.industry.lower() in tender_blob:
+            score += 15.0
+    except Exception:
+        # gracefully skip if unexpected types
+        pass
 
+    # Capabilities overlap
     matches = 0
-    for capability in profile.capability_list():
-        if capability.lower() in tender_blob:
-            matches += 1
+    for capability in get_capabilities():
+        try:
+            if capability.lower() in tender_blob:
+                matches += 1
+        except Exception:
+            continue
     score += min(matches * 6.0, 30.0)
 
-    if tender.province and any(tender.province.lower() == loc.lower() for loc in profile.location_list()):
-        score += 8.0
+    # Location match
+    try:
+        for loc in get_locations():
+            if tender.province and tender.province.lower() == loc.lower():
+                score += 8.0
+                break
+    except Exception:
+        pass
 
+    # Pending/fixed issues penalties/bonuses
     pending_penalty = 0.0
     fixed_bonus = 0.0
-    for issue in profile.issues:
-        if issue.status == "pending":
-            pending_penalty += float(issue.penalty_weight or 0)
-        elif issue.status == "fixed":
-            fixed_bonus += min(float(issue.penalty_weight or 0), 2.0)
+    try:
+        issues = getattr(profile, "issues", []) or []
+        for issue in issues:
+            st = getattr(issue, "status", "").lower()
+            penalty = float(getattr(issue, "penalty_weight", 0) or 0)
+            if st == "pending":
+                pending_penalty += penalty
+            elif st == "fixed":
+                # small bonus for fixed issues, cap per issue
+                fixed_bonus += min(penalty, 2.0)
+    except Exception:
+        pass
 
     score -= pending_penalty
     score += fixed_bonus
 
-    if tender.closing_date:
-        days = (tender.closing_date - date.today()).days
-        if days >= 0:
-            score += min(days / 2.0, 7.0)
+    # Days left bonus
+    try:
+        if tender.closing_date:
+            days = (tender.closing_date - date.today()).days
+            if days >= 0:
+                score += min(days / 2.0, 7.0)
+    except Exception:
+        pass
 
-    return max(0.0, min(score, 100.0))
+    # Clamp
+    try:
+        score = max(0.0, min(score, 100.0))
+    except Exception:
+        score = 0.0
+
+    return score
 
 
 @app.context_processor
