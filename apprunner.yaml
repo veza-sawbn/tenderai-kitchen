@@ -32,4 +32,4 @@ run:
     - name: FLASK_SECRET_KEY
       value: "tenderai-prod-6f4c1d1f7bb348a68f11f5d24b9c5f8e"
     - name: ADMIN_TOKEN
-      value: "arn:aws:secretsmanager:eu-central-1:366339681462:secret:tenderai/prod/app-AAFPUZ"
+      value: "run-tender-ingest"
