@@ -6,6 +6,9 @@
         <span>{{ tender.tender_type or "Tender" }}</span>
         <span>{{ tender.industry or "General" }}</span>
         <span>{{ tender.province or "Province n/a" }}</span>
+        {% if fit_band %}
+            <span class="glow-chip">{{ fit_band|replace("_", " ")|title }}</span>
+        {% endif %}
     </div>
 
     <h1>{{ tender.title }}</h1>
@@ -36,20 +39,115 @@
         </div>
     </div>
 
-    {% if tender.source_url %}
-        <div class="detail-actions">
+    <div class="detail-actions">
+        {% if tender.source_url %}
             <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source Link</a>
+        {% endif %}
+
+        {% if tender.document_url %}
+            <a class="btn btn-secondary" href="{{ tender.document_url }}" target="_blank" rel="noopener">Tender Document</a>
+        {% endif %}
+
+        {% if can_analyze and analyze_action_url %}
+            <form method="post" action="{{ analyze_action_url }}" style="display:inline;">
+                <button type="submit" class="btn">Analyse This Tender</button>
+            </form>
+        {% endif %}
+    </div>
+</section>
+
+{% if alignment_score is not none or fit_summary or fit_reasons %}
+<section class="glass-card">
+    <h2>Why This Could Be a Good Fit</h2>
+
+    {% if alignment_score is not none %}
+        <div class="score-panel glow-chip large" style="margin-bottom: 1rem;">
+            <span>Prequalification Score</span>
+            <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
+        </div>
+    {% endif %}
+
+    {% if fit_summary %}
+        <p>{{ fit_summary }}</p>
+    {% else %}
+        <p class="muted">No fit summary is available yet.</p>
+    {% endif %}
+
+    {% if fit_reasons %}
+        <div class="detail-list">
+            <label>Fit Indicators</label>
+            <ul>
+                {% for reason in fit_reasons %}
+                    <li>{{ reason }}</li>
+                {% endfor %}
+            </ul>
         </div>
     {% endif %}
 </section>
+{% endif %}
 
-{% if alignment_score is not none %}
+{% if latest_analysis %}
 <section class="glass-card">
-    <h2>Profile Alignment</h2>
-    <div class="score-panel glow-chip large">
-        <span>Heuristic Score</span>
-        <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
-    </div>
+    <h2>Latest Tender Analysis</h2>
+
+    {% if latest_analysis.score is not none %}
+        <div class="score-panel glow-chip large" style="margin-bottom: 1rem;">
+            <span>Analysis Score</span>
+            <strong>{{ "%.1f"|format(latest_analysis.score) }}/100</strong>
+        </div>
+    {% endif %}
+
+    {% if latest_analysis.summary %}
+        <div class="detail-list">
+            <label>Summary</label>
+            <p>{{ latest_analysis.summary }}</p>
+        </div>
+    {% endif %}
+
+    {% if latest_analysis.recommendation %}
+        <div class="detail-list">
+            <label>Recommendation</label>
+            <p>{{ latest_analysis.recommendation }}</p>
+        </div>
+    {% endif %}
+
+    {% if latest_analysis.strengths %}
+        <div class="detail-list">
+            <label>Strengths</label>
+            <ul>
+                {% for item in latest_analysis.strengths %}
+                    <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
+    {% if latest_analysis.gaps %}
+        <div class="detail-list">
+            <label>Possible Gaps / Missing Requirements</label>
+            <ul>
+                {% for item in latest_analysis.gaps %}
+                    <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
+    {% if latest_analysis.risks %}
+        <div class="detail-list">
+            <label>Risk Flags</label>
+            <ul>
+                {% for item in latest_analysis.risks %}
+                    <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
+    {% if latest_analysis.updated_at %}
+        <p class="muted">Last analysed: {{ latest_analysis.updated_at }}</p>
+    {% endif %}
 </section>
 {% endif %}
+
 {% endblock %}
