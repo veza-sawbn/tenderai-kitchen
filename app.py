@@ -905,6 +905,107 @@ def tenders():
         )
 
 
+def build_prequal_summary(profile: Profile | None, tender: TenderCache, score: float | None) -> dict:
+    reasons = []
+    if not profile:
+        return {
+            "band": "unscored",
+            "summary": "Upload and activate a business profile to see why this tender fits and to analyze the document.",
+            "reasons": reasons,
+        }
+
+    tender_blob = " ".join([
+        tender.title or "",
+        tender.description or "",
+        tender.industry or "",
+        tender.tender_type or "",
+        tender.province or "",
+        tender.buyer_name or "",
+    ]).lower()
+
+    profile_industry = (profile.industry or "").strip()
+    if profile_industry and tender.industry and profile_industry.lower() == tender.industry.lower():
+        reasons.append(f"Industry aligns with your active profile ({profile_industry}).")
+    elif profile_industry and profile_industry.lower() in tender_blob:
+        reasons.append(f"The tender language strongly overlaps with your industry focus ({profile_industry}).")
+
+    caps = []
+    try:
+        caps = profile.capability_list()
+    except Exception:
+        caps = split_csvish(getattr(profile, "capabilities_text", ""))
+    cap_matches = []
+    for cap in caps:
+        c = (cap or "").strip()
+        if c and c.lower() in tender_blob:
+            cap_matches.append(c)
+    if cap_matches:
+        shown = cap_matches[:3]
+        reasons.append("Capability overlap found: " + ", ".join(shown) + ("." if len(cap_matches) <= 3 else ", and more."))
+
+    locations = []
+    try:
+        locations = profile.location_list()
+    except Exception:
+        locations = split_csvish(getattr(profile, "locations_text", ""))
+    if tender.province and any((loc or '').strip().lower() == tender.province.lower() for loc in locations):
+        reasons.append(f"Geographic fit: your active profile includes {tender.province}.")
+
+    if tender.closing_date:
+        days_left = (tender.closing_date - date.today()).days
+        if days_left >= 0:
+            if days_left <= 7:
+                reasons.append(f"The closing date is close ({days_left} day{'s' if days_left != 1 else ''} left), so quick action could matter.")
+            else:
+                reasons.append(f"There is still submission runway before closing ({days_left} days left).")
+
+    if not reasons and score is not None:
+        reasons.append("Basic metadata overlap suggests this opportunity may still deserve a closer look.")
+
+    band = "unscored"
+    if score is not None:
+        if score >= 75:
+            band = "high_potential"
+        elif score >= 50:
+            band = "possible_fit"
+        else:
+            band = "low_fit"
+
+    if band == "high_potential":
+        summary = "This tender looks like a strong early fit for your active profile based on industry, capability, location, and timing signals."
+    elif band == "possible_fit":
+        summary = "This tender shows useful overlap with your active profile, but it needs document-level analysis to confirm the real opportunity."
+    elif band == "low_fit":
+        summary = "This tender has limited metadata overlap with your active profile, though the full document may still reveal a niche opportunity."
+    else:
+        summary = "Activate a profile to generate an early fit view before running full analysis."
+
+    return {"band": band, "summary": summary, "reasons": reasons[:5]}
+
+
+@app.post("/tender/<int:tender_id>/analyze")
+def tender_detail_analyze(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            abort(404)
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            flash("Upload and activate a business profile before analyzing a tender.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        force = (request.form.get("force") or request.args.get("force") or "").strip().lower() in {"1", "true", "yes"}
+        job, result = execute_tender_analysis(session, tender, active_profile, force=force)
+        if result.get("ok"):
+            if result.get("cached"):
+                flash("Showing the latest saved tender analysis for this active profile.", "success")
+            else:
+                flash("Tender analyzed successfully against the active profile.", "success")
+        else:
+            flash(result.get("error") or "Tender analysis could not be completed.", "error")
+        return redirect(url_for("tender_detail", tender_id=tender_id))
+
+
 @app.get("/tender/<int:tender_id>")
 def tender_detail(tender_id: int):
     with get_db_session() as session:
@@ -913,7 +1014,21 @@ def tender_detail(tender_id: int):
             abort(404)
         active_profile = get_active_profile(session)
         score = keyword_overlap_score(active_profile, tender)
-        return render_template("tender_detail.html", tender=tender_to_view_model(tender), alignment_score=score)
+        prequal = build_prequal_summary(active_profile, tender, score)
+        latest_analysis = None
+        if active_profile:
+            latest_analysis = serialize_analysis_job(get_latest_analysis_job(session, tender.id, active_profile.id))
+        return render_template(
+            "tender_detail.html",
+            tender=tender_to_view_model(tender),
+            alignment_score=score,
+            fit_summary=prequal.get("summary"),
+            fit_reasons=prequal.get("reasons") or [],
+            fit_band=prequal.get("band"),
+            can_analyze=bool(active_profile),
+            analyze_action_url=url_for("tender_detail_analyze", tender_id=tender_id),
+            latest_analysis=latest_analysis,
+        )
 
 
 @app.get("/profiles")
