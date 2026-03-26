@@ -37,7 +37,7 @@ except Exception:
     OpenAI = None
 
 from database import get_db_session, init_db
-from models import IngestRun, Profile, ProfileIssue, TenderCache, TenderDocumentCache
+from models import AnalysisJob, IngestRun, Profile, ProfileIssue, TenderCache, TenderDocumentCache
 from services.etenders_ingest import ingest_tenders
 
 load_dotenv()
@@ -322,6 +322,172 @@ def parse_tender_document_text(metadata: dict, text: str) -> dict | None:
         return json.loads(response.output_text)
     except Exception:
         return None
+
+
+def analyze_tender_against_profile(profile: Profile, tender: TenderCache, parsed_tender: dict) -> dict | None:
+    client = get_openai_client()
+    if not client:
+        return None
+    profile_data = safe_json_loads(profile.parsed_json, {})
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["score", "summary", "strengths", "risks", "recommendations", "proposal_readiness"],
+        "properties": {
+            "score": {"type": "number"},
+            "summary": {"type": "string"},
+            "strengths": {"type": "array", "items": {"type": "string"}},
+            "risks": {"type": "array", "items": {"type": "string"}},
+            "recommendations": {"type": "array", "items": {"type": "string"}},
+            "proposal_readiness": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["missing_items", "compliance_status", "next_action"],
+                "properties": {
+                    "missing_items": {"type": "array", "items": {"type": "string"}},
+                    "compliance_status": {"type": "string"},
+                    "next_action": {"type": "string"}
+                }
+            }
+        }
+    }
+    try:
+        response = client.responses.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            input=[
+                {"role": "system", "content": "You are TenderAI, a procurement intelligence assistant. Compare the active supplier profile against the tender requirements conservatively. Do not invent capabilities or compliance evidence."},
+                {"role": "user", "content": "Active supplier profile JSON:\n" + json.dumps(profile_data, ensure_ascii=False) + "\n\nTender metadata:\n" + json.dumps({
+                    "title": tender.title,
+                    "buyer_name": tender.buyer_name,
+                    "province": tender.province,
+                    "industry": tender.industry,
+                    "tender_type": tender.tender_type,
+                    "closing_date": str(tender.closing_date) if tender.closing_date else ""
+                }, ensure_ascii=False) + "\n\nStructured tender intelligence JSON:\n" + json.dumps(parsed_tender, ensure_ascii=False)}
+            ],
+            text={"format": {"type": "json_schema", "name": "tender_profile_analysis", "strict": True, "schema": schema}},
+        )
+        return json.loads(response.output_text)
+    except Exception:
+        return None
+
+
+def serialize_analysis_job(job: AnalysisJob | None) -> dict | None:
+    if not job:
+        return None
+    return {
+        "id": job.id,
+        "profile_id": job.profile_id,
+        "tender_id": job.tender_id,
+        "status": job.status,
+        "score": job.score,
+        "summary": job.summary,
+        "strengths": split_csvish(job.strengths_text),
+        "risks": split_csvish(job.risks_text),
+        "recommendations": split_csvish(job.recommendations_text),
+        "proposal_draft_text": job.proposal_draft_text,
+        "raw_result_json": safe_json_loads(job.raw_result_json, {}),
+        "error_message": job.error_message,
+        "updated_at": job.updated_at,
+    }
+
+
+def get_latest_analysis_job(session, tender_id: int, profile_id: int) -> AnalysisJob | None:
+    return session.execute(
+        select(AnalysisJob)
+        .where(AnalysisJob.tender_id == tender_id, AnalysisJob.profile_id == profile_id)
+        .order_by(desc(AnalysisJob.updated_at), desc(AnalysisJob.id))
+    ).scalars().first()
+
+
+def get_or_fetch_document(session, tender: TenderCache) -> TenderDocumentCache | None:
+    doc = session.execute(
+        select(TenderDocumentCache)
+        .where(TenderDocumentCache.tender_id == tender.id)
+        .order_by(desc(TenderDocumentCache.updated_at), desc(TenderDocumentCache.id))
+    ).scalars().first()
+    if doc and ((doc.extracted_text or '').strip() or doc.binary_content or doc.fetch_status in ['fetched', 'parsed']):
+        return doc
+    result = fetch_and_store_tender_document(session, tender)
+    if result.get('ok'):
+        return result.get('document')
+    return session.execute(
+        select(TenderDocumentCache)
+        .where(TenderDocumentCache.tender_id == tender.id)
+        .order_by(desc(TenderDocumentCache.updated_at), desc(TenderDocumentCache.id))
+    ).scalars().first()
+
+
+def execute_tender_analysis(session, tender: TenderCache, profile: Profile, force: bool = False):
+    existing = get_latest_analysis_job(session, tender.id, profile.id)
+    if existing and existing.status == 'completed' and existing.raw_result_json and not force:
+        return existing, {'ok': True, 'cached': True}
+
+    job = existing or AnalysisJob(profile_id=profile.id, tender_id=tender.id, status='running')
+    if not existing:
+        session.add(job)
+        session.flush()
+    else:
+        job.status = 'running'
+        job.error_message = None
+
+    doc = get_or_fetch_document(session, tender)
+    if not doc:
+        job.status = 'failed'
+        job.error_message = 'No tender document could be fetched.'
+        return job, {'ok': False, 'error': job.error_message}
+    if not (doc.extracted_text or '').strip():
+        job.status = 'failed'
+        job.error_message = 'Tender document has no extracted text for analysis.'
+        return job, {'ok': False, 'error': job.error_message, 'document_id': doc.id}
+
+    parsed_tender = safe_json_loads(doc.parsed_json, {}) if doc.parsed_json and not force else None
+    if not parsed_tender:
+        parsed_tender = parse_tender_document_text(
+            {
+                'title': tender.title,
+                'buyer_name': tender.buyer_name,
+                'province': tender.province,
+                'closing_date': str(tender.closing_date) if tender.closing_date else '',
+                'source_url': tender.source_url,
+            },
+            doc.extracted_text,
+        )
+        if not parsed_tender:
+            doc.fetch_status = 'parse_failed'
+            doc.error_message = 'OpenAI could not structure the tender document.'
+            job.status = 'failed'
+            job.error_message = doc.error_message
+            return job, {'ok': False, 'error': job.error_message, 'document_id': doc.id}
+        doc.parsed_json = json.dumps(parsed_tender, ensure_ascii=False)
+        doc.fetch_status = 'parsed'
+        doc.error_message = None
+
+    analysis = analyze_tender_against_profile(profile, tender, parsed_tender)
+    if not analysis:
+        job.status = 'failed'
+        job.error_message = 'OpenAI could not compare the tender against the active profile.'
+        return job, {'ok': False, 'error': job.error_message, 'document_id': doc.id}
+
+    readiness = analysis.get('proposal_readiness') or {}
+    recommendations = list(analysis.get('recommendations') or [])
+    if readiness.get('next_action'):
+        recommendations.append(readiness.get('next_action'))
+
+    job.status = 'completed'
+    job.score = float(analysis.get('score') or 0)
+    job.summary = analysis.get('summary')
+    job.strengths_text = ', '.join(analysis.get('strengths') or [])
+    job.risks_text = ', '.join((analysis.get('risks') or []) + (readiness.get('missing_items') or []))
+    job.recommendations_text = ', '.join([x for x in recommendations if x])
+    job.raw_result_json = json.dumps({
+        'analysis': analysis,
+        'parsed_tender': parsed_tender,
+        'profile_id': profile.id,
+        'tender_id': tender.id,
+    }, ensure_ascii=False)
+    job.error_message = None
+    return job, {'ok': True, 'cached': False, 'document_id': doc.id}
 
 
 def split_csvish(value) -> list[str]:
@@ -880,97 +1046,94 @@ def api_openai_status():
     })
 
 
+@app.route("/api/tenders/prequalified", methods=["GET"])
+def api_prequalified_tenders():
+    limit = int(request.args.get("limit") or 30)
+    band = (request.args.get("band") or "").strip()
+    with get_db_session() as session:
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            return jsonify({"ok": False, "error": "active_profile_required"}), 400
+        tenders = session.execute(
+            select(TenderCache)
+            .where(TenderCache.is_live.is_(True))
+            .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
+            .limit(200)
+        ).scalars().all()
+        ranked = []
+        for tender in tenders:
+            score = keyword_overlap_score(active_profile, tender) or 0
+            band_value = "high_potential" if score >= 75 else ("possible_fit" if score >= 50 else "low_fit")
+            if band and band_value != band:
+                continue
+            ranked.append({
+                "tender": tender_to_view_model(tender),
+                "score": round(score, 1),
+                "band": band_value,
+            })
+        ranked.sort(key=lambda x: x["score"], reverse=True)
+        return jsonify({
+            "ok": True,
+            "active_profile": serialize_profile(active_profile),
+            "count": min(limit, len(ranked)),
+            "ranked_tenders": ranked[:limit],
+        })
+
+
+@app.route("/api/tenders/<int:tender_id>/analyze", methods=["GET", "POST"])
+def api_analyze_tender(tender_id: int):
+    force = (request.args.get("force") or request.form.get("force") or "").strip().lower() in {"1", "true", "yes"}
+    with get_db_session() as session:
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            return jsonify({"ok": False, "error": "active_profile_required"}), 400
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            return jsonify({"ok": False, "error": "tender_not_found"}), 404
+        if get_openai_client() is None:
+            return jsonify({"ok": False, "error": "openai_not_configured"}), 500
+        job, meta = execute_tender_analysis(session, tender, active_profile, force=force)
+        status = 200 if meta.get("ok") else 500
+        return jsonify({
+            "ok": bool(meta.get("ok")),
+            "cached": bool(meta.get("cached")),
+            "meta": meta,
+            "active_profile": serialize_profile(active_profile),
+            "tender": tender_to_view_model(tender),
+            "analysis": serialize_analysis_job(job),
+        }), status
+
+
 @app.route("/api/admin/parse-documents", methods=["GET", "POST"])
 def api_parse_documents():
     if not admin_allowed():
         return jsonify({"ok": False, "error": "unauthorized"}), 403
-
-    limit = int(request.args.get("limit") or request.form.get("limit") or os.getenv("DOCUMENT_PARSE_LIMIT", "20"))
-    if get_openai_client() is None:
+    tender_id = request.args.get("tender_id") or request.form.get("tender_id")
+    if not tender_id:
         return jsonify({
             "ok": False,
-            "error": "openai_not_configured",
-            "message": "OPENAI_API_KEY is missing or the OpenAI client failed to initialize.",
-            "parsed": 0,
-            "skipped": 0,
-            "errors": [],
-        }), 500
-
-    parsed_count = 0
-    skipped = 0
-    errors = []
-    skip_reasons = {
-        "already_parsed": 0,
-        "empty_text": 0,
-        "tender_not_found": 0,
-        "parse_returned_none": 0,
-    }
-
+            "error": "tender_id_required",
+            "message": "Bulk document parsing is disabled. Prequalify tenders first, then analyze a selected tender via /api/tenders/<tender_id>/analyze or call this endpoint with tender_id.",
+        }), 400
     with get_db_session() as session:
-        docs = session.execute(
-            select(TenderDocumentCache)
-            .join(TenderCache, TenderDocumentCache.tender_id == TenderCache.id)
-            .where(TenderCache.is_live.is_(True))
-            .where(TenderDocumentCache.fetch_status.in_(["fetched", "parse_failed", "parsed"]))
-            .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderDocumentCache.updated_at), desc(TenderDocumentCache.id))
-            .limit(limit * 3)
-        ).scalars().all()
-
-        eligible_seen = 0
-        for doc in docs:
-            if parsed_count >= limit:
-                break
-            try:
-                if doc.parsed_json:
-                    skipped += 1
-                    skip_reasons["already_parsed"] += 1
-                    continue
-                if not (doc.extracted_text or "").strip():
-                    skipped += 1
-                    skip_reasons["empty_text"] += 1
-                    continue
-                tender = session.get(TenderCache, doc.tender_id)
-                if not tender:
-                    skipped += 1
-                    skip_reasons["tender_not_found"] += 1
-                    continue
-
-                eligible_seen += 1
-                parsed = parse_tender_document_text(
-                    {
-                        "title": tender.title,
-                        "buyer_name": tender.buyer_name,
-                        "province": tender.province,
-                        "closing_date": str(tender.closing_date) if tender.closing_date else "",
-                        "source_url": tender.source_url,
-                    },
-                    doc.extracted_text,
-                )
-                if not parsed:
-                    skipped += 1
-                    skip_reasons["parse_returned_none"] += 1
-                    doc.fetch_status = "parse_failed"
-                    doc.error_message = "OpenAI parse returned no structured output."
-                    continue
-
-                doc.parsed_json = json.dumps(parsed, ensure_ascii=False)
-                doc.fetch_status = "parsed"
-                doc.error_message = None
-                parsed_count += 1
-            except Exception as exc:
-                doc.fetch_status = "parse_failed"
-                doc.error_message = str(exc)
-                errors.append({"tender_id": doc.tender_id, "document_id": doc.id, "error": str(exc)})
-
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            return jsonify({"ok": False, "error": "active_profile_required"}), 400
+        tender = session.get(TenderCache, int(tender_id))
+        if not tender:
+            return jsonify({"ok": False, "error": "tender_not_found"}), 404
+        if get_openai_client() is None:
+            return jsonify({"ok": False, "error": "openai_not_configured"}), 500
+        force = (request.args.get("force") or request.form.get("force") or "").strip().lower() in {"1", "true", "yes"}
+        job, meta = execute_tender_analysis(session, tender, active_profile, force=force)
+        status = 200 if meta.get("ok") else 500
         return jsonify({
-            "ok": True,
-            "requested": limit,
-            "eligible_seen": eligible_seen,
-            "parsed": parsed_count,
-            "skipped": skipped,
-            "skip_reasons": skip_reasons,
-            "errors": errors,
-        })
+            "ok": bool(meta.get("ok")),
+            "cached": bool(meta.get("cached")),
+            "meta": meta,
+            "tender": tender_to_view_model(tender),
+            "analysis": serialize_analysis_job(job),
+        }), status
 
 
 @app.route("/api/admin/document-cache-debug", methods=["GET"])
