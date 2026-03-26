@@ -16,23 +16,23 @@ def utcnow() -> datetime:
 def parse_date(value: Any) -> date | None:
     if not value:
         return None
-    if isinstance(value, date):
+    if isinstance(value, date) and not isinstance(value, datetime):
         return value
     if isinstance(value, datetime):
         return value.date()
+
     text = str(value).strip()
     if not text:
         return None
 
-    # Try ISO-style first (handles YYYY-MM-DD and full datetime with Z)
     try:
+        # supports YYYY-MM-DD and many ISO datetime forms
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
         return datetime.fromisoformat(text).date()
     except Exception:
         pass
 
-    # Fallback common formats
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
         try:
             return datetime.strptime(text, fmt).date()
@@ -53,6 +53,14 @@ def clean_text(value: Any, max_len: int | None = None) -> str | None:
     return text
 
 
+def listify(value: Any) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def first_non_empty(*values: Any) -> Any:
     for v in values:
         if v is None:
@@ -63,186 +71,33 @@ def first_non_empty(*values: Any) -> Any:
     return None
 
 
-def dig(data: dict, *path: str) -> Any:
-    cur = data
-    for key in path:
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(key)
+def get_deep(obj: Any, path: list[Any]) -> Any:
+    cur = obj
+    for part in path:
+        if isinstance(part, int):
+            if not isinstance(cur, list) or part >= len(cur):
+                return None
+            cur = cur[part]
+        else:
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(part)
         if cur is None:
             return None
     return cur
 
 
-def listify(value: Any) -> list:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
-def normalize_tender_from_release(release: dict) -> dict | None:
-    """
-    Normalize one OCDS release/record into canonical TenderCache fields.
-    Handles variability across OCDS publishers.
-    """
-    if not isinstance(release, dict):
-        return None
-
-    ocid = clean_text(first_non_empty(release.get("ocid"), release.get("id")), 255)
-    if not ocid:
-        return None
-
-    tender = release.get("tender") or {}
-    planning = release.get("planning") or {}
-    buyer = release.get("buyer") or {}
-    parties = listify(release.get("parties"))
-    tag_list = listify(release.get("tag"))
-
-    # Basic identifiers
-    source_identifier = ocid
-    notice_number = clean_text(
-        first_non_empty(
-            tender.get("id"),
-            release.get("id"),
-            dig(release, "tender", "procuringEntity", "id"),
-        ),
-        255,
-    )
-
-    # Title/description
-    title = clean_text(
-        first_non_empty(
-            tender.get("title"),
-            release.get("title"),
-            dig(planning, "budget", "description"),
-            "Untitled tender",
-        ),
-        500,
-    )
-
-    description = clean_text(
-        first_non_empty(
-            tender.get("description"),
-            release.get("description"),
-            dig(planning, "rationale"),
-        )
-    )
-
-    # Buyer
-    buyer_name = clean_text(
-        first_non_empty(
-            buyer.get("name"),
-            dig(tender, "procuringEntity", "name"),
-        ),
-        255,
-    )
-
-    if not buyer_name and parties:
-        for p in parties:
-            roles = listify((p or {}).get("roles"))
-            if "buyer" in roles:
-                buyer_name = clean_text((p or {}).get("name"), 255)
-                if buyer_name:
-                    break
-
-    # Category / type / industry-ish fields
-    tender_type = clean_text(first_non_empty(tender.get("procurementMethodDetails"), tender.get("mainProcurementCategory"), tender.get("procurementMethod")), 120)
-    category = clean_text(
-        first_non_empty(
-            tender.get("mainProcurementCategory"),
-            dig(tender, "classification", "description"),
-            tender_type,
-        ),
-        255,
-    )
-    industry = category  # keep existing app behavior compatible
-
-    # Dates
-    issued_date = parse_date(
-        first_non_empty(
-            tender.get("datePublished"),
-            release.get("date"),
-            tender.get("publicationDate"),
-        )
-    )
-    closing_date = parse_date(
-        first_non_empty(
-            dig(tender, "tenderPeriod", "endDate"),
-            tender.get("submissionDeadline"),
-            tender.get("closingDate"),
-        )
-    )
-
-    # URLs
-    detail_url = clean_text(
-        first_non_empty(
-            release.get("url"),
-            tender.get("url"),
-        ),
-        2000,
-    )
-
-    document_url = None
-    docs = listify(tender.get("documents"))
-    for d in docs:
-        if not isinstance(d, dict):
-            continue
-        maybe = clean_text(first_non_empty(d.get("url"), d.get("documentUrl")), 2000)
-        if maybe:
-            document_url = maybe
-            break
-
-    # Province/location (best effort)
-    province = None
-    delivery_addresses = listify(dig(tender, "deliveryAddresses"))
-    if delivery_addresses:
-        for addr in delivery_addresses:
-            region = clean_text(first_non_empty((addr or {}).get("region"), (addr or {}).get("locality")), 120)
-            if region:
-                province = region
-                break
-    if not province:
-        province = clean_text(first_non_empty(dig(tender, "items", 0, "deliveryLocation", "description")), 120) if isinstance(dig(tender, "items"), list) else None
-
-    # Live state
-    status = (clean_text(tender.get("status"), 50) or "").lower()
-    is_live = status not in {"cancelled", "unsuccessful", "complete", "withdrawn"}
-
-    return {
-        "source": "etenders-ocds",
-        "source_identifier": source_identifier,
-        "notice_number": notice_number,
-        "title": title,
-        "description": description,
-        "buyer_name": buyer_name,
-        "category": category,
-        "industry": industry,
-        "province": province,
-        "tender_type": tender_type,
-        "detail_url": detail_url,
-        "source_url": detail_url,  # compatibility with existing templates
-        "document_url": document_url,
-        "issued_date": issued_date,
-        "closing_date": closing_date,
-        "is_live": is_live,
-        "raw_payload": release,
-        "tags": tag_list,
-    }
-
-
 def extract_releases(payload: dict) -> list[dict]:
     """
     Supports common OCDS response shapes:
-    - { "releases": [...] }
-    - { "records": [ { "releases": [...] }, ... ] }
-    - { "data": [...] } (publisher-specific)
+    - {"releases":[...]}
+    - {"records":[{"releases":[...]}]}
+    - {"records":[{"compiledRelease":{...}}]}
+    - {"data":[...]}   (fallback for non-standard wrappers)
     """
-    if not isinstance(payload, dict):
-        return []
-
     releases: list[dict] = []
+    if not isinstance(payload, dict):
+        return releases
 
     direct = payload.get("releases")
     if isinstance(direct, list):
@@ -256,7 +111,6 @@ def extract_releases(payload: dict) -> list[dict]:
             rec_releases = rec.get("releases")
             if isinstance(rec_releases, list):
                 releases.extend([r for r in rec_releases if isinstance(r, dict)])
-            # Some record structures also include compiledRelease
             compiled = rec.get("compiledRelease")
             if isinstance(compiled, dict):
                 releases.append(compiled)
@@ -265,276 +119,376 @@ def extract_releases(payload: dict) -> list[dict]:
     if isinstance(data, list):
         releases.extend([r for r in data if isinstance(r, dict)])
 
-    # De-duplicate by (ocid,id)
-    deduped = {}
+    # de-duplicate by (ocid,id)
+    dedup = {}
     for r in releases:
         key = f"{r.get('ocid','')}::{r.get('id','')}"
-        deduped[key] = r
-    return list(deduped.values())
+        dedup[key] = r
+    return list(dedup.values())
 
 
-def upsert_tender(session, normalized: dict, now: datetime) -> str:
-    """
-    Returns one of: created, updated, unchanged
-    """
-    source = normalized["source"]
-    source_identifier = normalized["source_identifier"]
+def normalize_release(release: dict) -> dict | None:
+    if not isinstance(release, dict):
+        return None
 
-    existing = session.execute(
-        select(TenderCache).where(
-            and_(
-                TenderCache.source == source,
-                TenderCache.source_identifier == source_identifier,
-            )
+    tender = release.get("tender") or {}
+    planning = release.get("planning") or {}
+    buyer = release.get("buyer") or {}
+    parties = listify(release.get("parties"))
+
+    ocid = clean_text(release.get("ocid"), 255)
+    release_id = clean_text(release.get("id"), 255)
+    if not ocid and not release_id:
+        return None
+
+    # stable unique key for upsert
+    tender_uid = clean_text(first_non_empty(ocid, release_id), 255)
+    if not tender_uid:
+        return None
+
+    title = clean_text(
+        first_non_empty(
+            tender.get("title"),
+            release.get("title"),
+            get_deep(planning, ["budget", "description"]),
+            "Untitled tender",
+        ),
+        500,
+    )
+
+    description = clean_text(
+        first_non_empty(
+            tender.get("description"),
+            release.get("description"),
+            planning.get("rationale"),
         )
+    )
+
+    buyer_name = clean_text(
+        first_non_empty(
+            buyer.get("name"),
+            get_deep(tender, ["procuringEntity", "name"]),
+        ),
+        255,
+    )
+
+    if not buyer_name:
+        for p in parties:
+            if not isinstance(p, dict):
+                continue
+            roles = listify(p.get("roles"))
+            if "buyer" in roles:
+                buyer_name = clean_text(p.get("name"), 255)
+                if buyer_name:
+                    break
+
+    tender_type = clean_text(
+        first_non_empty(
+            tender.get("procurementMethodDetails"),
+            tender.get("mainProcurementCategory"),
+            tender.get("procurementMethod"),
+        ),
+        100,
+    )
+
+    industry = clean_text(
+        first_non_empty(
+            tender.get("mainProcurementCategory"),
+            get_deep(tender, ["classification", "description"]),
+            tender_type,
+        ),
+        100,
+    )
+
+    status = clean_text(first_non_empty(tender.get("status"), release.get("tag")), 50)
+
+    issued_date = parse_date(
+        first_non_empty(
+            tender.get("datePublished"),
+            release.get("date"),
+            tender.get("publicationDate"),
+            get_deep(tender, ["tenderPeriod", "startDate"]),
+        )
+    )
+
+    closing_date = parse_date(
+        first_non_empty(
+            get_deep(tender, ["tenderPeriod", "endDate"]),
+            tender.get("submissionDeadline"),
+            tender.get("closingDate"),
+        )
+    )
+
+    source_url = clean_text(
+        first_non_empty(
+            release.get("url"),
+            tender.get("url"),
+        )
+    )
+
+    # pick first available tender document URL
+    document_url = None
+    for d in listify(tender.get("documents")):
+        if not isinstance(d, dict):
+            continue
+        maybe = clean_text(first_non_empty(d.get("url"), d.get("documentUrl")))
+        if maybe:
+            document_url = maybe
+            break
+
+    # best effort province from delivery or locality-like fields
+    province = clean_text(
+        first_non_empty(
+            get_deep(tender, ["deliveryAddress", "region"]),
+            get_deep(tender, ["deliveryAddress", "locality"]),
+            get_deep(tender, ["procuringEntity", "address", "region"]),
+        ),
+        100,
+    )
+
+    # decide live status
+    lowered_status = (status or "").lower()
+    is_live = lowered_status not in {"cancelled", "canceled", "unsuccessful", "complete", "completed", "withdrawn"}
+
+    return {
+        "tender_uid": tender_uid,
+        "ocid": ocid,
+        "source_release_id": release_id,
+        "title": title or "Untitled tender",
+        "description": description,
+        "buyer_name": buyer_name,
+        "province": province,
+        "tender_type": tender_type,
+        "industry": industry,
+        "status": status,
+        "issued_date": issued_date,
+        "closing_date": closing_date,
+        "document_url": document_url,
+        "source_url": source_url,
+        "raw_json": json.dumps(release, ensure_ascii=False),
+        "is_live": is_live,
+    }
+
+
+def build_request_attempts(page: int, page_size: int) -> list[dict]:
+    """
+    Try multiple common pagination parameter shapes to reduce 400 failures.
+    """
+    return [
+        {"page": page, "size": page_size},
+        {"page": page, "limit": page_size},
+        {"offset": (page - 1) * page_size, "limit": page_size},
+    ]
+
+
+def fetch_page(base_url: str, page: int, page_size: int, timeout: int = 30) -> tuple[dict | None, str | None]:
+    last_error = None
+    for params in build_request_attempts(page=page, page_size=page_size):
+        try:
+            resp = requests.get(base_url, params=params, timeout=timeout)
+        except Exception as exc:
+            last_error = f"Request exception with params={params}: {exc}"
+            continue
+
+        if resp.status_code == 400:
+            last_error = f"400 Bad Request with params={params}; url={resp.url}; body={resp.text[:700]}"
+            continue
+
+        if resp.status_code >= 300:
+            last_error = f"HTTP {resp.status_code} with params={params}; url={resp.url}; body={resp.text[:700]}"
+            continue
+
+        try:
+            return resp.json(), None
+        except Exception as exc:
+            last_error = f"Invalid JSON with params={params}: {exc}"
+            continue
+
+    return None, last_error
+
+
+def upsert_tender(session, data: dict, now: datetime) -> bool:
+    """
+    Returns True if inserted/updated, False if unchanged.
+    """
+    existing = session.execute(
+        select(TenderCache).where(TenderCache.tender_uid == data["tender_uid"])
     ).scalars().first()
 
     if existing is None:
         row = TenderCache(
-            source=source,
-            source_identifier=source_identifier,
-            notice_number=normalized.get("notice_number"),
-            title=normalized.get("title"),
-            description=normalized.get("description"),
-            buyer_name=normalized.get("buyer_name"),
-            category=normalized.get("category"),
-            industry=normalized.get("industry"),
-            province=normalized.get("province"),
-            tender_type=normalized.get("tender_type"),
-            detail_url=normalized.get("detail_url"),
-            source_url=normalized.get("source_url"),
-            document_url=normalized.get("document_url"),
-            issued_date=normalized.get("issued_date"),
-            closing_date=normalized.get("closing_date"),
-            is_live=bool(normalized.get("is_live", True)),
-            raw_payload=json.dumps(normalized.get("raw_payload") or {}, ensure_ascii=False),
+            tender_uid=data["tender_uid"],
+            ocid=data.get("ocid"),
+            source_release_id=data.get("source_release_id"),
+            title=data["title"],
+            description=data.get("description"),
+            buyer_name=data.get("buyer_name"),
+            province=data.get("province"),
+            tender_type=data.get("tender_type"),
+            industry=data.get("industry"),
+            status=data.get("status"),
+            issued_date=data.get("issued_date"),
+            closing_date=data.get("closing_date"),
+            document_url=data.get("document_url"),
+            source_url=data.get("source_url"),
+            raw_json=data.get("raw_json"),
+            is_live=bool(data.get("is_live", True)),
             last_seen_at=now,
             updated_at=now,
         )
         session.add(row)
-        return "created"
+        return True
 
     changed = False
-    assign_fields = [
-        "notice_number",
+    fields = [
+        "ocid",
+        "source_release_id",
         "title",
         "description",
         "buyer_name",
-        "category",
-        "industry",
         "province",
         "tender_type",
-        "detail_url",
-        "source_url",
-        "document_url",
+        "industry",
+        "status",
         "issued_date",
         "closing_date",
+        "document_url",
+        "source_url",
+        "raw_json",
+        "is_live",
     ]
-    for f in assign_fields:
-        new_val = normalized.get(f)
-        if getattr(existing, f, None) != new_val:
-            setattr(existing, f, new_val)
+    for field in fields:
+        new_value = data.get(field)
+        if getattr(existing, field) != new_value:
+            setattr(existing, field, new_value)
             changed = True
 
-    new_is_live = bool(normalized.get("is_live", True))
-    if existing.is_live != new_is_live:
-        existing.is_live = new_is_live
+    # always refresh last_seen_at when encountered
+    if existing.last_seen_at != now:
+        existing.last_seen_at = now
         changed = True
 
-    new_raw = json.dumps(normalized.get("raw_payload") or {}, ensure_ascii=False)
-    if getattr(existing, "raw_payload", None) != new_raw:
-        existing.raw_payload = new_raw
-        changed = True
-
-    existing.last_seen_at = now
     existing.updated_at = now
-
-    return "updated" if changed else "unchanged"
-
-
-def build_request_params(page: int, page_size: int) -> dict:
-    # Common pagination conventions across OCDS endpoints
-    return {
-        "page": page,
-        "size": page_size,
-    }
+    return changed
 
 
-def request_page(base_url: str, page: int, page_size: int, timeout: int = 30) -> requests.Response:
-    params = build_request_params(page=page, page_size=page_size)
-    return requests.get(base_url, params=params, timeout=timeout)
+def mark_expired(session, now: datetime) -> int:
+    """
+    Mark tenders not seen in this run as not live.
+    """
+    stale = session.execute(
+        select(TenderCache).where(
+            and_(
+                TenderCache.is_live.is_(True),
+                TenderCache.last_seen_at < now,
+            )
+        )
+    ).scalars().all()
+
+    count = 0
+    for row in stale:
+        row.is_live = False
+        row.status = row.status or "expired"
+        row.updated_at = now
+        count += 1
+    return count
 
 
 def ingest_tenders(session, max_pages: int = 1) -> dict:
     """
-    Main ingest entrypoint used by app.py /api/admin/run-ingest.
+    Ingest tender releases from OCDS API into TenderCache with upsert + run tracking.
+    Compatible with current models.py.
     """
     base_url = os.getenv("ETENDERS_OCDS_URL", "").strip()
+    page_size = int(os.getenv("ETENDERS_PAGE_SIZE", "100"))
+    timeout = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "30"))
+
     if not base_url:
         return {"ok": False, "error": "ETENDERS_OCDS_URL is not set"}
 
-    page_size = int(os.getenv("ETENDERS_PAGE_SIZE", "100"))
-    timeout = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "30"))
-    source_name = "etenders-ocds"
-
     run = IngestRun(
-        source=source_name,
         status="running",
+        pages_attempted=0,
+        pages_succeeded=0,
+        tenders_seen=0,
+        tenders_upserted=0,
+        failure_message=None,
         started_at=utcnow(),
-        completed_at=None,
-        fetched_count=0,
-        created_count=0,
-        updated_count=0,
-        unchanged_count=0,
-        expired_count=0,
-        failed_count=0,
-        error_message=None,
+        finished_at=None,
     )
     session.add(run)
     session.flush()
 
-    now = utcnow()
-    fetched_total = 0
-    created_total = 0
-    updated_total = 0
-    unchanged_total = 0
-    failed_total = 0
-    page = 1
-    seen_any = False
+    run_started_marker = utcnow()
+    last_error = None
 
     try:
-        while page <= max_pages:
-            try:
-                resp = request_page(base_url=base_url, page=page, page_size=page_size, timeout=timeout)
-            except Exception as exc:
-                failed_total += 1
-                run.status = "failed"
-                run.error_message = f"Request failed on page {page}: {exc}"
+        for page in range(1, max_pages + 1):
+            run.pages_attempted += 1
+            payload, err = fetch_page(base_url=base_url, page=page, page_size=page_size, timeout=timeout)
+
+            if err:
+                last_error = f"Page {page}: {err}"
                 break
 
-            # Stop 400 loop and record clear reason
-            if resp.status_code == 400:
-                failed_total += 1
-                run.status = "failed"
-                run.error_message = f"400 Bad Request on page {page}. URL={resp.url} body={resp.text[:1500]}"
-                break
-
-            if resp.status_code >= 500:
-                failed_total += 1
-                run.status = "failed"
-                run.error_message = f"Server error {resp.status_code} on page {page}. URL={resp.url}"
-                break
-
-            if resp.status_code >= 300:
-                failed_total += 1
-                run.status = "failed"
-                run.error_message = f"HTTP {resp.status_code} on page {page}. URL={resp.url} body={resp.text[:1000]}"
-                break
-
-            try:
-                payload = resp.json()
-            except Exception as exc:
-                failed_total += 1
-                run.status = "failed"
-                run.error_message = f"Invalid JSON on page {page}: {exc}"
-                break
-
-            releases = extract_releases(payload)
+            releases = extract_releases(payload or {})
             if not releases:
-                # No more data
+                # normal end of pages
                 break
 
-            seen_any = True
+            run.pages_succeeded += 1
 
-            for rel in releases:
-                fetched_total += 1
-                normalized = normalize_tender_from_release(rel)
+            page_seen = 0
+            for release in releases:
+                normalized = normalize_release(release)
                 if not normalized:
-                    failed_total += 1
                     continue
 
-                result = upsert_tender(session=session, normalized=normalized, now=now)
-                if result == "created":
-                    created_total += 1
-                elif result == "updated":
-                    updated_total += 1
-                else:
-                    unchanged_total += 1
+                page_seen += 1
+                run.tenders_seen += 1
 
-            # If fewer than page_size, likely last page
+                changed = upsert_tender(session, normalized, run_started_marker)
+                if changed:
+                    run.tenders_upserted += 1
+
+            # if data smaller than page size, probably last page
             if len(releases) < page_size:
                 break
 
-            page += 1
+        # expire only if at least one page succeeded
+        expired_count = 0
+        if run.pages_succeeded > 0:
+            expired_count = mark_expired(session, run_started_marker)
 
-        # Mark expired only if we successfully saw at least one page of data
-        expired_total = 0
-        if seen_any:
-            stale_rows = session.execute(
-                select(TenderCache).where(
-                    and_(
-                        TenderCache.source == source_name,
-                        TenderCache.is_live.is_(True),
-                        TenderCache.last_seen_at < now,
-                    )
-                )
-            ).scalars().all()
-
-            for row in stale_rows:
-                row.is_live = False
-                row.updated_at = now
-                expired_total += 1
-        else:
-            expired_total = 0
-
-        # finalize run
-        if run.status != "failed":
-            run.status = "success"
-
-        run.fetched_count = fetched_total
-        run.created_count = created_total
-        run.updated_count = updated_total
-        run.unchanged_count = unchanged_total
-        run.expired_count = expired_total
-        run.failed_count = failed_total
-        run.completed_at = utcnow()
-
+        run.status = "success" if run.pages_succeeded > 0 else "failed"
+        run.failure_message = None if run.status == "success" else (last_error or "No pages succeeded")
+        run.finished_at = utcnow()
         session.flush()
 
         return {
             "ok": run.status == "success",
             "status": run.status,
             "run_id": run.id,
-            "fetched": fetched_total,
-            "created": created_total,
-            "updated": updated_total,
-            "unchanged": unchanged_total,
-            "expired": expired_total,
-            "failed": failed_total,
-            "error": run.error_message,
-            "pages_processed": page if seen_any else (page - 1 if page > 1 else 0),
+            "pages_attempted": run.pages_attempted,
+            "pages_succeeded": run.pages_succeeded,
+            "tenders_seen": run.tenders_seen,
+            "tenders_upserted": run.tenders_upserted,
+            "expired_marked": expired_count,
+            "failure_message": run.failure_message,
         }
 
     except Exception as exc:
         run.status = "failed"
-        run.error_message = f"Unexpected ingest failure: {exc}"
-        run.fetched_count = fetched_total
-        run.created_count = created_total
-        run.updated_count = updated_total
-        run.unchanged_count = unchanged_total
-        run.expired_count = 0
-        run.failed_count = failed_total + 1
-        run.completed_at = utcnow()
+        run.failure_message = f"Unexpected ingest error: {exc}"
+        run.finished_at = utcnow()
         session.flush()
         return {
             "ok": False,
             "status": "failed",
             "run_id": run.id,
-            "fetched": fetched_total,
-            "created": created_total,
-            "updated": updated_total,
-            "unchanged": unchanged_total,
-            "expired": 0,
-            "failed": failed_total + 1,
-            "error": run.error_message,
+            "pages_attempted": run.pages_attempted,
+            "pages_succeeded": run.pages_succeeded,
+            "tenders_seen": run.tenders_seen,
+            "tenders_upserted": run.tenders_upserted,
+            "failure_message": run.failure_message,
         }
