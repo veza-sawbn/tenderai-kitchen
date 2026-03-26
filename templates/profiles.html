@@ -2,8 +2,15 @@
 
 {% block content %}
 <section class="section-head">
-    <h1>Profiles</h1>
-    <p class="muted">Profiles remain visible in the system, but heavy parsing and AI steps are paused in stabilization mode.</p>
+    <h1>Supplier Profiles</h1>
+    <p class="muted">Upload a supplier PDF, keep one active profile, and track issues that affect ranking.</p>
+</section>
+
+<section class="glass-card">
+    <form action="{{ url_for('upload_profile') }}" method="post" enctype="multipart/form-data" class="inline-form" data-loading="true">
+        <input type="file" name="profile_pdf" accept=".pdf" required>
+        <button class="btn btn-primary" type="submit">Upload Profile PDF</button>
+    </form>
 </section>
 
 <div class="stack-list">
@@ -20,23 +27,50 @@
                         {% endif %}
                     </div>
                 </div>
+                {% if not profile.is_active %}
+                    <form action="{{ url_for('activate_profile', profile_id=profile.id) }}" method="post">
+                        <button class="btn btn-secondary" type="submit">Set Active</button>
+                    </form>
+                {% endif %}
             </div>
 
             <div class="detail-grid">
                 <div>
                     <label>Capabilities</label>
-                    <p>{{ profile.capabilities_text or "Not set" }}</p>
+                    <p>{{ profile.capabilities_text or "Not parsed" }}</p>
                 </div>
                 <div>
                     <label>Locations</label>
-                    <p>{{ profile.locations_text or "Not set" }}</p>
+                    <p>{{ profile.locations_text or "Not parsed" }}</p>
                 </div>
+            </div>
+
+            <h4>Profile Issues</h4>
+            <div class="stack-list">
+                {% for issue in profile.issues %}
+                    <div class="issue-card">
+                        <div>
+                            <strong>{{ issue.title }}</strong>
+                            <p class="muted">{{ issue.detail }}</p>
+                            <small>Status: {{ issue.status }} · Penalty: {{ issue.penalty_weight }}</small>
+                        </div>
+                        <form action="{{ url_for('update_issue_status', issue_id=issue.id) }}" method="post" class="inline-form">
+                            <select name="status">
+                                <option value="pending" {% if issue.status == 'pending' %}selected{% endif %}>Pending</option>
+                                <option value="fixed" {% if issue.status == 'fixed' %}selected{% endif %}>Fixed</option>
+                            </select>
+                            <button class="btn btn-secondary" type="submit">Save</button>
+                        </form>
+                    </div>
+                {% else %}
+                    <p class="muted">No issues recorded.</p>
+                {% endfor %}
             </div>
         </section>
     {% else %}
         <div class="empty-state">
             <h3>No profiles available</h3>
-            <p>Profile upload will be reintroduced after browsing and ingest are stable.</p>
+            <p>Upload a supplier profile PDF to begin ranking tenders.</p>
         </div>
     {% endfor %}
 </div>
