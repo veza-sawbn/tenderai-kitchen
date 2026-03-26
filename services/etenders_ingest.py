@@ -21,7 +21,6 @@ DEFAULT_LOOKBACK_DAYS = int(os.getenv("ETENDERS_LOOKBACK_DAYS", "45"))
 DEFAULT_LOOKAHEAD_DAYS = int(os.getenv("ETENDERS_LOOKAHEAD_DAYS", "120"))
 DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_TIMEOUT_SECONDS", "8"))
 
-
 PROVINCES = [
     "eastern cape",
     "free state",
@@ -85,10 +84,13 @@ def build_date_window():
 def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
     date_from, date_to = build_date_window()
 
+    # Try the most likely combinations first.
     variants = [
         {"PageNumber": page_number, "PageSize": page_size, "dateFrom": date_from, "dateTo": date_to},
-        {"PageNumber": page_number, "PageSize": page_size},
+        {"PageNumber": page_number, "PageSize": page_size, "DateFrom": date_from, "DateTo": date_to},
         {"pageNumber": page_number, "pageSize": page_size, "dateFrom": date_from, "dateTo": date_to},
+        {"pageNumber": page_number, "pageSize": page_size, "DateFrom": date_from, "DateTo": date_to},
+        {"PageNumber": page_number, "PageSize": page_size},
         {"pageNumber": page_number, "pageSize": page_size},
     ]
 
@@ -97,7 +99,7 @@ def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
         "User-Agent": "TenderAI/1.0",
     }
 
-    last_error = None
+    errors = []
 
     for params in variants:
         try:
@@ -108,16 +110,15 @@ def fetch_page(page_number: int, page_size: int = DEFAULT_PAGE_SIZE):
                 headers=headers,
             )
 
-            if response.status_code == 400:
-                last_error = f"400 Bad Request for params={params}"
-                continue
+            if response.status_code == 200:
+                return response.json(), None
 
-            response.raise_for_status()
-            return response.json(), None
+            body_preview = response.text[:300]
+            errors.append(f"{response.status_code} for params={params} body={body_preview}")
         except Exception as exc:
-            last_error = str(exc)
+            errors.append(f"error for params={params}: {exc}")
 
-    return None, last_error
+    return None, " | ".join(errors)
 
 
 def extract_releases(payload: Any):
@@ -204,7 +205,7 @@ def infer_tender_type(release: dict):
     tender = release.get("tender") or {}
     procurement_method = tender.get("procurementMethod")
     if procurement_method:
-        return str(procurement_method).title()
+        return str(procurementMethod).title()
 
     blob = text_blob(release)
     if "rfq" in blob:
@@ -280,7 +281,6 @@ def normalize_release(release: dict):
     release_id = release.get("id")
     ocid = release.get("ocid")
     tender_uid = ocid or release_id
-
     if not tender_uid:
         return None
 
@@ -307,7 +307,7 @@ def normalize_release(release: dict):
         "description": str(description) if description else None,
         "buyer_name": infer_buyer_name(release),
         "province": infer_province(release),
-        "tender_type": infer_tender_type(release),
+        "tender_type": "Tender",
         "industry": infer_industry(release),
         "status": str(tender.get("status") or release.get("status") or "active"),
         "issued_date": issued_date,
@@ -339,10 +339,6 @@ def ingest_tenders(session, max_pages: int = 2, page_size: int = DEFAULT_PAGE_SI
     session.add(run)
     session.flush()
 
-    existing_live_before = session.execute(
-        select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))
-    ).scalar_one() if False else None
-
     seen_this_run = set()
     tenders_seen = 0
     tenders_upserted = 0
@@ -363,7 +359,6 @@ def ingest_tenders(session, max_pages: int = 2, page_size: int = DEFAULT_PAGE_SI
                 break
 
             valid_count = 0
-
             for release in releases:
                 normalized = normalize_release(release)
                 if not normalized:
@@ -384,7 +379,6 @@ def ingest_tenders(session, max_pages: int = 2, page_size: int = DEFAULT_PAGE_SI
                 run.status = "completed"
                 break
 
-        # Only mark stale tenders inactive if we actually saw valid tenders on this run.
         if seen_this_run:
             existing_live = session.execute(
                 select(TenderCache).where(TenderCache.is_live.is_(True))
