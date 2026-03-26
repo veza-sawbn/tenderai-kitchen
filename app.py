@@ -3,29 +3,15 @@ import os
 import tempfile
 from datetime import date, datetime, timezone
 
-from dotenv import load_dotenv
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
-
 try:
-    from pypdf import PdfReader
-except Exception:
-    try:
-        from PyPDF2 import PdfReader
-    except Exception:
-        PdfReader = None
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
 
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from pypdf import PdfReader
 from sqlalchemy import desc, func, or_, select
-from sqlalchemy.orm import selectinload
-
-from database import get_db_session, init_db
-from models import AnalysisJob, IngestRun, Profile, ProfileIssue, TenderCache, TenderDocumentCache
-from services.document_fetcher import fetch_documents_for_tenders
-from services.etenders_ingest import ingest_tenders
-from services.openai_extractors import parse_supplier_profile_text, parse_tender_document_text
-
-
-def utcnow():
-    return datetime.now(timezone.utc)
 
 
 load_dotenv()
