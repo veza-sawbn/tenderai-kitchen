@@ -18,15 +18,15 @@ run:
     - name: PYTHONUNBUFFERED
       value: "1"
     - name: INGEST_MAX_PAGES
-      value: "2"
+      value: "1"
     - name: ETENDERS_TIMEOUT_SECONDS
       value: "8"
     - name: ETENDERS_PAGE_SIZE
-      value: "100"
+      value: "25"
     - name: ETENDERS_LOOKBACK_DAYS
-      value: "45"
+      value: "14"
     - name: ETENDERS_LOOKAHEAD_DAYS
-      value: "120"
+      value: "30"
     - name: DATABASE_URL
       value: "postgresql+psycopg://tenderai_admin:119988Sawbona@tenderai-db.c3kg8kwoutl7.eu-central-1.rds.amazonaws.com:5432/postgres"
     - name: FLASK_SECRET_KEY
