@@ -318,3 +318,20 @@ def run_ingest(
             ingest_run.finished_at = datetime.now(timezone.utc)
             session.commit()
             return stats
+
+def ingest_tenders(
+    page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    base_url: str = DEFAULT_BASE_URL,
+) -> Dict[str, Any]:
+    return run_ingest(
+        page_size=page_size,
+        max_pages=max_pages,
+        date_from=date_from,
+        date_to=date_to,
+        timeout=timeout,
+        base_url=base_url,
+    )
