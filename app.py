@@ -920,7 +920,10 @@ def tender_detail(tender_id: int):
 def profiles():
     with get_db_session() as session:
         profiles_list = session.execute(select(Profile).order_by(desc(Profile.updated_at))).scalars().all()
-        return render_template("profiles.html", profiles=profiles_list)
+        return render_template(
+            "profiles.html",
+            profiles=[serialize_profile(profile, include_issues=True) for profile in profiles_list],
+        )
 
 
 @app.post("/profiles/upload")
