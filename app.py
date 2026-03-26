@@ -866,31 +866,76 @@ def api_fetch_documents():
         return jsonify({"ok": True, "requested": len(tenders), "fetched": fetched, "errors": errors})
 
 
+@app.route("/api/admin/openai-status", methods=["GET"])
+def api_openai_status():
+    if not admin_allowed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
+    api_key_present = bool((os.getenv("OPENAI_API_KEY") or "").strip())
+    client_ready = get_openai_client() is not None
+    return jsonify({
+        "ok": True,
+        "api_key_present": api_key_present,
+        "client_ready": client_ready,
+        "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+    })
+
+
 @app.route("/api/admin/parse-documents", methods=["GET", "POST"])
 def api_parse_documents():
     if not admin_allowed():
         return jsonify({"ok": False, "error": "unauthorized"}), 403
+
     limit = int(request.args.get("limit") or request.form.get("limit") or os.getenv("DOCUMENT_PARSE_LIMIT", "20"))
+    if get_openai_client() is None:
+        return jsonify({
+            "ok": False,
+            "error": "openai_not_configured",
+            "message": "OPENAI_API_KEY is missing or the OpenAI client failed to initialize.",
+            "parsed": 0,
+            "skipped": 0,
+            "errors": [],
+        }), 500
+
     parsed_count = 0
     skipped = 0
     errors = []
+    skip_reasons = {
+        "already_parsed": 0,
+        "empty_text": 0,
+        "tender_not_found": 0,
+        "parse_returned_none": 0,
+    }
+
     with get_db_session() as session:
         docs = session.execute(
             select(TenderDocumentCache)
             .join(TenderCache, TenderDocumentCache.tender_id == TenderCache.id)
             .where(TenderCache.is_live.is_(True))
-            .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderDocumentCache.updated_at))
-            .limit(limit)
+            .where(TenderDocumentCache.fetch_status.in_(["fetched", "parse_failed", "parsed"]))
+            .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderDocumentCache.updated_at), desc(TenderDocumentCache.id))
+            .limit(limit * 3)
         ).scalars().all()
+
+        eligible_seen = 0
         for doc in docs:
+            if parsed_count >= limit:
+                break
             try:
+                if doc.parsed_json:
+                    skipped += 1
+                    skip_reasons["already_parsed"] += 1
+                    continue
                 if not (doc.extracted_text or "").strip():
                     skipped += 1
+                    skip_reasons["empty_text"] += 1
                     continue
                 tender = session.get(TenderCache, doc.tender_id)
                 if not tender:
                     skipped += 1
+                    skip_reasons["tender_not_found"] += 1
                     continue
+
+                eligible_seen += 1
                 parsed = parse_tender_document_text(
                     {
                         "title": tender.title,
@@ -903,15 +948,29 @@ def api_parse_documents():
                 )
                 if not parsed:
                     skipped += 1
+                    skip_reasons["parse_returned_none"] += 1
+                    doc.fetch_status = "parse_failed"
+                    doc.error_message = "OpenAI parse returned no structured output."
                     continue
+
                 doc.parsed_json = json.dumps(parsed, ensure_ascii=False)
                 doc.fetch_status = "parsed"
                 doc.error_message = None
                 parsed_count += 1
             except Exception as exc:
+                doc.fetch_status = "parse_failed"
                 doc.error_message = str(exc)
-                errors.append({"tender_id": doc.tender_id, "error": str(exc)})
-        return jsonify({"ok": True, "parsed": parsed_count, "skipped": skipped, "errors": errors})
+                errors.append({"tender_id": doc.tender_id, "document_id": doc.id, "error": str(exc)})
+
+        return jsonify({
+            "ok": True,
+            "requested": limit,
+            "eligible_seen": eligible_seen,
+            "parsed": parsed_count,
+            "skipped": skipped,
+            "skip_reasons": skip_reasons,
+            "errors": errors,
+        })
 
 
 @app.route("/api/admin/document-cache-debug", methods=["GET"])
