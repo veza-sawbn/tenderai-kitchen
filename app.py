@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import re
@@ -12,7 +13,17 @@ except ImportError:
         return False
 
 import requests
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    abort,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 from pypdf import PdfReader
 from sqlalchemy import desc, func, or_, select
 
@@ -563,6 +574,52 @@ def build_document_match_check(tender: TenderCache, document_text: str) -> dict:
     }
 
 
+def estimate_commercial_fallback(tender: TenderCache, profile: Profile, document_text: str) -> dict:
+    text = (document_text or "").lower()
+    title_blob = f"{tender.title or ''} {tender.description or ''}".lower()
+
+    cost_drivers = []
+    if any(w in text for w in ["delivery", "transport", "logistics", "site"]):
+        cost_drivers.append("Delivery / logistics")
+    if any(w in text for w in ["materials", "equipment", "supply"]):
+        cost_drivers.append("Materials or equipment inputs")
+    if any(w in text for w in ["staff", "labour", "training", "support"]):
+        cost_drivers.append("Labour and delivery team capacity")
+    if any(w in text for w in ["maintenance", "support", "service level", "sla"]):
+        cost_drivers.append("Ongoing support or service obligations")
+    if not cost_drivers:
+        cost_drivers.append("Scope-specific execution costs need validation")
+
+    pricing_complexity = "medium"
+    if any(w in text for w in ["bill of quantities", "boq", "pricing schedule", "rate per", "unit price"]):
+        pricing_complexity = "high"
+    elif any(w in title_blob for w in ["appointment of panel", "framework", "supply and delivery"]):
+        pricing_complexity = "medium"
+    else:
+        pricing_complexity = "low"
+
+    potential_revenue_range = "Unknown — tender document does not clearly reveal contract value."
+    if any(w in text for w in ["multi-year", "36 months", "three years", "framework", "panel"]):
+        potential_revenue_range = "Potentially medium to high, depending on awarded scope and call-off volume."
+    elif any(w in text for w in ["once-off", "one-time", "single project"]):
+        potential_revenue_range = "Potentially low to medium, likely linked to a once-off scope."
+    elif any(w in title_blob for w in ["supply", "services", "maintenance"]):
+        potential_revenue_range = "Potentially medium, subject to actual quantities and pricing schedule."
+
+    margin_risk = "medium"
+    if pricing_complexity == "high":
+        margin_risk = "high"
+    elif pricing_complexity == "low":
+        margin_risk = "low"
+
+    return {
+        "estimated_cost_drivers": cost_drivers,
+        "pricing_complexity": pricing_complexity,
+        "potential_revenue_range": potential_revenue_range,
+        "margin_risk": margin_risk,
+    }
+
+
 def upsert_profile_issues(session, profile: Profile, issues: List[dict]):
     existing = session.execute(
         select(ProfileIssue).where(ProfileIssue.profile_id == profile.id)
@@ -618,6 +675,10 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "document_match_reason": raw.get("document_match_reason"),
         "matched_signals": raw.get("matched_signals") or [],
         "missing_signals": raw.get("missing_signals") or [],
+        "estimated_cost_drivers": raw.get("estimated_cost_drivers") or [],
+        "pricing_complexity": raw.get("pricing_complexity"),
+        "potential_revenue_range": raw.get("potential_revenue_range"),
+        "margin_risk": raw.get("margin_risk"),
     }
 
 
@@ -648,9 +709,13 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
         filename = document_url.split("/")[-1][:255] if "/" in document_url else None
 
         suffix = ".pdf"
-        if "wordprocessingml" in content_type or document_url.lower().endswith(".docx"):
+        if (
+            "wordprocessingml" in content_type
+            or "msword" in content_type
+            or (filename and filename.lower().endswith(".docx"))
+        ):
             suffix = ".docx"
-        elif "pdf" not in content_type and not document_url.lower().endswith(".pdf"):
+        elif "pdf" not in content_type and not (filename and filename.lower().endswith(".pdf")):
             suffix = ".bin"
 
         extracted_text = ""
@@ -668,6 +733,17 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
                 os.unlink(temp_path)
             except Exception:
                 pass
+
+        if suffix == ".docx" and not extracted_text.strip():
+            doc.fetch_status = "parse_failed"
+            doc.error_message = "DOCX was fetched but readable text could not be extracted."
+            doc.filename = filename
+            doc.content_type = content_type[:100] if content_type else None
+            doc.binary_content = response.content
+            doc.extracted_text = ""
+            doc.fetched_at = utcnow()
+            session.flush()
+            return {"ok": False, "error": "DOCX was fetched but readable text could not be extracted."}
 
         doc.filename = filename
         doc.content_type = content_type[:100] if content_type else None
@@ -694,6 +770,7 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
     match_check = build_document_match_check(tender, document_text)
 
     if not match_check["document_match"]:
+        commercial = estimate_commercial_fallback(tender, profile, document_text)
         return {
             "document_match": False,
             "document_match_confidence": match_check["confidence"],
@@ -706,6 +783,10 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
             "gaps": ["Document match could not be confirmed for this tender."],
             "risks": ["Analysis was blocked to avoid scoring the wrong tender document."],
             "recommendation": "Verify the tender document URL and retry analysis.",
+            "estimated_cost_drivers": commercial["estimated_cost_drivers"],
+            "pricing_complexity": commercial["pricing_complexity"],
+            "potential_revenue_range": commercial["potential_revenue_range"],
+            "margin_risk": commercial["margin_risk"],
             "_analysis_mode": "document_validation_failed",
         }
 
@@ -715,6 +796,11 @@ You are TenderAI, a procurement intelligence assistant.
 First verify that the tender document belongs to the selected tender.
 If it does not match, return document_match=false and do not produce a meaningful opportunity score.
 If it matches, score and interpret the tender against the supplier profile.
+Also estimate indicative commercial intelligence:
+- estimated_cost_drivers
+- pricing_complexity
+- potential_revenue_range
+- margin_risk
 Return JSON only.
 
 Schema:
@@ -726,7 +812,11 @@ Schema:
   "strengths": ["string"],
   "gaps": ["string"],
   "risks": ["string"],
-  "recommendation": "string"
+  "recommendation": "string",
+  "estimated_cost_drivers": ["string"],
+  "pricing_complexity": "low|medium|high",
+  "potential_revenue_range": "string",
+  "margin_risk": "low|medium|high"
 }}
 
 Supplier profile JSON:
@@ -762,6 +852,7 @@ Tender document text:
 
     score = keyword_overlap_score(profile, tender) or 0
     reasons = build_fit_reasons(profile, tender)
+    commercial = estimate_commercial_fallback(tender, profile, document_text)
 
     return {
         "document_match": True,
@@ -775,8 +866,112 @@ Tender document text:
         "gaps": ["Detailed AI interpretation was unavailable."],
         "risks": [] if score >= 60 else ["Profile alignment appears limited from the available metadata."],
         "recommendation": "Proceed to full response preparation." if score >= 60 else "Review carefully before committing resources.",
+        "estimated_cost_drivers": commercial["estimated_cost_drivers"],
+        "pricing_complexity": commercial["pricing_complexity"],
+        "potential_revenue_range": commercial["potential_revenue_range"],
+        "margin_risk": commercial["margin_risk"],
         "_analysis_mode": "heuristic",
     }
+
+
+def generate_proposal_content(tender: TenderCache, profile: Profile, analysis: dict) -> dict:
+    client = get_openai_client()
+
+    profile_json = safe_loads(profile.parsed_json, {})
+    tender_vm = tender_to_view_model(tender)
+
+    if client:
+        prompt = f"""
+You are TenderAI. Draft a procurement proposal response for the supplier.
+Write a professional proposal structure suitable for submission or adaptation.
+Return JSON only.
+
+Schema:
+{{
+  "title": "string",
+  "executive_summary": "string",
+  "company_positioning": "string",
+  "approach": "string",
+  "compliance_notes": ["string"],
+  "deliverables": ["string"],
+  "commercial_notes": "string",
+  "closing_statement": "string"
+}}
+
+Supplier profile JSON:
+{json.dumps(profile_json, ensure_ascii=False, default=str)[:12000]}
+
+Tender metadata:
+{json.dumps(tender_vm, ensure_ascii=False, default=str)[:7000]}
+
+Tender analysis JSON:
+{json.dumps(analysis, ensure_ascii=False, default=str)[:10000]}
+""".strip()
+
+        try:
+            response = client.responses.create(model=OPENAI_MODEL, input=prompt)
+            parsed = json_from_text(response.output_text)
+            if parsed:
+                parsed["_proposal_mode"] = "openai"
+                return parsed
+        except Exception:
+            pass
+
+    company_name = profile.company_name or profile.name or "The Supplier"
+    return {
+        "title": f"Proposal Response: {tender.title or 'Tender Opportunity'}",
+        "executive_summary": f"{company_name} submits this response in relation to the opportunity issued by {tender.buyer_name or 'the department'}.",
+        "company_positioning": f"{company_name} is positioned to deliver within the required scope, supported by relevant capabilities captured in the active supplier profile.",
+        "approach": "Our team will review the final tender requirements, align delivery resources, confirm compliance items, and structure execution around the tender scope and timelines.",
+        "compliance_notes": analysis.get("gaps") or ["Final compliance review is required before submission."],
+        "deliverables": analysis.get("strengths") or ["Delivery aligned to tender scope and requirements."],
+        "commercial_notes": f"Indicative commercial view: {analysis.get('potential_revenue_range', 'Value to be confirmed')} with margin risk assessed as {analysis.get('margin_risk', 'medium')}.",
+        "closing_statement": "We welcome the opportunity to submit a compliant and competitive response and remain available for clarification or presentation.",
+        "_proposal_mode": "heuristic",
+    }
+
+
+def build_proposal_docx(proposal: dict, tender: TenderCache, profile: Profile) -> bytes:
+    if DocxDocument is None:
+        raise RuntimeError("python-docx is not installed.")
+
+    doc = DocxDocument()
+    doc.add_heading(proposal.get("title") or f"Proposal: {tender.title}", 0)
+
+    doc.add_paragraph(f"Tender: {tender.title or 'N/A'}")
+    doc.add_paragraph(f"Department / Buyer: {tender.buyer_name or 'N/A'}")
+    doc.add_paragraph(f"Supplier: {profile.company_name or profile.name or 'N/A'}")
+    doc.add_paragraph(f"Closing Date: {tender.closing_date.isoformat() if tender.closing_date else 'N/A'}")
+
+    sections = [
+        ("Executive Summary", proposal.get("executive_summary")),
+        ("Company Positioning", proposal.get("company_positioning")),
+        ("Approach", proposal.get("approach")),
+        ("Commercial Notes", proposal.get("commercial_notes")),
+        ("Closing Statement", proposal.get("closing_statement")),
+    ]
+
+    for heading, body in sections:
+        if body:
+            doc.add_heading(heading, level=1)
+            doc.add_paragraph(body)
+
+    compliance_notes = proposal.get("compliance_notes") or []
+    if compliance_notes:
+        doc.add_heading("Compliance Notes", level=1)
+        for item in compliance_notes:
+            doc.add_paragraph(str(item), style="List Bullet")
+
+    deliverables = proposal.get("deliverables") or []
+    if deliverables:
+        doc.add_heading("Deliverables / Strengths", level=1)
+        for item in deliverables:
+            doc.add_paragraph(str(item), style="List Bullet")
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 @app.context_processor
@@ -1112,6 +1307,59 @@ def analyze_tender_page(tender_id: int):
             session.flush()
             flash(f"Analysis failed: {exc}", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
+
+
+@app.get("/api/tenders/<int:tender_id>/proposal")
+def api_generate_proposal(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            return jsonify({"ok": False, "error": "Tender not found."}), 404
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            return jsonify({"ok": False, "error": "No active profile found."}), 400
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            return jsonify({"ok": False, "error": "No analysis found. Analyze the tender first."}), 400
+
+        proposal = generate_proposal_content(tender, active_profile, latest)
+        return jsonify({"ok": True, "proposal": proposal})
+
+
+@app.get("/tender/<int:tender_id>/proposal.docx")
+def download_proposal_docx(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            abort(404)
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            flash("No active profile found.", "error")
+            return redirect(url_for("profiles"))
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            flash("Analyze the tender before generating a proposal.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        proposal = generate_proposal_content(tender, active_profile, latest)
+
+        try:
+            payload = build_proposal_docx(proposal, tender, active_profile)
+        except Exception as exc:
+            flash(f"Unable to generate DOCX proposal: {exc}", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        filename = f"proposal_tender_{tender_id}.docx"
+        return send_file(
+            io.BytesIO(payload),
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
 
 
 @app.get("/profiles")
