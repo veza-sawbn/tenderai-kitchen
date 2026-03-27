@@ -77,7 +77,7 @@ a:hover {
 .brand {
   font-size: 1.22rem;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 
 .header-sub {
@@ -187,12 +187,15 @@ main.shell {
 .glass-card h1 {
   margin-bottom: 8px;
   font-size: clamp(1.8rem, 3vw, 2.6rem);
-  line-height: 1.08;
+  line-height: 1.06;
+  letter-spacing: -0.02em;
 }
 
 .glass-card h2 {
   margin-bottom: 10px;
-  font-size: 1.25rem;
+  font-size: 1.18rem;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
 }
 
 .glass-card p {
@@ -238,7 +241,8 @@ main.shell {
     inset 0 0 12px rgba(25, 211, 138, 0.08);
 }
 
-.band-possible_fit {
+.band-possible_fit,
+.band-watchlist {
   border-color: rgba(255, 207, 90, 0.5);
   box-shadow:
     0 0 0 1px rgba(255, 207, 90, 0.08),
@@ -257,10 +261,6 @@ main.shell {
 
 .band-ready {
   border-color: rgba(25, 211, 138, 0.5);
-}
-
-.band-watchlist {
-  border-color: rgba(255, 207, 90, 0.5);
 }
 
 .score-panel {
@@ -309,6 +309,13 @@ main.shell {
   transform: translateY(-1px);
   opacity: 0.96;
   color: #081018;
+}
+
+.btn:disabled,
+.btn.is-loading {
+  opacity: 0.72;
+  cursor: wait;
+  transform: none;
 }
 
 .btn-secondary {
@@ -364,9 +371,17 @@ label {
   gap: 14px;
 }
 
+.compact-card h2 {
+  margin-bottom: 6px;
+}
+
 .detail-grid {
   display: grid;
   gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.compact-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
@@ -429,7 +444,8 @@ label {
     grid-column: span 3;
   }
 
-  .detail-grid {
+  .detail-grid,
+  .compact-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -445,7 +461,8 @@ label {
   }
 
   .filter-grid,
-  .detail-grid {
+  .detail-grid,
+  .compact-grid {
     grid-template-columns: 1fr;
   }
 
