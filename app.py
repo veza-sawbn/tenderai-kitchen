@@ -320,14 +320,38 @@ def tender_to_view_model(t: TenderCache) -> dict:
     }
 
 
+def build_profile_gap_summary(profile: Profile | None) -> dict:
+    if not profile:
+        return {"pending_count": 0, "fixed_count": 0, "penalty_total": 0.0}
+
+    pending_count = 0
+    fixed_count = 0
+    penalty_total = 0.0
+    for issue in (getattr(profile, "issues", []) or []):
+        status = (getattr(issue, "status", "") or "").lower()
+        penalty = float(getattr(issue, "penalty_weight", 0) or 0)
+        if status == "pending":
+            pending_count += 1
+            penalty_total += penalty
+        elif status == "fixed":
+            fixed_count += 1
+
+    return {
+        "pending_count": pending_count,
+        "fixed_count": fixed_count,
+        "penalty_total": penalty_total,
+    }
+
+
 def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float | None:
     if not profile:
         return None
 
     capabilities = [c.strip() for c in (profile.capabilities_text or "").split(",") if c.strip()]
     locations = [c.strip() for c in (profile.locations_text or "").split(",") if c.strip()]
+    gap_summary = build_profile_gap_summary(profile)
 
-    score = 30.0
+    score = 22.0
     tender_blob = " ".join([
         tender.title or "",
         tender.description or "",
@@ -338,42 +362,39 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
     ]).lower()
 
     if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
-        score += 25.0
+        score += 26.0
     elif profile.industry and profile.industry.lower() in tender_blob:
-        score += 15.0
+        score += 14.0
 
     matches = 0
     for capability in capabilities:
         if capability.lower() in tender_blob:
             matches += 1
-    score += min(matches * 6.0, 30.0)
+    score += min(matches * 7.0, 35.0)
 
     for loc in locations:
         if tender.province and tender.province.lower() == loc.lower():
             score += 8.0
             break
 
-    issues = getattr(profile, "issues", []) or []
-    pending_penalty = 0.0
-    fixed_bonus = 0.0
-    for issue in issues:
-        st = (getattr(issue, "status", "") or "").lower()
-        penalty = float(getattr(issue, "penalty_weight", 0) or 0)
-        if st == "pending":
-            pending_penalty += penalty
-        elif st == "fixed":
-            fixed_bonus += min(penalty, 2.0)
-
-    score -= pending_penalty
-    score += fixed_bonus
+    if tender.title and any(word in tender.title.lower() for word in ["appointment", "panel", "framework", "supply", "services"]):
+        score += 4.0
 
     try:
         if tender.closing_date:
             days = (tender.closing_date - date.today()).days
             if days >= 0:
-                score += min(days / 2.0, 7.0)
+                if days <= 7:
+                    score += 2.0
+                elif days <= 21:
+                    score += 5.0
+                else:
+                    score += 7.0
     except Exception:
         pass
+
+    score -= min(gap_summary["penalty_total"], 18.0)
+    score += min(gap_summary["fixed_count"] * 1.5, 4.0)
 
     return max(0.0, min(score, 100.0))
 
@@ -400,27 +421,64 @@ def build_fit_reasons(profile: Profile | None, tender: TenderCache) -> List[str]
     if tender.buyer_name:
         reasons.append(f"Issued by {tender.buyer_name}")
 
+    if tender.closing_date:
+        try:
+            days = (tender.closing_date - date.today()).days
+            if days >= 0:
+                reasons.append(f"Still open with {days} day(s) remaining")
+        except Exception:
+            pass
+
     return reasons
 
 
 def fit_band_from_score(score: Optional[float]) -> Optional[str]:
     if score is None:
         return None
-    if score >= 75:
+    if score >= 80:
         return "high_potential"
-    if score >= 45:
+    if score >= 55:
         return "possible_fit"
     return "low_fit"
 
 
-def build_fit_summary(score: Optional[float], reasons: List[str]) -> Optional[str]:
+def readiness_band_for_profile(profile: Profile | None) -> str:
+    if not profile:
+        return "no_profile"
+    gap_summary = build_profile_gap_summary(profile)
+    if gap_summary["pending_count"] == 0:
+        return "ready"
+    if gap_summary["pending_count"] <= 2:
+        return "watchlist"
+    return "needs_attention"
+
+
+def readiness_message(profile: Profile | None, score: Optional[float]) -> str:
+    if not profile:
+        return "Upload and activate a profile to unlock TenderAI matching."
+    gap_summary = build_profile_gap_summary(profile)
+    if gap_summary["pending_count"] == 0:
+        return "Your active profile looks ready for tender evaluation."
+    if score is not None and score >= 70:
+        return "This looks promising, but profile gaps may reduce readiness."
+    return "Profile readiness gaps may weaken your bid position."
+
+
+def build_fit_summary(score: Optional[float], reasons: List[str], profile: Profile | None = None) -> Optional[str]:
     if score is None:
         return None
     if reasons:
-        return "This tender could be a good fit because " + "; ".join(reasons[:3]) + "."
-    if score >= 60:
-        return "This tender shows promising metadata alignment with your active profile."
-    return "This tender has limited visible alignment from metadata alone and may require careful review."
+        base = "This tender could be a good fit because " + "; ".join(reasons[:3]) + "."
+    elif score >= 60:
+        base = "This tender shows promising metadata alignment with your active profile."
+    else:
+        base = "This tender has limited visible alignment from metadata alone and may require careful review."
+
+    if profile:
+        gap_summary = build_profile_gap_summary(profile)
+        if gap_summary["pending_count"] > 0:
+            base += f" Your active profile currently has {gap_summary['pending_count']} unresolved readiness gap(s)."
+    return base
 
 
 def upsert_profile_issues(session, profile: Profile, issues: List[dict]):
@@ -587,7 +645,7 @@ Tender document text:
 
     return {
         "score": score,
-        "summary": build_fit_summary(score, reasons) or "Fallback analysis was used.",
+        "summary": build_fit_summary(score, reasons, profile) or "Fallback analysis was used.",
         "strengths": reasons[:4],
         "gaps": ["Detailed AI interpretation was unavailable."],
         "risks": [] if score >= 60 else ["Profile alignment appears limited from the available metadata."],
@@ -601,7 +659,9 @@ def inject_globals():
     with get_db_session() as session:
         active_profile = get_active_profile(session)
         latest_ingest = session.execute(
-            select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)
+            select(IngestRun)
+            .order_by(desc(IngestRun.started_at), desc(IngestRun.id))
+            .limit(1)
         ).scalars().first()
 
         return {
@@ -637,6 +697,9 @@ def health():
 def home():
     with get_db_session() as session:
         active_profile = get_active_profile(session)
+        readiness_band = readiness_band_for_profile(active_profile)
+        readiness_note = readiness_message(active_profile, None)
+        gap_summary = build_profile_gap_summary(active_profile)
 
         total_live = session.execute(
             select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))
@@ -656,8 +719,7 @@ def home():
             score = keyword_overlap_score(active_profile, t)
             reasons = build_fit_reasons(active_profile, t)
             fit_band = fit_band_from_score(score)
-            fit_summary = build_fit_summary(score, reasons)
-
+            fit_summary = build_fit_summary(score, reasons, active_profile)
             tender_vm = tender_to_view_model(t)
 
             featured.append({
@@ -666,6 +728,7 @@ def home():
                 "fit_band": fit_band,
                 "fit_summary": fit_summary,
                 "fit_reasons": reasons,
+                "readiness_band": readiness_band,
             })
 
             tender_cards.append({
@@ -674,6 +737,7 @@ def home():
                 "fit_band": fit_band,
                 "fit_summary": fit_summary,
                 "fit_reasons": reasons,
+                "readiness_band": readiness_band,
             })
 
         if active_profile:
@@ -686,6 +750,9 @@ def home():
             featured=featured[:12],
             tenders=tender_cards[:12],
             ranked_tenders=featured[:12],
+            readiness_band=readiness_band,
+            readiness_note=readiness_note,
+            profile_gap_summary=gap_summary,
         )
 
 
@@ -693,12 +760,15 @@ def home():
 def tenders():
     with get_db_session() as session:
         active_profile = get_active_profile(session)
+        readiness_band = readiness_band_for_profile(active_profile)
+        gap_summary = build_profile_gap_summary(active_profile)
 
         province = (request.args.get("province") or "").strip()
         tender_type = (request.args.get("tender_type") or "").strip()
         industry = (request.args.get("industry") or "").strip()
         issued_from = (request.args.get("issued_from") or "").strip()
         search_text = (request.args.get("q") or "").strip()
+        fit_band_filter = (request.args.get("fit_band") or "").strip()
 
         query = select(TenderCache).where(TenderCache.is_live.is_(True))
 
@@ -733,12 +803,17 @@ def tenders():
         for t in items:
             score = keyword_overlap_score(active_profile, t)
             reasons = build_fit_reasons(active_profile, t)
+            band = fit_band_from_score(score)
+            if fit_band_filter and band != fit_band_filter:
+                continue
+
             ranked.append({
                 "tender": tender_to_view_model(t),
                 "score": score,
-                "fit_band": fit_band_from_score(score),
-                "fit_summary": build_fit_summary(score, reasons),
+                "fit_band": band,
+                "fit_summary": build_fit_summary(score, reasons, active_profile),
                 "fit_reasons": reasons,
+                "readiness_band": readiness_band,
             })
 
         if active_profile:
@@ -765,6 +840,11 @@ def tenders():
             .order_by(TenderCache.industry)
         ).scalars().all()
 
+        band_counts = {"high_potential": 0, "possible_fit": 0, "low_fit": 0}
+        for item in ranked:
+            if item["fit_band"] in band_counts:
+                band_counts[item["fit_band"]] += 1
+
         return render_template(
             "feed.html",
             ranked_tenders=ranked,
@@ -777,7 +857,11 @@ def tenders():
                 "industry": industry,
                 "issued_from": issued_from,
                 "q": search_text,
+                "fit_band": fit_band_filter,
             },
+            readiness_band=readiness_band,
+            profile_gap_summary=gap_summary,
+            band_counts=band_counts,
         )
 
 
@@ -792,8 +876,11 @@ def tender_detail(tender_id: int):
         score = keyword_overlap_score(active_profile, tender)
         reasons = build_fit_reasons(active_profile, tender)
         fit_band = fit_band_from_score(score)
-        fit_summary = build_fit_summary(score, reasons)
+        fit_summary = build_fit_summary(score, reasons, active_profile)
         latest_analysis = latest_analysis_for(session, tender_id, active_profile.id if active_profile else None)
+        readiness_band = readiness_band_for_profile(active_profile)
+        readiness_note = readiness_message(active_profile, score)
+        gap_summary = build_profile_gap_summary(active_profile)
 
         return render_template(
             "tender_detail.html",
@@ -805,6 +892,9 @@ def tender_detail(tender_id: int):
             can_analyze=bool(active_profile),
             analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id),
             latest_analysis=latest_analysis,
+            readiness_band=readiness_band,
+            readiness_note=readiness_note,
+            profile_gap_summary=gap_summary,
         )
 
 
