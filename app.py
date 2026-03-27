@@ -1,43 +1,20 @@
 import json
 import os
+import re
 import tempfile
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 try:
     from dotenv import load_dotenv
 except ImportError:
     def load_dotenv(*args, **kwargs):
         return False
-        
 
 import requests
-from flask import (
-    Flask,
-    abort,
-    flash,
-    jsonify,
-    redirect,
-    render_template,
-    request,
-    url_for,
-)
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 from pypdf import PdfReader
-from sqlalchemy import desc, select, text
-from docx import Document as DocxDocument
-
-from database import get_db_session, init_db
-from models import (
-    AnalysisJob,
-    IngestRun,
-    Profile,
-    ProfileIssue,
-    TenderCache,
-    TenderDocumentCache,
-)
-from services.etenders_ingest import ingest_tenders
-
-load_dotenv()
+from sqlalchemy import desc, func, or_, select
 
 try:
     from docx import Document as DocxDocument
@@ -49,6 +26,17 @@ try:
 except ImportError:
     OpenAI = None
 
+from database import get_db_session, init_db
+from models import AnalysisJob, IngestRun, Profile, ProfileIssue, TenderCache, TenderDocumentCache
+from services.etenders_ingest import ingest_tenders
+
+
+load_dotenv()
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-fallback-secret")
@@ -57,52 +45,6 @@ app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 init_db()
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-
-
-# -------------------------------------------------------------------
-# General helpers
-# -------------------------------------------------------------------
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-@app.template_filter("days_left")
-def days_left_filter(value):
-    if not value:
-        return "n/a"
-
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value).date()
-        except Exception:
-            return "n/a"
-
-    if isinstance(value, datetime):
-        value = value.date()
-
-    if not isinstance(value, date):
-        return "n/a"
-
-    delta = (value - date.today()).days
-    if delta < 0:
-        return f"Closed {abs(delta)} day(s) ago"
-    if delta == 0:
-        return "Closes today"
-    return f"{delta} day(s)"
-
-
-def require_admin(req):
-    configured = (os.getenv("ADMIN_TOKEN") or "").strip()
-    provided = (
-        req.args.get("token")
-        or req.headers.get("X-Admin-Token")
-        or req.headers.get("x-admin-token")
-        or ""
-    ).strip()
-
-    if configured and provided != configured:
-        abort(403)
 
 
 def get_openai_client():
@@ -115,7 +57,20 @@ def get_openai_client():
         return None
 
 
-def safe_json_loads(value: Any, fallback=None):
+def json_from_text(value: str) -> dict:
+    if not value:
+        return {}
+    text = value.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+def safe_loads(value: Any, fallback=None):
     if fallback is None:
         fallback = {}
     if not value:
@@ -128,69 +83,64 @@ def safe_json_loads(value: Any, fallback=None):
         return fallback
 
 
+def admin_allowed() -> bool:
+    token = (os.getenv("ADMIN_TOKEN") or "").strip()
+    if not token:
+        return True
+    supplied = (request.headers.get("X-Admin-Token") or request.args.get("token") or "").strip()
+    return supplied == token
+
+
 def get_active_profile(session) -> Optional[Profile]:
     return session.execute(
-        select(Profile).where(Profile.is_active.is_(True)).order_by(desc(Profile.updated_at)).limit(1)
-    ).scalar_one_or_none()
+        select(Profile)
+        .where(Profile.is_active.is_(True))
+        .order_by(desc(Profile.updated_at))
+        .limit(1)
+    ).scalars().first()
 
 
-def serialize_profile(profile: Profile, include_issues: bool = False) -> Dict[str, Any]:
-    data = {
-        "id": profile.id,
-        "filename": getattr(profile, "filename", None),
-        "industry": getattr(profile, "industry", None),
-        "is_active": getattr(profile, "is_active", False),
-        "updated_at": profile.updated_at.isoformat() if getattr(profile, "updated_at", None) else None,
-        "parsed_json": safe_json_loads(getattr(profile, "parsed_json", None), {}),
-        "has_parsed_json": bool(getattr(profile, "parsed_json", None)),
-        "text_len": len((getattr(profile, "extracted_text", None) or "")),
-    }
-    if include_issues:
-        issues = getattr(profile, "issues", None) or []
-        data["issues"] = [
-            {
-                "id": issue.id,
-                "message": getattr(issue, "message", None),
-                "severity": getattr(issue, "severity", None),
-            }
-            for issue in issues
-        ]
-    return data
+def normalize_keywords(text: str) -> List[str]:
+    if not text:
+        return []
+    raw = text.replace("\n", ",").replace(";", ",").replace("|", ",").split(",")
+    cleaned = []
+    seen = set()
+    for item in raw:
+        value = " ".join(item.strip().split())
+        if len(value) >= 3:
+            key = value.lower()
+            if key not in seen:
+                seen.add(key)
+                cleaned.append(value)
+    return cleaned[:30]
 
 
-def tender_to_view_model(tender: TenderCache) -> Dict[str, Any]:
-    return {
-        "id": tender.id,
-        "tender_uid": getattr(tender, "tender_uid", None),
-        "ocid": getattr(tender, "ocid", None),
-        "title": tender.title,
-        "description": tender.description,
-        "buyer_name": getattr(tender, "buyer_name", None),
-        "province": getattr(tender, "province", None),
-        "tender_type": getattr(tender, "tender_type", None),
-        "industry": getattr(tender, "industry", None),
-        "status": getattr(tender, "status", None),
-        "issued_date": tender.issued_date.isoformat() if getattr(tender, "issued_date", None) else None,
-        "closing_date": tender.closing_date.isoformat() if getattr(tender, "closing_date", None) else None,
-        "document_url": getattr(tender, "document_url", None),
-        "source_url": getattr(tender, "source_url", None),
-        "is_live": getattr(tender, "is_live", None),
-        "updated_at": tender.updated_at.isoformat() if getattr(tender, "updated_at", None) else None,
-    }
-
-
-def extract_pdf_text(path: str) -> str:
+def extract_pdf_text(file_or_path) -> str:
+    temp_path = None
     try:
+        if isinstance(file_or_path, str):
+            path = file_or_path
+        else:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                file_or_path.save(tmp.name)
+                path = tmp.name
+                temp_path = tmp.name
+
         reader = PdfReader(path)
-        pages = []
+        parts = []
         for page in reader.pages:
             try:
-                pages.append(page.extract_text() or "")
+                parts.append(page.extract_text() or "")
             except Exception:
                 continue
-        return "\n".join(pages).strip()
-    except Exception:
-        return ""
+        return "\n".join(parts).strip()
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
 
 
 def extract_docx_text(path: str) -> str:
@@ -203,170 +153,412 @@ def extract_docx_text(path: str) -> str:
         return ""
 
 
-def extract_uploaded_text(path: str, filename: str) -> str:
-    lower = (filename or "").lower()
-    if lower.endswith(".pdf"):
-        return extract_pdf_text(path)
-    if lower.endswith(".docx"):
-        return extract_docx_text(path)
-    return ""
-
-
-def upsert_profile_issues(session, profile: Profile, parsed: Dict[str, Any]):
-    session.execute(
-        text("DELETE FROM profile_issues WHERE profile_id = :profile_id"),
-        {"profile_id": profile.id},
-    )
-
-    issues: List[Tuple[str, str]] = []
-
-    capabilities = parsed.get("capabilities") or []
-    locations = parsed.get("locations") or []
-    industry = parsed.get("industry") or ""
-
-    if not capabilities:
-        issues.append(("warning", "No clear capabilities/services were extracted from the profile."))
-    if not locations:
-        issues.append(("info", "No business locations or operating provinces were extracted."))
-    if not industry:
-        issues.append(("info", "No primary industry was extracted from the profile."))
-
-    for severity, message in issues:
-        issue = ProfileIssue()
-        if hasattr(issue, "profile_id"):
-            issue.profile_id = profile.id
-        if hasattr(issue, "severity"):
-            issue.severity = severity
-        if hasattr(issue, "message"):
-            issue.message = message
-        session.add(issue)
-
-
-# -------------------------------------------------------------------
-# OpenAI helpers
-# -------------------------------------------------------------------
-
-def parse_supplier_profile_text(text_value: str) -> Dict[str, Any]:
+def parse_profile_with_openai(text: str, filename: str | None = None) -> dict:
     client = get_openai_client()
-    if not client or not (text_value or "").strip():
+    if not client or not text.strip():
         return {}
 
     prompt = f"""
-You are extracting structured business profile data for tender matching.
+You are TenderAI. Extract structured supplier profile information.
 Return JSON only.
 
 Schema:
 {{
-  "company_name": "string",
-  "industry": "string",
+  "company_name": "string or null",
+  "industry": "string or null",
   "capabilities": ["string"],
   "locations": ["string"],
-  "certifications": ["string"],
-  "documents_mentioned": ["string"],
-  "years_experience": "string",
-  "summary": "string"
+  "issues": [
+    {{
+      "title": "string",
+      "detail": "string",
+      "penalty_weight": 0
+    }}
+  ]
 }}
 
-Business profile text:
-{text_value[:25000]}
+Profile filename: {filename or ""}
+Profile text:
+{text[:22000]}
 """.strip()
 
     try:
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            input=prompt,
-        )
-        raw = response.output_text
-        parsed = json.loads(raw)
-        parsed["_parse_mode"] = "openai"
-        parsed["_parsed_at"] = utcnow().isoformat()
+        response = client.responses.create(model=OPENAI_MODEL, input=prompt)
+        parsed = json_from_text(response.output_text)
+        if parsed:
+            parsed["_parse_mode"] = "openai"
         return parsed
     except Exception:
         return {}
 
 
-def heuristic_profile_parse(text_value: str, filename: str = "") -> Dict[str, Any]:
-    lower = (text_value or "").lower()
+def heuristic_profile_parse(text: str, filename: str | None = None) -> dict:
+    lower = text.lower()
+
+    industry = None
+    rules = [
+        ("Construction", ["construction", "contractor", "civil", "infrastructure", "building"]),
+        ("ICT", ["software", "ict", "technology", "systems", "digital", "it services"]),
+        ("Transport", ["transport", "shuttle", "fleet", "vehicle", "logistics"]),
+        ("Professional Services", ["consulting", "advisory", "facilitation", "professional services"]),
+        ("Tourism", ["tourism", "travel", "adventure", "hospitality", "destination"]),
+        ("Security", ["security services", "guarding", "surveillance"]),
+        ("Education", ["training provider", "education", "learnership", "skills development"]),
+    ]
+    for label, words in rules:
+        if any(word in lower for word in words):
+            industry = label
+            break
 
     capabilities = []
-    for phrase in [
-        "construction",
-        "cleaning",
-        "maintenance",
-        "security",
-        "it support",
-        "software",
-        "consulting",
-        "training",
-        "transport",
-        "logistics",
-        "catering",
-        "engineering",
-        "electrical",
-        "civil",
-        "supply",
-    ]:
-        if phrase in lower:
-            capabilities.append(phrase)
+    markers = ["services", "capabilities", "core services", "scope", "specialises in", "specializes in"]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines:
+        ll = line.lower()
+        if any(marker in ll for marker in markers):
+            capabilities.extend(normalize_keywords(line))
+    if not capabilities:
+        capabilities = normalize_keywords(text[:3000])[:20]
 
     locations = []
     for province in [
-        "gauteng",
-        "kwazulu-natal",
-        "western cape",
-        "eastern cape",
-        "limpopo",
-        "mpumalanga",
-        "free state",
-        "north west",
-        "northern cape",
+        "Gauteng", "KwaZulu-Natal", "Western Cape", "Eastern Cape",
+        "Free State", "Mpumalanga", "Limpopo", "North West", "Northern Cape",
     ]:
-        if province in lower:
-            locations.append(province.title())
+        if province.lower() in lower:
+            locations.append(province)
 
-    industry = ""
-    if "construction" in lower or "civil" in lower or "electrical" in lower:
-        industry = "Construction"
-    elif "it" in lower or "software" in lower or "technology" in lower:
-        industry = "Technology"
-    elif "cleaning" in lower or "facilities" in lower:
-        industry = "Facilities"
-    elif "transport" in lower or "logistics" in lower:
-        industry = "Transport"
+    company_name = lines[0][:255] if lines else None
+    if not company_name and filename:
+        company_name = os.path.splitext(filename)[0]
+
+    issues = []
+    if not capabilities:
+        issues.append({
+            "title": "Capabilities are not clearly structured",
+            "detail": "The profile does not clearly list service capabilities.",
+            "penalty_weight": 6,
+        })
+    if not locations:
+        issues.append({
+            "title": "Operating locations are unclear",
+            "detail": "The profile does not clearly indicate service provinces or locations.",
+            "penalty_weight": 4,
+        })
+    if not industry:
+        issues.append({
+            "title": "Industry focus is unclear",
+            "detail": "The profile does not strongly indicate the primary industry.",
+            "penalty_weight": 5,
+        })
 
     return {
-        "company_name": os.path.splitext(filename)[0] if filename else "Uploaded Profile",
+        "company_name": company_name,
         "industry": industry,
-        "capabilities": sorted(list(set(capabilities))),
-        "locations": sorted(list(set(locations))),
-        "certifications": [],
-        "documents_mentioned": [],
-        "years_experience": "",
-        "summary": "Heuristic extraction was used because OpenAI parsing was unavailable.",
+        "capabilities": capabilities[:20],
+        "locations": list(dict.fromkeys(locations)),
+        "issues": issues,
         "_parse_mode": "heuristic",
-        "_parsed_at": utcnow().isoformat(),
     }
 
 
-def parse_profile_text(text_value: str, filename: str = "") -> Dict[str, Any]:
-    parsed = parse_supplier_profile_text(text_value)
+def parse_profile_text(text: str, filename: str | None = None) -> dict:
+    parsed = parse_profile_with_openai(text, filename)
     if parsed:
         return parsed
-    return heuristic_profile_parse(text_value, filename)
+    return heuristic_profile_parse(text, filename)
 
 
-def analyze_tender_against_profile(
-    tender: TenderCache,
-    profile: Profile,
-    document_text: str,
-) -> Dict[str, Any]:
-    profile_json = safe_json_loads(profile.parsed_json, {})
+def serialize_profile(profile: Profile, include_issues: bool = True) -> dict:
+    parsed = safe_loads(profile.parsed_json, {})
+    data = {
+        "id": profile.id,
+        "name": profile.name,
+        "company_name": profile.company_name,
+        "original_filename": profile.original_filename,
+        "industry": profile.industry,
+        "capabilities_text": profile.capabilities_text,
+        "locations_text": profile.locations_text,
+        "extracted_text": profile.extracted_text,
+        "parsed_json": parsed,
+        "is_active": profile.is_active,
+        "created_at": profile.created_at,
+        "updated_at": profile.updated_at,
+    }
+    if include_issues:
+        issues = getattr(profile, "issues", []) or []
+        data["issues"] = [
+            {
+                "id": issue.id,
+                "issue_type": issue.issue_type,
+                "title": issue.title,
+                "detail": issue.detail,
+                "status": issue.status,
+                "penalty_weight": issue.penalty_weight,
+            }
+            for issue in issues
+        ]
+    return data
+
+
+def tender_to_view_model(t: TenderCache) -> dict:
+    return {
+        "id": t.id,
+        "tender_uid": t.tender_uid,
+        "title": t.title,
+        "description": t.description,
+        "industry": t.industry,
+        "tender_type": t.tender_type,
+        "province": t.province,
+        "buyer_name": t.buyer_name,
+        "issued_date": t.issued_date,
+        "closing_date": t.closing_date,
+        "document_url": t.document_url,
+        "source_url": t.source_url,
+        "updated_at": t.updated_at,
+        "is_live": t.is_live,
+    }
+
+
+def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float | None:
+    if not profile:
+        return None
+
+    def get_capabilities():
+        text = getattr(profile, "capabilities_text", "") or ""
+        return [c.strip() for c in text.split(",") if c.strip()]
+
+    def get_locations():
+        text = getattr(profile, "locations_text", "") or ""
+        return [c.strip() for c in text.split(",") if c.strip()]
+
+    score = 30.0
+    tender_blob = " ".join([
+        tender.title or "",
+        tender.description or "",
+        tender.industry or "",
+        tender.tender_type or "",
+        tender.province or "",
+        tender.buyer_name or "",
+    ]).lower()
+
+    if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
+        score += 25.0
+    elif profile.industry and profile.industry.lower() in tender_blob:
+        score += 15.0
+
+    matches = 0
+    for capability in get_capabilities():
+        if capability.lower() in tender_blob:
+            matches += 1
+    score += min(matches * 6.0, 30.0)
+
+    for loc in get_locations():
+        if tender.province and tender.province.lower() == loc.lower():
+            score += 8.0
+            break
+
+    issues = getattr(profile, "issues", []) or []
+    pending_penalty = 0.0
+    fixed_bonus = 0.0
+    for issue in issues:
+        st = (getattr(issue, "status", "") or "").lower()
+        penalty = float(getattr(issue, "penalty_weight", 0) or 0)
+        if st == "pending":
+            pending_penalty += penalty
+        elif st == "fixed":
+            fixed_bonus += min(penalty, 2.0)
+
+    score -= pending_penalty
+    score += fixed_bonus
+
+    try:
+        if tender.closing_date:
+            days = (tender.closing_date - date.today()).days
+            if days >= 0:
+                score += min(days / 2.0, 7.0)
+    except Exception:
+        pass
+
+    return max(0.0, min(score, 100.0))
+
+
+def build_fit_reasons(profile: Profile | None, tender: TenderCache) -> List[str]:
+    if not profile:
+        return []
+
+    reasons = []
+    capabilities = [x.strip() for x in (profile.capabilities_text or "").split(",") if x.strip()]
+    locations = [x.strip() for x in (profile.locations_text or "").split(",") if x.strip()]
+    tender_blob = f"{tender.title or ''} {tender.description or ''}".lower()
+
+    matched_caps = [cap for cap in capabilities if cap.lower() in tender_blob]
+    if matched_caps:
+        reasons.append(f"Matches your service keywords: {', '.join(matched_caps[:4])}")
+
+    if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
+        reasons.append(f"Industry alignment with {tender.industry}")
+
+    if locations and tender.province and any(loc.lower() == tender.province.lower() for loc in locations):
+        reasons.append(f"Location alignment in {tender.province}")
+
+    if tender.buyer_name:
+        reasons.append(f"Issued by {tender.buyer_name}")
+
+    return reasons
+
+
+def fit_band_from_score(score: Optional[float]) -> Optional[str]:
+    if score is None:
+        return None
+    if score >= 75:
+        return "high_potential"
+    if score >= 45:
+        return "possible_fit"
+    return "low_fit"
+
+
+def build_fit_summary(score: Optional[float], reasons: List[str]) -> Optional[str]:
+    if score is None:
+        return None
+    if reasons:
+        return "This tender could be a good fit because " + "; ".join(reasons[:3]) + "."
+    if score >= 60:
+        return "This tender shows promising metadata alignment with your active profile."
+    return "This tender has limited visible alignment from metadata alone and may require careful review."
+
+
+def upsert_profile_issues(session, profile: Profile, issues: List[dict]):
+    existing = session.execute(
+        select(ProfileIssue).where(ProfileIssue.profile_id == profile.id)
+    ).scalars().all()
+    for issue in existing:
+        session.delete(issue)
+    session.flush()
+
+    for issue in issues or []:
+        session.add(
+            ProfileIssue(
+                profile_id=profile.id,
+                issue_type="profile_gap",
+                title=issue.get("title") or "Profile issue",
+                detail=issue.get("detail"),
+                penalty_weight=float(issue.get("penalty_weight") or 5),
+                status="pending",
+            )
+        )
+
+
+def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> Optional[dict]:
+    if not profile_id:
+        return None
+
+    job = session.execute(
+        select(AnalysisJob)
+        .where(
+            AnalysisJob.tender_id == tender_id,
+            AnalysisJob.profile_id == profile_id,
+        )
+        .order_by(desc(AnalysisJob.updated_at))
+        .limit(1)
+    ).scalars().first()
+
+    if not job:
+        return None
+
+    raw = safe_loads(job.raw_result_json, {})
+    strengths = raw.get("strengths") or [x.strip() for x in (job.strengths_text or "").split("\n") if x.strip()]
+    gaps = raw.get("gaps") or []
+    risks = raw.get("risks") or [x.strip() for x in (job.risks_text or "").split("\n") if x.strip()]
+
+    return {
+        "id": job.id,
+        "status": job.status,
+        "score": job.score,
+        "summary": job.summary,
+        "strengths": strengths,
+        "gaps": gaps,
+        "risks": risks,
+        "recommendation": job.recommendations_text,
+        "updated_at": job.updated_at,
+    }
+
+
+def fetch_tender_document(session, tender: TenderCache) -> dict:
+    document_url = tender.document_url or tender.source_url
+    if not document_url:
+        return {"ok": False, "error": "No tender document URL available."}
+
+    doc = session.execute(
+        select(TenderDocumentCache)
+        .where(
+            TenderDocumentCache.tender_id == tender.id,
+            TenderDocumentCache.document_url == document_url,
+        )
+        .limit(1)
+    ).scalars().first()
+
+    if not doc:
+        doc = TenderDocumentCache(tender_id=tender.id, document_url=document_url)
+        session.add(doc)
+        session.flush()
+
+    try:
+        response = requests.get(document_url, timeout=25)
+        response.raise_for_status()
+
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        filename = document_url.split("/")[-1][:255] if "/" in document_url else None
+
+        suffix = ".pdf"
+        if "wordprocessingml" in content_type or document_url.lower().endswith(".docx"):
+            suffix = ".docx"
+        elif "pdf" not in content_type and not document_url.lower().endswith(".pdf"):
+            suffix = ".bin"
+
+        extracted_text = ""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(response.content)
+            temp_path = tmp.name
+
+        try:
+            if suffix == ".pdf":
+                extracted_text = extract_pdf_text(temp_path)
+            elif suffix == ".docx":
+                extracted_text = extract_docx_text(temp_path)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
+        doc.filename = filename
+        doc.content_type = content_type[:100] if content_type else None
+        doc.binary_content = response.content
+        doc.extracted_text = extracted_text
+        doc.fetch_status = "fetched"
+        doc.error_message = None
+        doc.fetched_at = utcnow()
+        session.flush()
+
+        return {"ok": True, "text_len": len(extracted_text)}
+    except Exception as exc:
+        doc.fetch_status = "fetch_failed"
+        doc.error_message = str(exc)
+        session.flush()
+        return {"ok": False, "error": str(exc)}
+
+
+def analyze_tender_against_profile(tender: TenderCache, profile: Profile, document_text: str) -> dict:
     client = get_openai_client()
 
-    if client and (document_text or "").strip():
+    profile_json = safe_loads(profile.parsed_json, {})
+    tender_vm = tender_to_view_model(tender)
+
+    if client and document_text.strip():
         prompt = f"""
 You are TenderAI, a procurement intelligence assistant.
-Analyze the tender document against the supplier profile.
+Analyse the tender document against the supplier profile.
 Return JSON only.
 
 Schema:
@@ -383,282 +575,174 @@ Supplier profile JSON:
 {json.dumps(profile_json, ensure_ascii=False)[:12000]}
 
 Tender metadata:
-{json.dumps(tender_to_view_model(tender), ensure_ascii=False)[:8000]}
+{json.dumps(tender_vm, ensure_ascii=False)[:6000]}
 
 Tender document text:
-{document_text[:25000]}
+{document_text[:22000]}
 """.strip()
 
         try:
-            response = client.responses.create(
-                model=OPENAI_MODEL,
-                input=prompt,
-            )
-            raw = response.output_text
-            parsed = json.loads(raw)
-            parsed["_analysis_mode"] = "openai"
-            parsed["_analyzed_at"] = utcnow().isoformat()
-            return parsed
+            response = client.responses.create(model=OPENAI_MODEL, input=prompt)
+            parsed = json_from_text(response.output_text)
+            if parsed:
+                parsed["_analysis_mode"] = "openai"
+                return parsed
         except Exception:
             pass
 
-    # Fallback heuristic comparison
-    score, reasons, band = prequalify_tender_against_profile(tender, profile)
-    recommendation = "Proceed with deeper review." if score >= 60 else "Review carefully before committing resources."
+    score = keyword_overlap_score(profile, tender) or 0
+    reasons = build_fit_reasons(profile, tender)
 
     return {
         "score": score,
-        "summary": "This analysis used metadata and available extracted text with fallback logic.",
+        "summary": build_fit_summary(score, reasons) or "Fallback analysis was used.",
         "strengths": reasons[:4],
-        "gaps": ["Detailed AI interpretation was unavailable."] if get_openai_client() is None else [],
+        "gaps": ["Detailed AI interpretation was unavailable."],
         "risks": [] if score >= 60 else ["Profile alignment appears limited from the available metadata."],
-        "recommendation": recommendation,
+        "recommendation": "Proceed to full response preparation." if score >= 60 else "Review carefully before committing resources.",
         "_analysis_mode": "heuristic",
-        "_analyzed_at": utcnow().isoformat(),
-        "_band": band,
     }
 
 
-# -------------------------------------------------------------------
-# Prequalification helpers
-# -------------------------------------------------------------------
+@app.context_processor
+def inject_globals():
+    with get_db_session() as session:
+        active_profile = get_active_profile(session)
+        latest_ingest = session.execute(
+            select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)
+        ).scalars().first()
 
-def keyword_overlap_score(profile: Optional[Profile], tender: TenderCache) -> float:
-    if not profile:
-        return 0.0
-
-    parsed = safe_json_loads(getattr(profile, "parsed_json", None), {})
-    capabilities = [str(x).strip().lower() for x in (parsed.get("capabilities") or []) if str(x).strip()]
-    locations = [str(x).strip().lower() for x in (parsed.get("locations") or []) if str(x).strip()]
-    industry = str(parsed.get("industry") or getattr(profile, "industry", "") or "").strip().lower()
-
-    haystack = f"{tender.title or ''} {tender.description or ''}".lower()
-    tender_province = (getattr(tender, "province", None) or "").lower()
-    tender_industry = (getattr(tender, "industry", None) or "").lower()
-
-    score = 0.0
-
-    matched_caps = 0
-    for cap in capabilities[:20]:
-        if cap and cap in haystack:
-            matched_caps += 1
-    score += min(matched_caps * 12, 60)
-
-    if industry and tender_industry and industry == tender_industry:
-        score += 20
-
-    if locations and tender_province and any(loc in tender_province or tender_province in loc for loc in locations):
-        score += 15
-
-    if getattr(tender, "closing_date", None):
-        try:
-            days = (tender.closing_date - date.today()).days
-            if days >= 0:
-                score += 5
-        except Exception:
-            pass
-
-    return min(score, 100.0)
+        return {
+            "active_profile": serialize_profile(active_profile, include_issues=False) if active_profile else None,
+            "latest_ingest": {
+                "status": latest_ingest.status,
+                "started_at": latest_ingest.started_at,
+            } if latest_ingest else None,
+            "today": date.today(),
+        }
 
 
-def prequalify_tender_against_profile(tender: TenderCache, profile: Optional[Profile]):
-    score = keyword_overlap_score(profile, tender)
-    reasons: List[str] = []
+@app.template_filter("days_left")
+def days_left_filter(closing_date):
+    if not closing_date:
+        return None
+    return (closing_date - date.today()).days
 
-    if profile:
-        parsed = safe_json_loads(profile.parsed_json, {})
-        capabilities = [str(x).strip() for x in (parsed.get("capabilities") or []) if str(x).strip()]
-        locations = [str(x).strip() for x in (parsed.get("locations") or []) if str(x).strip()]
-        profile_industry = (parsed.get("industry") or getattr(profile, "industry", "") or "").strip().lower()
-
-        title_desc = f"{tender.title or ''} {tender.description or ''}".lower()
-        matched_caps = [cap for cap in capabilities if cap.lower() in title_desc]
-        if matched_caps:
-            reasons.append(f"Matches your service keywords: {', '.join(matched_caps[:4])}")
-
-        tender_industry = (getattr(tender, "industry", None) or "").strip().lower()
-        if profile_industry and tender_industry and profile_industry == tender_industry:
-            reasons.append(f"Industry alignment with {tender.industry}")
-
-        tender_province = (getattr(tender, "province", None) or "").strip().lower()
-        if locations and tender_province and any(loc.lower() in tender_province or tender_province in loc.lower() for loc in locations):
-            reasons.append(f"Location alignment in {tender.province}")
-
-        if getattr(tender, "buyer_name", None):
-            reasons.append(f"Issued by {tender.buyer_name}")
-
-    if score >= 75:
-        band = "high_potential"
-    elif score >= 45:
-        band = "possible_fit"
-    else:
-        band = "low_fit"
-
-    return score, reasons, band
-
-
-def build_prequal_summary(score: float, reasons: List[str]) -> str:
-    if reasons:
-        return "This tender could be a good fit because " + "; ".join(reasons[:3]) + "."
-    if score >= 60:
-        return "This tender shows promising metadata alignment with your active profile."
-    return "This tender has limited visible alignment from metadata alone and may require careful review."
-
-
-# -------------------------------------------------------------------
-# Document fetching
-# -------------------------------------------------------------------
-
-def fetch_tender_document(session, tender: TenderCache) -> Dict[str, Any]:
-    url = getattr(tender, "document_url", None) or getattr(tender, "source_url", None)
-    if not url:
-        return {"ok": False, "error": "No document or source URL available."}
-
-    existing = session.execute(
-        select(TenderDocumentCache)
-        .where(TenderDocumentCache.tender_id == tender.id)
-        .order_by(desc(TenderDocumentCache.updated_at))
-        .limit(1)
-    ).scalar_one_or_none()
-
-    try:
-        response = requests.get(url, timeout=20, allow_redirects=True)
-        response.raise_for_status()
-        content_type = (response.headers.get("Content-Type") or "").lower()
-
-        suffix = ".pdf"
-        if "wordprocessingml" in content_type or url.lower().endswith(".docx"):
-            suffix = ".docx"
-        elif "pdf" not in content_type and not url.lower().endswith(".pdf"):
-            suffix = ".bin"
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(response.content)
-            temp_path = temp_file.name
-
-        extracted_text = ""
-        if suffix == ".pdf":
-            extracted_text = extract_pdf_text(temp_path)
-        elif suffix == ".docx":
-            extracted_text = extract_docx_text(temp_path)
-
-        if existing:
-            doc = existing
-        else:
-            doc = TenderDocumentCache()
-            if hasattr(doc, "tender_id"):
-                doc.tender_id = tender.id
-            session.add(doc)
-
-        if hasattr(doc, "fetch_status"):
-            doc.fetch_status = "fetched"
-        if hasattr(doc, "content_type"):
-            doc.content_type = content_type[:255]
-        if hasattr(doc, "extracted_text"):
-            doc.extracted_text = extracted_text
-        if hasattr(doc, "error_message"):
-            doc.error_message = None
-        if hasattr(doc, "updated_at"):
-            doc.updated_at = utcnow()
-
-        session.flush()
-
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-
-        return {"ok": True, "text_len": len(extracted_text), "content_type": content_type}
-
-    except Exception as exc:
-        if existing:
-            doc = existing
-        else:
-            doc = TenderDocumentCache()
-            if hasattr(doc, "tender_id"):
-                doc.tender_id = tender.id
-            session.add(doc)
-
-        if hasattr(doc, "fetch_status"):
-            doc.fetch_status = "fetch_failed"
-        if hasattr(doc, "error_message"):
-            doc.error_message = str(exc)
-        if hasattr(doc, "updated_at"):
-            doc.updated_at = utcnow()
-
-        session.flush()
-        return {"ok": False, "error": str(exc)}
-
-
-# -------------------------------------------------------------------
-# Routes
-# -------------------------------------------------------------------
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "service": "tenderai"})
+    with get_db_session() as session:
+        count = session.execute(select(func.count()).select_from(TenderCache)).scalar_one()
+        return jsonify({"ok": True, "cached_tenders": count, "time": utcnow().isoformat()})
 
 
 @app.get("/")
 def home():
     with get_db_session() as session:
-        tenders = session.execute(
-            select(TenderCache).order_by(desc(TenderCache.updated_at)).limit(20)
-        ).scalars().all()
         active_profile = get_active_profile(session)
 
-        tender_cards = []
-        for tender in tenders:
-            score, reasons, band = prequalify_tender_against_profile(tender, active_profile)
-            card = tender_to_view_model(tender)
-            card["alignment_score"] = score
-            card["fit_band"] = band
-            card["fit_reasons"] = reasons
-            tender_cards.append(card)
+        total_live = session.execute(
+            select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))
+        ).scalar_one()
 
-        return render_template(
-            "home.html",
-            tenders=tender_cards,
-            active_profile=serialize_profile(active_profile) if active_profile else None,
-        )
+        tenders = session.execute(
+            select(TenderCache)
+            .where(TenderCache.is_live.is_(True))
+            .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
+            .limit(24)
+        ).scalars().all()
+
+        featured = []
+        for t in tenders:
+            featured.append({"tender": tender_to_view_model(t), "score": keyword_overlap_score(active_profile, t)})
+
+        if active_profile:
+            featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
+
+        return render_template("home.html", total_live=total_live, featured=featured[:12])
 
 
 @app.get("/tenders")
 def tenders():
-    province = (request.args.get("province") or "").strip()
-    industry = (request.args.get("industry") or "").strip()
-    q = (request.args.get("q") or "").strip().lower()
-
     with get_db_session() as session:
-        query = select(TenderCache).order_by(desc(TenderCache.updated_at))
-        records = session.execute(query).scalars().all()
-
-        filtered = []
-        for tender in records:
-            if province and province.lower() not in ((tender.province or "").lower()):
-                continue
-            if industry and industry.lower() not in ((tender.industry or "").lower()):
-                continue
-            haystack = f"{tender.title or ''} {tender.description or ''} {(tender.buyer_name or '')}".lower()
-            if q and q not in haystack:
-                continue
-            filtered.append(tender)
-
         active_profile = get_active_profile(session)
 
-        tender_cards = []
-        for tender in filtered:
-            score, reasons, band = prequalify_tender_against_profile(tender, active_profile)
-            card = tender_to_view_model(tender)
-            card["alignment_score"] = score
-            card["fit_band"] = band
-            card["fit_reasons"] = reasons
-            tender_cards.append(card)
+        province = (request.args.get("province") or "").strip()
+        tender_type = (request.args.get("tender_type") or "").strip()
+        industry = (request.args.get("industry") or "").strip()
+        issued_from = (request.args.get("issued_from") or "").strip()
+        search_text = (request.args.get("q") or "").strip()
+
+        query = select(TenderCache).where(TenderCache.is_live.is_(True))
+
+        if province:
+            query = query.where(TenderCache.province == province)
+        if tender_type:
+            query = query.where(TenderCache.tender_type == tender_type)
+        if industry:
+            query = query.where(TenderCache.industry == industry)
+        if issued_from:
+            try:
+                dt = datetime.strptime(issued_from, "%Y-%m-%d").date()
+                query = query.where(TenderCache.issued_date >= dt)
+            except ValueError:
+                pass
+        if search_text:
+            like_term = f"%{search_text.lower()}%"
+            query = query.where(
+                or_(
+                    func.lower(TenderCache.title).like(like_term),
+                    func.lower(func.coalesce(TenderCache.description, "")).like(like_term),
+                    func.lower(func.coalesce(TenderCache.buyer_name, "")).like(like_term),
+                    func.lower(func.coalesce(TenderCache.industry, "")).like(like_term),
+                )
+            )
+
+        items = session.execute(
+            query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)
+        ).scalars().all()
+
+        ranked = []
+        for t in items:
+            ranked.append({"tender": tender_to_view_model(t), "score": keyword_overlap_score(active_profile, t)})
+
+        if active_profile:
+            ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
+
+        provinces = session.execute(
+            select(TenderCache.province)
+            .where(TenderCache.is_live.is_(True), TenderCache.province.is_not(None))
+            .distinct()
+            .order_by(TenderCache.province)
+        ).scalars().all()
+
+        tender_types = session.execute(
+            select(TenderCache.tender_type)
+            .where(TenderCache.is_live.is_(True), TenderCache.tender_type.is_not(None))
+            .distinct()
+            .order_by(TenderCache.tender_type)
+        ).scalars().all()
+
+        industries = session.execute(
+            select(TenderCache.industry)
+            .where(TenderCache.is_live.is_(True), TenderCache.industry.is_not(None))
+            .distinct()
+            .order_by(TenderCache.industry)
+        ).scalars().all()
 
         return render_template(
-            "tenders.html",
-            tenders=tender_cards,
-            active_profile=serialize_profile(active_profile) if active_profile else None,
+            "feed.html",
+            ranked_tenders=ranked,
+            provinces=provinces,
+            tender_types=tender_types,
+            industries=industries,
+            filters={
+                "province": province,
+                "tender_type": tender_type,
+                "industry": industry,
+                "issued_from": issued_from,
+                "q": search_text,
+            },
         )
 
 
@@ -670,42 +754,18 @@ def tender_detail(tender_id: int):
             abort(404)
 
         active_profile = get_active_profile(session)
-        score, fit_reasons, fit_band = prequalify_tender_against_profile(tender, active_profile)
-        fit_summary = build_prequal_summary(score, fit_reasons)
-
-        latest_job = None
-        if active_profile:
-            latest_job = session.execute(
-                select(AnalysisJob)
-                .where(
-                    AnalysisJob.tender_id == tender_id,
-                    AnalysisJob.profile_id == active_profile.id,
-                )
-                .order_by(desc(AnalysisJob.updated_at))
-                .limit(1)
-            ).scalar_one_or_none()
-
-        latest_analysis = None
-        if latest_job:
-            latest_analysis = {
-                "id": latest_job.id,
-                "status": getattr(latest_job, "status", None),
-                "score": getattr(latest_job, "score", None),
-                "summary": getattr(latest_job, "summary", None),
-                "strengths": [x.strip() for x in (getattr(latest_job, "strengths_text", None) or "").split("\n") if x.strip()],
-                "gaps": [x.strip() for x in (getattr(latest_job, "gaps_text", None) or "").split("\n") if x.strip()]
-                if hasattr(latest_job, "gaps_text") else [],
-                "risks": [x.strip() for x in (getattr(latest_job, "risks_text", None) or "").split("\n") if x.strip()],
-                "recommendation": getattr(latest_job, "recommendations_text", None),
-                "updated_at": latest_job.updated_at.isoformat() if getattr(latest_job, "updated_at", None) else None,
-            }
+        score = keyword_overlap_score(active_profile, tender)
+        reasons = build_fit_reasons(active_profile, tender)
+        fit_band = fit_band_from_score(score)
+        fit_summary = build_fit_summary(score, reasons)
+        latest_analysis = latest_analysis_for(session, tender_id, active_profile.id if active_profile else None)
 
         return render_template(
             "tender_detail.html",
             tender=tender_to_view_model(tender),
             alignment_score=score,
             fit_summary=fit_summary,
-            fit_reasons=fit_reasons,
+            fit_reasons=reasons,
             fit_band=fit_band,
             can_analyze=bool(active_profile),
             analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id),
@@ -726,62 +786,55 @@ def analyze_tender_page(tender_id: int):
             flash("Please upload and activate a business profile first.", "error")
             return redirect(url_for("profiles"))
 
+        document_url = tender.document_url or tender.source_url
+        if not document_url:
+            flash("No tender document URL is available for this tender.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
         doc = session.execute(
             select(TenderDocumentCache)
-            .where(TenderDocumentCache.tender_id == tender_id)
-            .order_by(desc(TenderDocumentCache.updated_at))
+            .where(
+                TenderDocumentCache.tender_id == tender_id,
+                TenderDocumentCache.document_url == document_url,
+            )
             .limit(1)
-        ).scalar_one_or_none()
+        ).scalars().first()
 
-        if not doc or (getattr(doc, "fetch_status", None) != "fetched"):
-            result = fetch_tender_document(session, tender)
-            if not result.get("ok"):
-                flash(f"Unable to fetch tender document: {result.get('error')}", "error")
+        if not doc or doc.fetch_status != "fetched":
+            fetch_result = fetch_tender_document(session, tender)
+            if not fetch_result.get("ok"):
+                flash(f"Unable to fetch tender document: {fetch_result.get('error')}", "error")
                 return redirect(url_for("tender_detail", tender_id=tender_id))
             doc = session.execute(
                 select(TenderDocumentCache)
-                .where(TenderDocumentCache.tender_id == tender_id)
-                .order_by(desc(TenderDocumentCache.updated_at))
+                .where(
+                    TenderDocumentCache.tender_id == tender_id,
+                    TenderDocumentCache.document_url == document_url,
+                )
                 .limit(1)
-            ).scalar_one_or_none()
+            ).scalars().first()
 
-        extracted_text = (getattr(doc, "extracted_text", None) or "").strip()
+        extracted_text = (doc.extracted_text or "").strip()
         if not extracted_text:
             flash("Tender document was fetched, but no readable text was extracted.", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
         analysis = analyze_tender_against_profile(tender, active_profile, extracted_text)
 
-        job = AnalysisJob()
-        if hasattr(job, "profile_id"):
-            job.profile_id = active_profile.id
-        if hasattr(job, "tender_id"):
-            job.tender_id = tender_id
-        if hasattr(job, "status"):
-            job.status = "completed"
-        if hasattr(job, "score"):
-            try:
-                job.score = float(analysis.get("score") or 0)
-            except Exception:
-                job.score = 0
-        if hasattr(job, "summary"):
-            job.summary = analysis.get("summary")
-        if hasattr(job, "strengths_text"):
-            job.strengths_text = "\n".join(analysis.get("strengths") or [])
-        if hasattr(job, "risks_text"):
-            job.risks_text = "\n".join(analysis.get("risks") or [])
-        if hasattr(job, "recommendations_text"):
-            job.recommendations_text = analysis.get("recommendation")
-        if hasattr(job, "updated_at"):
-            job.updated_at = utcnow()
-
+        job = AnalysisJob(
+            profile_id=active_profile.id,
+            tender_id=tender_id,
+            status="completed",
+            score=float(analysis.get("score") or 0),
+            summary=analysis.get("summary"),
+            strengths_text="\n".join(analysis.get("strengths") or []),
+            risks_text="\n".join(analysis.get("risks") or []),
+            recommendations_text=analysis.get("recommendation"),
+            raw_result_json=json.dumps(analysis, ensure_ascii=False),
+        )
         session.add(job)
 
-        if hasattr(doc, "parsed_json"):
-            doc.parsed_json = json.dumps(analysis, ensure_ascii=False)
-        if hasattr(doc, "updated_at"):
-            doc.updated_at = utcnow()
-
+        doc.parsed_json = json.dumps(analysis, ensure_ascii=False)
         session.flush()
 
     flash("Tender analysis completed.", "success")
@@ -797,200 +850,113 @@ def profiles():
 
         return render_template(
             "profiles.html",
-            profiles=[serialize_profile(profile, include_issues=True) for profile in profiles_list],
+            profiles=[serialize_profile(p, include_issues=True) for p in profiles_list],
         )
 
 
-@app.post("/profiles")
+@app.post("/profiles/upload")
 def upload_profile():
-    uploaded = request.files.get("profile_file") or request.files.get("file")
-    if not uploaded or not uploaded.filename:
-        flash("Please choose a profile document to upload.", "error")
+    uploaded = request.files.get("profile_pdf") or request.files.get("profile_file") or request.files.get("file")
+    if not uploaded or not uploaded.filename.lower().endswith(".pdf"):
+        flash("Please upload a PDF profile.", "error")
         return redirect(url_for("profiles"))
 
-    filename = uploaded.filename
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1] or ".pdf") as temp_file:
-        uploaded.save(temp_file.name)
-        temp_path = temp_file.name
-
-    extracted_text = extract_uploaded_text(temp_path, filename)
-    parsed = parse_profile_text(extracted_text, filename)
-
     try:
-        with get_db_session() as session:
-            profile = Profile()
-            if hasattr(profile, "filename"):
-                profile.filename = filename
-            if hasattr(profile, "extracted_text"):
-                profile.extracted_text = extracted_text
-            if hasattr(profile, "parsed_json"):
-                profile.parsed_json = json.dumps(parsed, ensure_ascii=False)
-            if hasattr(profile, "industry"):
-                profile.industry = parsed.get("industry") or None
-            if hasattr(profile, "is_active"):
-                current_active = get_active_profile(session)
-                profile.is_active = current_active is None
-            if hasattr(profile, "updated_at"):
-                profile.updated_at = utcnow()
+        text = extract_pdf_text(uploaded)
+    except Exception as exc:
+        flash(f"Could not read PDF: {exc}", "error")
+        return redirect(url_for("profiles"))
 
-            session.add(profile)
-            session.flush()
+    parsed = parse_profile_text(text, uploaded.filename)
 
-            upsert_profile_issues(session, profile, parsed)
+    with get_db_session() as session:
+        session.execute(Profile.__table__.update().values(is_active=False))
 
-            parse_mode = parsed.get("_parse_mode", "heuristic")
-            flash(f"Profile uploaded successfully. Parse mode: {parse_mode}.", "success")
-    finally:
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
+        profile = Profile(
+            name=parsed.get("company_name") or os.path.splitext(uploaded.filename)[0],
+            company_name=parsed.get("company_name"),
+            original_filename=uploaded.filename,
+            industry=parsed.get("industry"),
+            capabilities_text=", ".join(parsed.get("capabilities") or []),
+            locations_text=", ".join(parsed.get("locations") or []),
+            extracted_text=text[:200000],
+            parsed_json=json.dumps(parsed, ensure_ascii=False),
+            is_active=True,
+        )
+        session.add(profile)
+        session.flush()
 
+        upsert_profile_issues(session, profile, parsed.get("issues") or [])
+
+    flash(f"Profile uploaded and set as active. Parse mode: {parsed.get('_parse_mode', 'heuristic')}.", "success")
     return redirect(url_for("profiles"))
 
 
 @app.post("/profiles/<int:profile_id>/activate")
 def activate_profile(profile_id: int):
     with get_db_session() as session:
-        target = session.get(Profile, profile_id)
-        if not target:
+        profile = session.get(Profile, profile_id)
+        if not profile:
             flash("Profile not found.", "error")
             return redirect(url_for("profiles"))
 
-        profiles_list = session.execute(select(Profile)).scalars().all()
-        for profile in profiles_list:
-            if hasattr(profile, "is_active"):
-                profile.is_active = profile.id == profile_id
-
-        session.flush()
-
-    flash("Profile activated.", "success")
-    return redirect(url_for("profiles"))
+        session.execute(Profile.__table__.update().values(is_active=False))
+        profile.is_active = True
+        flash("Active profile updated.", "success")
+        return redirect(url_for("profiles"))
 
 
-@app.post("/profiles/<int:profile_id>/delete")
-def delete_profile(profile_id: int):
+@app.post("/profile-issues/<int:issue_id>/status")
+def update_issue_status(issue_id: int):
+    status = (request.form.get("status") or "").strip().lower()
+    if status not in {"pending", "fixed"}:
+        flash("Invalid issue status.", "error")
+        return redirect(url_for("profiles"))
+
     with get_db_session() as session:
-        target = session.get(Profile, profile_id)
-        if not target:
-            flash("Profile not found.", "error")
+        issue = session.get(ProfileIssue, issue_id)
+        if not issue:
+            flash("Issue not found.", "error")
             return redirect(url_for("profiles"))
-
-        session.delete(target)
-        session.flush()
-
-    flash("Profile deleted.", "success")
-    return redirect(url_for("profiles"))
-
-
-# -------------------------------------------------------------------
-# JSON endpoints
-# -------------------------------------------------------------------
-
-@app.get("/api/tenders/prequalified")
-def api_prequalified_tenders():
-    band_filter = (request.args.get("band") or "").strip().lower()
-    limit = max(1, min(int(request.args.get("limit", 20)), 100))
-
-    with get_db_session() as session:
-        active_profile = get_active_profile(session)
-        tenders = session.execute(
-            select(TenderCache).order_by(desc(TenderCache.updated_at)).limit(200)
-        ).scalars().all()
-
-        results = []
-        for tender in tenders:
-            score, reasons, band = prequalify_tender_against_profile(tender, active_profile)
-            if band_filter and band != band_filter:
-                continue
-
-            item = tender_to_view_model(tender)
-            item["alignment_score"] = score
-            item["fit_reasons"] = reasons
-            item["fit_band"] = band
-            item["fit_summary"] = build_prequal_summary(score, reasons)
-            results.append(item)
-
-        results.sort(key=lambda x: x.get("alignment_score", 0), reverse=True)
-
-        return jsonify(
-            {
-                "ok": True,
-                "active_profile": serialize_profile(active_profile) if active_profile else None,
-                "count": min(len(results), limit),
-                "items": results[:limit],
-            }
-        )
-
-
-@app.get("/api/tenders/<int:tender_id>/analyze")
-def api_analyze_tender(tender_id: int):
-    with get_db_session() as session:
-        tender = session.get(TenderCache, tender_id)
-        if not tender:
-            return jsonify({"ok": False, "error": "Tender not found."}), 404
-
-        active_profile = get_active_profile(session)
-        if not active_profile:
-            return jsonify({"ok": False, "error": "No active profile found."}), 400
-
-        doc = session.execute(
-            select(TenderDocumentCache)
-            .where(TenderDocumentCache.tender_id == tender_id)
-            .order_by(desc(TenderDocumentCache.updated_at))
-            .limit(1)
-        ).scalar_one_or_none()
-
-        if not doc or (getattr(doc, "fetch_status", None) != "fetched"):
-            fetch_result = fetch_tender_document(session, tender)
-            if not fetch_result.get("ok"):
-                return jsonify({"ok": False, "error": fetch_result.get("error")}), 400
-            doc = session.execute(
-                select(TenderDocumentCache)
-                .where(TenderDocumentCache.tender_id == tender_id)
-                .order_by(desc(TenderDocumentCache.updated_at))
-                .limit(1)
-            ).scalar_one_or_none()
-
-        extracted_text = (getattr(doc, "extracted_text", None) or "").strip()
-        if not extracted_text:
-            return jsonify({"ok": False, "error": "No extracted document text available."}), 400
-
-        analysis = analyze_tender_against_profile(tender, active_profile, extracted_text)
-        return jsonify({"ok": True, "analysis": analysis})
+        issue.status = status
+        flash("Issue status updated.", "success")
+        return redirect(url_for("profiles"))
 
 
 @app.get("/api/admin/openai-status")
 def admin_openai_status():
-    require_admin(request)
+    if not admin_allowed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
     client = get_openai_client()
-    return jsonify(
-        {
-            "ok": True,
-            "api_key_present": bool((os.getenv("OPENAI_API_KEY") or "").strip()),
-            "client_ready": client is not None,
-            "model": OPENAI_MODEL,
-        }
-    )
+    return jsonify({
+        "ok": True,
+        "api_key_present": bool((os.getenv("OPENAI_API_KEY") or "").strip()),
+        "client_ready": client is not None,
+        "model": OPENAI_MODEL,
+    })
 
 
+@app.post("/api/admin/run-ingest")
 @app.get("/api/admin/run-ingest")
-def admin_run_ingest():
-    require_admin(request)
+def api_run_ingest():
+    if not admin_allowed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
+
     with get_db_session() as session:
         result = ingest_tenders(
             session=session,
             max_pages=int(os.getenv("INGEST_MAX_PAGES", "1")),
         )
-    return jsonify(result)
+        return jsonify(result)
 
 
+@app.post("/api/admin/fetch-documents")
 @app.get("/api/admin/fetch-documents")
-def admin_fetch_documents():
-    require_admin(request)
-    limit = max(1, min(int(request.args.get("limit", 20)), 100))
+def api_fetch_documents():
+    if not admin_allowed():
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
 
+    limit = max(1, min(int(request.args.get("limit", 20)), 100))
     fetched = 0
     errors = []
 
@@ -1009,139 +975,16 @@ def admin_fetch_documents():
     return jsonify({"ok": True, "requested": limit, "fetched": fetched, "errors": errors})
 
 
-@app.get("/api/admin/parse-documents")
-def admin_parse_documents():
-    require_admin(request)
-
-    tender_id = request.args.get("tender_id", type=int)
-    if not tender_id:
-        return jsonify(
-            {
-                "ok": False,
-                "error": "Bulk parsing is disabled. Provide tender_id and use on-demand analysis only.",
-            }
-        ), 400
-
-    with get_db_session() as session:
-        tender = session.get(TenderCache, tender_id)
-        if not tender:
-            return jsonify({"ok": False, "error": "Tender not found."}), 404
-
-        active_profile = get_active_profile(session)
-        if not active_profile:
-            return jsonify({"ok": False, "error": "No active profile found."}), 400
-
-        doc = session.execute(
-            select(TenderDocumentCache)
-            .where(TenderDocumentCache.tender_id == tender_id)
-            .order_by(desc(TenderDocumentCache.updated_at))
-            .limit(1)
-        ).scalar_one_or_none()
-
-        if not doc:
-            fetch_result = fetch_tender_document(session, tender)
-            if not fetch_result.get("ok"):
-                return jsonify({"ok": False, "error": fetch_result.get("error")}), 400
-            doc = session.execute(
-                select(TenderDocumentCache)
-                .where(TenderDocumentCache.tender_id == tender_id)
-                .order_by(desc(TenderDocumentCache.updated_at))
-                .limit(1)
-            ).scalar_one_or_none()
-
-        extracted_text = (getattr(doc, "extracted_text", None) or "").strip()
-        if not extracted_text:
-            return jsonify({"ok": False, "error": "No extracted text available to parse."}), 400
-
-        analysis = analyze_tender_against_profile(tender, active_profile, extracted_text)
-
-        if hasattr(doc, "parsed_json"):
-            doc.parsed_json = json.dumps(analysis, ensure_ascii=False)
-        if hasattr(doc, "updated_at"):
-            doc.updated_at = utcnow()
-
-        job = AnalysisJob()
-        if hasattr(job, "profile_id"):
-            job.profile_id = active_profile.id
-        if hasattr(job, "tender_id"):
-            job.tender_id = tender_id
-        if hasattr(job, "status"):
-            job.status = "completed"
-        if hasattr(job, "score"):
-            try:
-                job.score = float(analysis.get("score") or 0)
-            except Exception:
-                job.score = 0
-        if hasattr(job, "summary"):
-            job.summary = analysis.get("summary")
-        if hasattr(job, "strengths_text"):
-            job.strengths_text = "\n".join(analysis.get("strengths") or [])
-        if hasattr(job, "risks_text"):
-            job.risks_text = "\n".join(analysis.get("risks") or [])
-        if hasattr(job, "recommendations_text"):
-            job.recommendations_text = analysis.get("recommendation")
-        if hasattr(job, "updated_at"):
-            job.updated_at = utcnow()
-
-        session.add(job)
-        session.flush()
-
-        return jsonify({"ok": True, "tender_id": tender_id, "analysis": analysis})
+@app.errorhandler(404)
+def not_found(_):
+    return render_template("404.html"), 404
 
 
-@app.get("/api/admin/reparse-profile/<int:profile_id>")
-def admin_reparse_profile(profile_id: int):
-    require_admin(request)
-
-    with get_db_session() as session:
-        profile = session.get(Profile, profile_id)
-        if not profile:
-            return jsonify({"ok": False, "error": "Profile not found."}), 404
-
-        extracted_text = getattr(profile, "extracted_text", None) or ""
-        parsed = parse_profile_text(extracted_text, getattr(profile, "filename", "") or "")
-
-        if hasattr(profile, "parsed_json"):
-            profile.parsed_json = json.dumps(parsed, ensure_ascii=False)
-        if hasattr(profile, "industry"):
-            profile.industry = parsed.get("industry") or None
-        if hasattr(profile, "updated_at"):
-            profile.updated_at = utcnow()
-
-        upsert_profile_issues(session, profile, parsed)
-        session.flush()
-
-        return jsonify({"ok": True, "profile_id": profile_id, "parsed": parsed})
-
-
-@app.get("/api/admin/document-cache-debug")
-def admin_document_cache_debug():
-    require_admin(request)
-    limit = max(1, min(int(request.args.get("limit", 20)), 100))
-
-    with get_db_session() as session:
-        rows = session.execute(
-            text(
-                """
-                SELECT id,
-                       tender_id,
-                       fetch_status,
-                       content_type,
-                       LENGTH(COALESCE(extracted_text, '')) AS text_len,
-                       CASE WHEN parsed_json IS NOT NULL THEN true ELSE false END AS has_parsed_json,
-                       error_message,
-                       updated_at
-                FROM tender_documents_cache
-                ORDER BY updated_at DESC
-                LIMIT :limit
-                """
-            ),
-            {"limit": limit},
-        ).mappings().all()
-
-        return jsonify({"ok": True, "rows": [dict(r) for r in rows]})
+@app.errorhandler(500)
+def internal_error(_):
+    return render_template("500.html"), 500
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=8080)
-
+    port = int(os.getenv("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port, debug=False)
