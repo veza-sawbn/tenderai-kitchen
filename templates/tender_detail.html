@@ -7,7 +7,10 @@
     <span>{{ tender.industry or "General" }}</span>
     <span>{{ tender.province or "Province n/a" }}</span>
     {% if fit_band %}
-      <span class="glow-chip">{{ fit_band|replace("_", " ")|title }}</span>
+      <span class="glow-chip band-{{ fit_band }}">{{ fit_band|replace("_", " ")|title }}</span>
+    {% endif %}
+    {% if readiness_band %}
+      <span class="pill">{{ readiness_band|replace("_", " ")|title }}</span>
     {% endif %}
   </div>
 
@@ -56,22 +59,40 @@
   </div>
 </section>
 
-{% if alignment_score is not none or fit_summary or fit_reasons %}
 <section class="glass-card stack-list">
-  <div>
-    <h2>Why This Could Be a Good Fit</h2>
+  <h2>Prequalification View</h2>
+
+  <div class="detail-actions">
     {% if alignment_score is not none %}
-      <div class="score-panel glow-chip large" style="margin-bottom: 1rem;">
+      <div class="score-panel glow-chip large">
         <span>Prequalification Score</span>
         <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
       </div>
     {% endif %}
+
+    <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
+      Readiness: {{ readiness_band|replace("_", " ")|title }}
+    </span>
   </div>
 
   {% if fit_summary %}
     <div class="detail-list">
       <label>Summary</label>
       <p>{{ fit_summary }}</p>
+    </div>
+  {% endif %}
+
+  <div class="detail-list">
+    <label>Readiness note</label>
+    <p>{{ readiness_note }}</p>
+  </div>
+
+  {% if profile_gap_summary and profile_gap_summary.pending_count %}
+    <div class="detail-list">
+      <label>Active profile gaps</label>
+      <p>
+        {{ profile_gap_summary.pending_count }} unresolved gap(s) are currently affecting bid readiness.
+      </p>
     </div>
   {% endif %}
 
@@ -86,7 +107,6 @@
     </div>
   {% endif %}
 </section>
-{% endif %}
 
 {% if latest_analysis %}
 <section class="glass-card stack-list">
