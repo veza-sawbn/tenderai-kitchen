@@ -35,49 +35,39 @@
   {% if featured %}
     {% for item in featured %}
       {% set tender = item.tender %}
-      <article class="glass-card tender-card">
-        <div class="card-meta">
-          <span>{{ tender.tender_type or "Tender" }}</span>
-          <span>{{ tender.industry or "General" }}</span>
-          <span>{{ tender.province or "Province n/a" }}</span>
-          {% if item.fit_band %}
-            <span class="glow-chip band-{{ item.fit_band }}">{{ item.fit_band|replace("_", " ")|title }}</span>
-          {% endif %}
-          {% if item.readiness_band %}
-            <span class="pill">{{ item.readiness_band|replace("_", " ")|title }}</span>
-          {% endif %}
-        </div>
-
+      <article class="glass-card tender-card compact-card">
         <div class="card-row">
           <div>
+            <div class="card-meta">
+              {% if item.fit_band %}
+                <span class="glow-chip band-{{ item.fit_band }}">{{ item.fit_band|replace("_", " ")|title }}</span>
+              {% endif %}
+              {% if item.readiness_band %}
+                <span class="pill">{{ item.readiness_band|replace("_", " ")|title }}</span>
+              {% endif %}
+            </div>
             <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
-            <p class="muted">{{ tender.buyer_name or "Buyer n/a" }}</p>
+            <p class="muted">{{ tender.buyer_name or "Department n/a" }}</p>
           </div>
 
           {% if item.score is not none %}
             <div class="score-panel glow-chip">
-              <span>Fit</span>
+              <span>Relevance</span>
               <strong>{{ "%.1f"|format(item.score) }}/100</strong>
             </div>
           {% endif %}
         </div>
 
-        <p>{{ tender.description or "No description available." }}</p>
-
         {% if item.fit_summary %}
           <div class="detail-list">
-            <label>Why it could fit</label>
+            <label>Scope Summary</label>
             <p>{{ item.fit_summary }}</p>
           </div>
         {% endif %}
 
-        <div class="detail-grid">
+        <div class="detail-grid compact-grid">
           <div>
-            <label>Issued</label>
-            <p>{{ tender.issued_date or "n/a" }}</p>
-          </div>
-          <div>
-            <label>Closing</label>
+            <label>Closing Date</label>
             <p>{{ tender.closing_date or "n/a" }}</p>
           </div>
           <div>
@@ -89,6 +79,10 @@
                 n/a
               {% endif %}
             </p>
+          </div>
+          <div>
+            <label>Department</label>
+            <p>{{ tender.buyer_name or "n/a" }}</p>
           </div>
           <div>
             <label>Province</label>
