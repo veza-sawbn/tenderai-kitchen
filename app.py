@@ -33,8 +33,10 @@ from services.etenders_ingest import ingest_tenders
 
 load_dotenv()
 
+
 def utcnow():
     return datetime.now(timezone.utc)
+
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-fallback-secret")
@@ -44,6 +46,7 @@ init_db()
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
+
 def get_openai_client():
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key or OpenAI is None:
@@ -52,6 +55,7 @@ def get_openai_client():
         return OpenAI(api_key=api_key)
     except Exception:
         return None
+
 
 def json_from_text(value: str) -> dict:
     if not value:
@@ -65,6 +69,7 @@ def json_from_text(value: str) -> dict:
     except Exception:
         return {}
 
+
 def safe_loads(value: Any, fallback=None):
     if fallback is None:
         fallback = {}
@@ -77,12 +82,14 @@ def safe_loads(value: Any, fallback=None):
     except Exception:
         return fallback
 
+
 def admin_allowed() -> bool:
     token = (os.getenv("ADMIN_TOKEN") or "").strip()
     if not token:
         return True
     supplied = (request.headers.get("X-Admin-Token") or request.args.get("token") or "").strip()
     return supplied == token
+
 
 def get_active_profile(session) -> Optional[Profile]:
     return session.execute(
@@ -91,6 +98,7 @@ def get_active_profile(session) -> Optional[Profile]:
         .order_by(desc(Profile.updated_at))
         .limit(1)
     ).scalars().first()
+
 
 def normalize_keywords(text: str) -> List[str]:
     if not text:
@@ -106,6 +114,27 @@ def normalize_keywords(text: str) -> List[str]:
                 seen.add(key)
                 cleaned.append(value)
     return cleaned[:30]
+
+
+def tokenize(text: str) -> List[str]:
+    if not text:
+        return []
+    words = re.findall(r"[a-zA-Z0-9]+", text.lower())
+    stop = {
+        "the", "and", "for", "with", "from", "that", "this", "into", "your", "their",
+        "supply", "supplies", "service", "services", "tender", "bid", "request",
+        "proposal", "rfq", "rfp", "of", "to", "in", "on", "at", "by", "or", "an", "a"
+    }
+    out = []
+    seen = set()
+    for w in words:
+        if len(w) < 4 or w in stop:
+            continue
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
 
 def extract_pdf_text(file_or_path) -> str:
     temp_path = None
@@ -133,6 +162,7 @@ def extract_pdf_text(file_or_path) -> str:
             except Exception:
                 pass
 
+
 def extract_docx_text(path: str) -> str:
     if DocxDocument is None:
         return ""
@@ -141,6 +171,7 @@ def extract_docx_text(path: str) -> str:
         return "\n".join([p.text for p in doc.paragraphs if p.text]).strip()
     except Exception:
         return ""
+
 
 def parse_profile_with_openai(text: str, filename: str | None = None) -> dict:
     client = get_openai_client()
@@ -179,6 +210,7 @@ Profile text:
         return parsed
     except Exception:
         return {}
+
 
 def heuristic_profile_parse(text: str, filename: str | None = None) -> dict:
     lower = text.lower()
@@ -249,11 +281,13 @@ def heuristic_profile_parse(text: str, filename: str | None = None) -> dict:
         "_parse_mode": "heuristic",
     }
 
+
 def parse_profile_text(text: str, filename: str | None = None) -> dict:
     parsed = parse_profile_with_openai(text, filename)
     if parsed:
         return parsed
     return heuristic_profile_parse(text, filename)
+
 
 def serialize_profile(profile: Profile, include_issues: bool = True) -> dict:
     parsed = safe_loads(profile.parsed_json, {})
@@ -286,6 +320,7 @@ def serialize_profile(profile: Profile, include_issues: bool = True) -> dict:
         ]
     return data
 
+
 def tender_to_view_model(t: TenderCache) -> dict:
     return {
         "id": t.id,
@@ -303,6 +338,7 @@ def tender_to_view_model(t: TenderCache) -> dict:
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
         "is_live": t.is_live,
     }
+
 
 def build_profile_gap_summary(profile: Profile | None) -> dict:
     if not profile:
@@ -325,6 +361,7 @@ def build_profile_gap_summary(profile: Profile | None) -> dict:
         "fixed_count": fixed_count,
         "penalty_total": penalty_total,
     }
+
 
 def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float | None:
     if not profile:
@@ -381,6 +418,7 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
 
     return max(0.0, min(score, 100.0))
 
+
 def build_fit_reasons(profile: Profile | None, tender: TenderCache) -> List[str]:
     if not profile:
         return []
@@ -413,6 +451,7 @@ def build_fit_reasons(profile: Profile | None, tender: TenderCache) -> List[str]
 
     return reasons
 
+
 def fit_band_from_score(score: Optional[float]) -> Optional[str]:
     if score is None:
         return None
@@ -421,6 +460,7 @@ def fit_band_from_score(score: Optional[float]) -> Optional[str]:
     if score >= 55:
         return "possible_fit"
     return "low_fit"
+
 
 def readiness_band_for_profile(profile: Profile | None) -> str:
     if not profile:
@@ -432,6 +472,7 @@ def readiness_band_for_profile(profile: Profile | None) -> str:
         return "watchlist"
     return "needs_attention"
 
+
 def readiness_message(profile: Profile | None, score: Optional[float]) -> str:
     if not profile:
         return "Upload and activate a profile to unlock TenderAI matching."
@@ -441,6 +482,7 @@ def readiness_message(profile: Profile | None, score: Optional[float]) -> str:
     if score is not None and score >= 70:
         return "This looks promising, but profile gaps may reduce readiness."
     return "Profile readiness gaps may weaken your bid position."
+
 
 def build_fit_summary(score: Optional[float], reasons: List[str], profile: Profile | None = None) -> Optional[str]:
     if score is None:
@@ -457,6 +499,69 @@ def build_fit_summary(score: Optional[float], reasons: List[str], profile: Profi
         if gap_summary["pending_count"] > 0:
             base += f" Your active profile currently has {gap_summary['pending_count']} unresolved readiness gap(s)."
     return base
+
+
+def build_document_match_check(tender: TenderCache, document_text: str) -> dict:
+    text = (document_text or "").lower()
+    if not text.strip():
+        return {
+            "document_match": False,
+            "confidence": 0.0,
+            "reason": "No extracted document text was available.",
+            "matched_signals": [],
+            "missing_signals": ["document text"],
+        }
+
+    matched_signals = []
+    missing_signals = []
+    score = 0.0
+
+    title_tokens = tokenize(tender.title or "")[:8]
+    title_matches = [tok for tok in title_tokens if tok in text]
+    if len(title_matches) >= 2:
+        matched_signals.append(f"Title overlap: {', '.join(title_matches[:5])}")
+        score += min(len(title_matches) * 12.0, 36.0)
+    else:
+        missing_signals.append("strong title overlap")
+
+    buyer_tokens = tokenize(tender.buyer_name or "")[:6]
+    buyer_matches = [tok for tok in buyer_tokens if tok in text]
+    if buyer_matches:
+        matched_signals.append(f"Buyer overlap: {', '.join(buyer_matches[:4])}")
+        score += min(len(buyer_matches) * 10.0, 25.0)
+    elif tender.buyer_name:
+        missing_signals.append("buyer name overlap")
+
+    desc_tokens = tokenize(tender.description or "")[:10]
+    desc_matches = [tok for tok in desc_tokens if tok in text]
+    if len(desc_matches) >= 2:
+        matched_signals.append(f"Description overlap: {', '.join(desc_matches[:5])}")
+        score += min(len(desc_matches) * 4.0, 20.0)
+
+    if tender.industry and tender.industry.lower() in text:
+        matched_signals.append(f"Industry reference: {tender.industry}")
+        score += 10.0
+
+    if tender.province and tender.province.lower() in text:
+        matched_signals.append(f"Province reference: {tender.province}")
+        score += 6.0
+
+    confidence = max(0.0, min(score, 100.0))
+    is_match = confidence >= 35.0 and (len(title_matches) >= 2 or buyer_matches)
+
+    if is_match:
+        reason = "Document content appears consistent with the selected tender."
+    else:
+        reason = "Document content does not sufficiently match the selected tender metadata."
+
+    return {
+        "document_match": is_match,
+        "confidence": confidence,
+        "reason": reason,
+        "matched_signals": matched_signals,
+        "missing_signals": missing_signals,
+    }
+
 
 def upsert_profile_issues(session, profile: Profile, issues: List[dict]):
     existing = session.execute(
@@ -508,7 +613,13 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "recommendation": job.recommendations_text,
         "error_message": job.error_message,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "document_match": raw.get("document_match"),
+        "document_match_confidence": raw.get("document_match_confidence"),
+        "document_match_reason": raw.get("document_match_reason"),
+        "matched_signals": raw.get("matched_signals") or [],
+        "missing_signals": raw.get("missing_signals") or [],
     }
+
 
 def fetch_tender_document(session, tender: TenderCache) -> dict:
     document_url = tender.document_url or tender.source_url
@@ -574,20 +685,42 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
         session.flush()
         return {"ok": False, "error": str(exc)}
 
+
 def analyze_tender_against_profile(tender: TenderCache, profile: Profile, document_text: str) -> dict:
     client = get_openai_client()
 
     profile_json = safe_loads(profile.parsed_json, {})
     tender_vm = tender_to_view_model(tender)
+    match_check = build_document_match_check(tender, document_text)
+
+    if not match_check["document_match"]:
+        return {
+            "document_match": False,
+            "document_match_confidence": match_check["confidence"],
+            "document_match_reason": match_check["reason"],
+            "matched_signals": match_check["matched_signals"],
+            "missing_signals": match_check["missing_signals"],
+            "score": 0,
+            "summary": "TenderAI could not trust this analysis because the fetched document may belong to a different tender or a generic source page.",
+            "strengths": [],
+            "gaps": ["Document match could not be confirmed for this tender."],
+            "risks": ["Analysis was blocked to avoid scoring the wrong tender document."],
+            "recommendation": "Verify the tender document URL and retry analysis.",
+            "_analysis_mode": "document_validation_failed",
+        }
 
     if client and document_text.strip():
         prompt = f"""
 You are TenderAI, a procurement intelligence assistant.
-Analyse the tender document against the supplier profile.
+First verify that the tender document belongs to the selected tender.
+If it does not match, return document_match=false and do not produce a meaningful opportunity score.
+If it matches, score and interpret the tender against the supplier profile.
 Return JSON only.
 
 Schema:
 {{
+  "document_match": true,
+  "document_match_reason": "string",
   "score": 0,
   "summary": "string",
   "strengths": ["string"],
@@ -597,13 +730,16 @@ Schema:
 }}
 
 Supplier profile JSON:
-{{json.dumps(profile_json, ensure_ascii=False, default=str)[:12000]}}
+{json.dumps(profile_json, ensure_ascii=False, default=str)[:12000]}
 
 Tender metadata:
-{{json.dumps(tender_vm, ensure_ascii=False, default=str)[:6000]}}
+{json.dumps(tender_vm, ensure_ascii=False, default=str)[:6000]}
+
+Pre-check:
+{json.dumps(match_check, ensure_ascii=False, default=str)[:2000]}
 
 Tender document text:
-{{document_text[:22000]}}
+{document_text[:22000]}
 """.strip()
 
         try:
@@ -611,6 +747,15 @@ Tender document text:
             parsed = json_from_text(response.output_text)
             if parsed:
                 parsed["_analysis_mode"] = "openai"
+                parsed.setdefault("document_match", True)
+                parsed.setdefault("document_match_confidence", match_check["confidence"])
+                parsed.setdefault("document_match_reason", match_check["reason"])
+                parsed.setdefault("matched_signals", match_check["matched_signals"])
+                parsed.setdefault("missing_signals", match_check["missing_signals"])
+
+                if parsed.get("document_match") is False:
+                    parsed["score"] = 0
+                    parsed.setdefault("recommendation", "Verify the tender document URL and retry analysis.")
                 return parsed
         except Exception:
             pass
@@ -619,6 +764,11 @@ Tender document text:
     reasons = build_fit_reasons(profile, tender)
 
     return {
+        "document_match": True,
+        "document_match_confidence": match_check["confidence"],
+        "document_match_reason": match_check["reason"],
+        "matched_signals": match_check["matched_signals"],
+        "missing_signals": match_check["missing_signals"],
         "score": score,
         "summary": build_fit_summary(score, reasons, profile) or "Fallback analysis was used.",
         "strengths": reasons[:4],
@@ -648,6 +798,7 @@ def inject_globals():
             "today": date.today().isoformat(),
         }
 
+
 @app.template_filter("days_left")
 def days_left_filter(closing_date):
     if not closing_date:
@@ -659,11 +810,13 @@ def days_left_filter(closing_date):
             return None
     return (closing_date - date.today()).days
 
+
 @app.get("/health")
 def health():
     with get_db_session() as session:
         count = session.execute(select(func.count()).select_from(TenderCache)).scalar_one()
         return jsonify({"ok": True, "cached_tenders": count, "time": utcnow().isoformat()})
+
 
 @app.get("/")
 def home():
@@ -726,6 +879,7 @@ def home():
             readiness_note=readiness_note,
             profile_gap_summary=gap_summary,
         )
+
 
 @app.get("/tenders")
 def tenders():
@@ -835,6 +989,7 @@ def tenders():
             band_counts=band_counts,
         )
 
+
 @app.get("/tender/<int:tender_id>")
 def tender_detail(tender_id: int):
     with get_db_session() as session:
@@ -866,6 +1021,7 @@ def tender_detail(tender_id: int):
             readiness_note=readiness_note,
             profile_gap_summary=gap_summary,
         )
+
 
 @app.post("/tender/<int:tender_id>/analyze")
 def analyze_tender_page(tender_id: int):
@@ -943,7 +1099,11 @@ def analyze_tender_page(tender_id: int):
             doc.parsed_json = json.dumps(analysis, ensure_ascii=False, default=str)
             session.flush()
 
-            flash("Tender analysis completed.", "success")
+            if analysis.get("document_match") is False:
+                flash("Tender analysis blocked because the fetched document may belong to another tender.", "warning")
+            else:
+                flash("Tender analysis completed.", "success")
+
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
         except Exception as exc:
@@ -952,6 +1112,7 @@ def analyze_tender_page(tender_id: int):
             session.flush()
             flash(f"Analysis failed: {exc}", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
+
 
 @app.get("/profiles")
 def profiles():
@@ -964,6 +1125,7 @@ def profiles():
             "profiles.html",
             profiles=[serialize_profile(p, include_issues=True) for p in profiles_list],
         )
+
 
 @app.post("/profiles")
 @app.post("/profiles/upload")
@@ -1003,6 +1165,7 @@ def upload_profile():
     flash(f"Profile uploaded and set as active. Parse mode: {parsed.get('_parse_mode', 'heuristic')}.", "success")
     return redirect(url_for("profiles"))
 
+
 @app.post("/profiles/<int:profile_id>/activate")
 def activate_profile(profile_id: int):
     with get_db_session() as session:
@@ -1015,6 +1178,7 @@ def activate_profile(profile_id: int):
         profile.is_active = True
         flash("Active profile updated.", "success")
         return redirect(url_for("profiles"))
+
 
 @app.post("/profile-issues/<int:issue_id>/status")
 def update_issue_status(issue_id: int):
@@ -1032,6 +1196,7 @@ def update_issue_status(issue_id: int):
         flash("Issue status updated.", "success")
         return redirect(url_for("profiles"))
 
+
 @app.get("/api/admin/openai-status")
 def admin_openai_status():
     if not admin_allowed():
@@ -1043,6 +1208,7 @@ def admin_openai_status():
         "client_ready": client is not None,
         "model": OPENAI_MODEL,
     })
+
 
 @app.post("/api/admin/run-ingest")
 @app.get("/api/admin/run-ingest")
@@ -1056,6 +1222,7 @@ def api_run_ingest():
             max_pages=int(os.getenv("INGEST_MAX_PAGES", "1")),
         )
         return jsonify(result)
+
 
 @app.post("/api/admin/fetch-documents")
 @app.get("/api/admin/fetch-documents")
@@ -1081,13 +1248,16 @@ def api_fetch_documents():
 
     return jsonify({"ok": True, "requested": limit, "fetched": fetched, "errors": errors})
 
+
 @app.errorhandler(404)
 def not_found(_):
     return render_template("404.html"), 404
 
+
 @app.errorhandler(500)
 def internal_error(_):
     return render_template("500.html"), 500
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
