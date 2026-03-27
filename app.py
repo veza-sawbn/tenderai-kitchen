@@ -282,8 +282,8 @@ def serialize_profile(profile: Profile, include_issues: bool = True) -> dict:
         "extracted_text": profile.extracted_text,
         "parsed_json": parsed,
         "is_active": profile.is_active,
-        "created_at": profile.created_at,
-        "updated_at": profile.updated_at,
+        "created_at": profile.created_at.isoformat() if profile.created_at else None,
+        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
     }
     if include_issues:
         issues = getattr(profile, "issues", []) or []
@@ -324,13 +324,8 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
     if not profile:
         return None
 
-    def get_capabilities():
-        text = getattr(profile, "capabilities_text", "") or ""
-        return [c.strip() for c in text.split(",") if c.strip()]
-
-    def get_locations():
-        text = getattr(profile, "locations_text", "") or ""
-        return [c.strip() for c in text.split(",") if c.strip()]
+    capabilities = [c.strip() for c in (profile.capabilities_text or "").split(",") if c.strip()]
+    locations = [c.strip() for c in (profile.locations_text or "").split(",") if c.strip()]
 
     score = 30.0
     tender_blob = " ".join([
@@ -348,12 +343,12 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
         score += 15.0
 
     matches = 0
-    for capability in get_capabilities():
+    for capability in capabilities:
         if capability.lower() in tender_blob:
             matches += 1
     score += min(matches * 6.0, 30.0)
 
-    for loc in get_locations():
+    for loc in locations:
         if tender.province and tender.province.lower() == loc.lower():
             score += 8.0
             break
@@ -477,7 +472,7 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "risks": raw.get("risks") or [x.strip() for x in (job.risks_text or "").split("\n") if x.strip()],
         "recommendation": job.recommendations_text,
         "error_message": job.error_message,
-        "updated_at": job.updated_at,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
 
 
@@ -613,9 +608,9 @@ def inject_globals():
             "active_profile": serialize_profile(active_profile, include_issues=False) if active_profile else None,
             "latest_ingest": {
                 "status": latest_ingest.status,
-                "started_at": latest_ingest.started_at,
+                "started_at": latest_ingest.started_at.isoformat() if latest_ingest.started_at else None,
             } if latest_ingest else None,
-            "today": date.today(),
+            "today": date.today().isoformat(),
         }
 
 
@@ -656,7 +651,14 @@ def home():
 
         featured = []
         for t in tenders:
-            featured.append({"tender": tender_to_view_model(t), "score": keyword_overlap_score(active_profile, t)})
+            score = keyword_overlap_score(active_profile, t)
+            reasons = build_fit_reasons(active_profile, t)
+            featured.append({
+                "tender": tender_to_view_model(t),
+                "score": score,
+                "fit_band": fit_band_from_score(score),
+                "fit_summary": build_fit_summary(score, reasons),
+            })
 
         if active_profile:
             featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
@@ -706,7 +708,15 @@ def tenders():
 
         ranked = []
         for t in items:
-            ranked.append({"tender": tender_to_view_model(t), "score": keyword_overlap_score(active_profile, t)})
+            score = keyword_overlap_score(active_profile, t)
+            reasons = build_fit_reasons(active_profile, t)
+            ranked.append({
+                "tender": tender_to_view_model(t),
+                "score": score,
+                "fit_band": fit_band_from_score(score),
+                "fit_summary": build_fit_summary(score, reasons),
+                "fit_reasons": reasons,
+            })
 
         if active_profile:
             ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
@@ -875,6 +885,7 @@ def profiles():
         )
 
 
+@app.post("/profiles")
 @app.post("/profiles/upload")
 def upload_profile():
     uploaded = request.files.get("profile_pdf") or request.files.get("profile_file") or request.files.get("file")
