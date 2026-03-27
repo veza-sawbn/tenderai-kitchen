@@ -17,14 +17,10 @@
   <h1>{{ tender.title }}</h1>
   <p class="muted">{{ tender.description or "No description available." }}</p>
 
-  <div class="detail-grid">
+  <div class="detail-grid compact-grid">
     <div>
-      <label>Buyer</label>
+      <label>Department</label>
       <p>{{ tender.buyer_name or "n/a" }}</p>
-    </div>
-    <div>
-      <label>Issued Date</label>
-      <p>{{ tender.issued_date or "n/a" }}</p>
     </div>
     <div>
       <label>Closing Date</label>
@@ -40,6 +36,10 @@
         {% endif %}
       </p>
     </div>
+    <div>
+      <label>Province</label>
+      <p>{{ tender.province or "n/a" }}</p>
+    </div>
   </div>
 
   <div class="detail-actions">
@@ -52,10 +52,17 @@
     {% endif %}
 
     {% if can_analyze and analyze_action_url %}
-      <form method="post" action="{{ analyze_action_url }}" class="inline-form">
-        <button type="submit" class="btn">Analyse This Tender</button>
+      <form method="post" action="{{ analyze_action_url }}" class="inline-form" data-analysis-form>
+        <button type="submit" class="btn" data-analysis-button>Analyse This Tender</button>
       </form>
     {% endif %}
+
+    <a class="btn btn-secondary" href="{{ url_for('api_generate_proposal', tender_id=tender.id) }}" target="_blank" rel="noopener">
+      Proposal Draft
+    </a>
+    <a class="btn btn-secondary" href="{{ url_for('download_proposal_docx', tender_id=tender.id) }}">
+      Proposal DOCX
+    </a>
   </div>
 </section>
 
@@ -65,7 +72,7 @@
   <div class="detail-actions">
     {% if alignment_score is not none %}
       <div class="score-panel glow-chip large">
-        <span>Prequalification Score</span>
+        <span>Relevance Score</span>
         <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
       </div>
     {% endif %}
@@ -77,22 +84,20 @@
 
   {% if fit_summary %}
     <div class="detail-list">
-      <label>Summary</label>
+      <label>Scope Summary</label>
       <p>{{ fit_summary }}</p>
     </div>
   {% endif %}
 
   <div class="detail-list">
-    <label>Readiness note</label>
+    <label>Readiness Note</label>
     <p>{{ readiness_note }}</p>
   </div>
 
   {% if profile_gap_summary and profile_gap_summary.pending_count %}
     <div class="detail-list">
-      <label>Active profile gaps</label>
-      <p>
-        {{ profile_gap_summary.pending_count }} unresolved gap(s) are currently affecting bid readiness.
-      </p>
+      <label>Active Profile Gaps</label>
+      <p>{{ profile_gap_summary.pending_count }} unresolved gap(s) are currently affecting bid readiness.</p>
     </div>
   {% endif %}
 
@@ -119,6 +124,47 @@
     </div>
   {% endif %}
 
+  {% if latest_analysis.document_match is not none %}
+    <div class="detail-list">
+      <label>Document Match Check</label>
+      <p>
+        {% if latest_analysis.document_match %}
+          The fetched document appears to match this tender.
+        {% else %}
+          The fetched document may belong to another tender or a generic source page.
+        {% endif %}
+      </p>
+      {% if latest_analysis.document_match_reason %}
+        <p class="muted" style="margin-top: 8px;">{{ latest_analysis.document_match_reason }}</p>
+      {% endif %}
+      {% if latest_analysis.document_match_confidence is not none %}
+        <p class="muted" style="margin-top: 8px;">Confidence: {{ latest_analysis.document_match_confidence }}</p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if latest_analysis.matched_signals %}
+    <div class="detail-list">
+      <label>Matched Document Signals</label>
+      <ul>
+        {% for item in latest_analysis.matched_signals %}
+          <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if latest_analysis.missing_signals %}
+    <div class="detail-list">
+      <label>Missing Match Signals</label>
+      <ul>
+        {% for item in latest_analysis.missing_signals %}
+          <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
   {% if latest_analysis.summary %}
     <div class="detail-list">
       <label>Summary</label>
@@ -130,6 +176,29 @@
     <div class="detail-list">
       <label>Recommendation</label>
       <p>{{ latest_analysis.recommendation }}</p>
+    </div>
+  {% endif %}
+
+  {% if latest_analysis.estimated_cost_drivers or latest_analysis.pricing_complexity or latest_analysis.potential_revenue_range or latest_analysis.margin_risk %}
+    <div class="detail-list">
+      <label>Commercial View</label>
+      {% if latest_analysis.estimated_cost_drivers %}
+        <p><strong>Estimated cost drivers:</strong></p>
+        <ul>
+          {% for item in latest_analysis.estimated_cost_drivers %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if latest_analysis.pricing_complexity %}
+        <p><strong>Pricing complexity:</strong> {{ latest_analysis.pricing_complexity|title }}</p>
+      {% endif %}
+      {% if latest_analysis.potential_revenue_range %}
+        <p><strong>Potential revenue range:</strong> {{ latest_analysis.potential_revenue_range }}</p>
+      {% endif %}
+      {% if latest_analysis.margin_risk %}
+        <p><strong>Margin risk:</strong> {{ latest_analysis.margin_risk|title }}</p>
+      {% endif %}
     </div>
   {% endif %}
 
