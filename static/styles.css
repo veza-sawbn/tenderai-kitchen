@@ -230,6 +230,39 @@ main.shell {
     inset 0 0 12px rgba(82, 210, 255, 0.08);
 }
 
+.band-high_potential {
+  border-color: rgba(25, 211, 138, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(25, 211, 138, 0.08),
+    0 0 18px rgba(25, 211, 138, 0.16),
+    inset 0 0 12px rgba(25, 211, 138, 0.08);
+}
+
+.band-possible_fit {
+  border-color: rgba(255, 207, 90, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(255, 207, 90, 0.08),
+    0 0 18px rgba(255, 207, 90, 0.14),
+    inset 0 0 12px rgba(255, 207, 90, 0.08);
+}
+
+.band-low_fit,
+.band-needs_attention {
+  border-color: rgba(255, 107, 129, 0.45);
+  box-shadow:
+    0 0 0 1px rgba(255, 107, 129, 0.08),
+    0 0 18px rgba(255, 107, 129, 0.14),
+    inset 0 0 12px rgba(255, 107, 129, 0.08);
+}
+
+.band-ready {
+  border-color: rgba(25, 211, 138, 0.5);
+}
+
+.band-watchlist {
+  border-color: rgba(255, 207, 90, 0.5);
+}
+
 .score-panel {
   padding: 14px 16px;
   border-radius: var(--radius-md);
