@@ -311,11 +311,11 @@ def tender_to_view_model(t: TenderCache) -> dict:
         "tender_type": t.tender_type,
         "province": t.province,
         "buyer_name": t.buyer_name,
-        "issued_date": t.issued_date,
-        "closing_date": t.closing_date,
+        "issued_date": t.issued_date.isoformat() if t.issued_date else None,
+        "closing_date": t.closing_date.isoformat() if t.closing_date else None,
         "document_url": t.document_url,
         "source_url": t.source_url,
-        "updated_at": t.updated_at,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
         "is_live": t.is_live,
     }
 
@@ -467,19 +467,16 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         return None
 
     raw = safe_loads(job.raw_result_json, {})
-    strengths = raw.get("strengths") or [x.strip() for x in (job.strengths_text or "").split("\n") if x.strip()]
-    gaps = raw.get("gaps") or []
-    risks = raw.get("risks") or [x.strip() for x in (job.risks_text or "").split("\n") if x.strip()]
-
     return {
         "id": job.id,
         "status": job.status,
         "score": job.score,
         "summary": job.summary,
-        "strengths": strengths,
-        "gaps": gaps,
-        "risks": risks,
+        "strengths": raw.get("strengths") or [x.strip() for x in (job.strengths_text or "").split("\n") if x.strip()],
+        "gaps": raw.get("gaps") or [],
+        "risks": raw.get("risks") or [x.strip() for x in (job.risks_text or "").split("\n") if x.strip()],
         "recommendation": job.recommendations_text,
+        "error_message": job.error_message,
         "updated_at": job.updated_at,
     }
 
@@ -572,10 +569,10 @@ Schema:
 }}
 
 Supplier profile JSON:
-{json.dumps(profile_json, ensure_ascii=False)[:12000]}
+{json.dumps(profile_json, ensure_ascii=False, default=str)[:12000]}
 
 Tender metadata:
-{json.dumps(tender_vm, ensure_ascii=False)[:6000]}
+{json.dumps(tender_vm, ensure_ascii=False, default=str)[:6000]}
 
 Tender document text:
 {document_text[:22000]}
@@ -626,6 +623,11 @@ def inject_globals():
 def days_left_filter(closing_date):
     if not closing_date:
         return None
+    if isinstance(closing_date, str):
+        try:
+            closing_date = date.fromisoformat(closing_date)
+        except Exception:
+            return None
     return (closing_date - date.today()).days
 
 
@@ -843,10 +845,10 @@ def analyze_tender_page(tender_id: int):
             job.strengths_text = "\n".join(analysis.get("strengths") or [])
             job.risks_text = "\n".join(analysis.get("risks") or [])
             job.recommendations_text = analysis.get("recommendation")
-            job.raw_result_json = json.dumps(analysis, ensure_ascii=False)
+            job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
             job.error_message = None
 
-            doc.parsed_json = json.dumps(analysis, ensure_ascii=False)
+            doc.parsed_json = json.dumps(analysis, ensure_ascii=False, default=str)
             session.flush()
 
             flash("Tender analysis completed.", "success")
@@ -899,7 +901,7 @@ def upload_profile():
             capabilities_text=", ".join(parsed.get("capabilities") or []),
             locations_text=", ".join(parsed.get("locations") or []),
             extracted_text=text[:200000],
-            parsed_json=json.dumps(parsed, ensure_ascii=False),
+            parsed_json=json.dumps(parsed, ensure_ascii=False, default=str),
             is_active=True,
         )
         session.add(profile)
