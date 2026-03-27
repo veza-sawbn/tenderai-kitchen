@@ -183,11 +183,8 @@ Profile text:
 """.strip()
 
     try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        parsed = json_from_text(response.choices[0].message.content)
+        response = client.responses.create(model=OPENAI_MODEL, input=prompt)
+        parsed = json_from_text(response.output_text)
         if parsed:
             parsed["_parse_mode"] = "openai"
         return parsed
@@ -577,11 +574,8 @@ Tender document text:
 """.strip()
 
         try:
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            parsed = json_from_text(response.choices[0].message.content)
+            response = client.responses.create(model=OPENAI_MODEL, input=prompt)
+            parsed = json_from_text(response.output_text)
             if parsed:
                 parsed["_analysis_mode"] = "openai"
                 return parsed
