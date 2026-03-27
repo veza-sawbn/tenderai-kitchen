@@ -28,7 +28,7 @@
           {% endif %}
         </div>
 
-        <div class="card-row between">
+        <div class="card-row">
           <div>
             <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
             <p class="muted">{{ tender.buyer_name or "Buyer n/a" }}</p>
@@ -70,6 +70,10 @@
               {% endif %}
             </p>
           </div>
+          <div>
+            <label>Province</label>
+            <p>{{ tender.province or "n/a" }}</p>
+          </div>
         </div>
 
         <div class="detail-actions">
@@ -79,7 +83,7 @@
       </article>
     {% endfor %}
   {% else %}
-    <section class="glass-card">
+    <section class="glass-card empty-state">
       <h2>No tenders available</h2>
       <p class="muted">No live tenders are currently available in the cache.</p>
     </section>
