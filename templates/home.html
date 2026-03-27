@@ -1,74 +1,88 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="hero-card">
+<section class="glass-card">
+  <div class="section-header">
     <div>
-        <div class="eyebrow">Cached Tender Intelligence</div>
-        <h1>Browse live cached tenders and rank them against your active supplier profile.</h1>
-        <p class="hero-copy">
-            TenderAI now uses PostgreSQL-backed cached tenders and lightweight profile-based ranking.
-            Browsing stays stable even if upstream services are slow.
-        </p>
-        <div class="hero-actions">
-            <a class="btn btn-primary" href="{{ url_for('tenders') }}">Browse Tenders</a>
-            <a class="btn btn-secondary" href="{{ url_for('profiles') }}">Manage Profiles</a>
-        </div>
+      <h1>Current Tender Opportunities</h1>
+      <p class="muted">Live tender view with profile-based prequalification.</p>
     </div>
-    <div class="stat-grid">
-        <div class="stat-card">
-            <span>Total Live Tenders</span>
-            <strong>{{ total_live }}</strong>
-        </div>
+    <div class="score-panel glow-chip large">
+      <span>Live Tenders</span>
+      <strong>{{ total_live or 0 }}</strong>
     </div>
+  </div>
 </section>
 
-<section class="section-head">
-    <h2>Top Cached Opportunities</h2>
-</section>
-
-<div class="card-grid">
+<section class="stack-list">
+  {% if featured %}
     {% for item in featured %}
-        {% set tender = item.tender %}
-        <article class="glass-card">
-            <div class="card-meta">
-                <span>{{ tender.industry or "General" }}</span>
-                <span>{{ tender.province or "Province n/a" }}</span>
-            </div>
-            <h3><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h3>
-            <p class="muted clamp">{{ tender.description or "No description available." }}</p>
-
-            <div class="tender-dates">
-                <div>
-                    <label>Issued</label>
-                    <strong>{{ tender.issued_date or "n/a" }}</strong>
-                </div>
-                <div>
-                    <label>Closing</label>
-                    <strong>{{ tender.closing_date or "n/a" }}</strong>
-                </div>
-                <div>
-                    <label>Days Left</label>
-                    <strong>
-                        {% if tender.closing_date %}
-                            {{ tender.closing_date|days_left }}
-                        {% else %}
-                            n/a
-                        {% endif %}
-                    </strong>
-                </div>
-            </div>
-
-            {% if item.score is not none %}
-                <div class="score-chip glow-chip">
-                    Alignment {{ "%.1f"|format(item.score) }}/100
-                </div>
-            {% endif %}
-        </article>
-    {% else %}
-        <div class="empty-state">
-            <h3>No cached tenders yet</h3>
-            <p>Run the admin ingest route to fill the tender cache.</p>
+      {% set tender = item.tender %}
+      <article class="glass-card tender-card">
+        <div class="card-meta">
+          <span>{{ tender.tender_type or "Tender" }}</span>
+          <span>{{ tender.industry or "General" }}</span>
+          <span>{{ tender.province or "Province n/a" }}</span>
+          {% if item.fit_band %}
+            <span class="glow-chip">{{ item.fit_band|replace("_", " ")|title }}</span>
+          {% endif %}
         </div>
+
+        <div class="card-row between">
+          <div>
+            <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
+            <p class="muted">{{ tender.buyer_name or "Buyer n/a" }}</p>
+          </div>
+
+          {% if item.score is not none %}
+            <div class="score-panel glow-chip">
+              <span>Fit</span>
+              <strong>{{ "%.1f"|format(item.score) }}/100</strong>
+            </div>
+          {% endif %}
+        </div>
+
+        <p>{{ tender.description or "No description available." }}</p>
+
+        {% if item.fit_summary %}
+          <div class="detail-list">
+            <label>Why it could fit</label>
+            <p>{{ item.fit_summary }}</p>
+          </div>
+        {% endif %}
+
+        <div class="detail-grid">
+          <div>
+            <label>Issued</label>
+            <p>{{ tender.issued_date or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Closing</label>
+            <p>{{ tender.closing_date or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Days Left</label>
+            <p>
+              {% if tender.closing_date %}
+                {{ tender.closing_date|days_left }}
+              {% else %}
+                n/a
+              {% endif %}
+            </p>
+          </div>
+        </div>
+
+        <div class="detail-actions">
+          <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">View Tender</a>
+          <a class="btn btn-secondary" href="{{ url_for('tenders') }}">Browse All</a>
+        </div>
+      </article>
     {% endfor %}
-</div>
+  {% else %}
+    <section class="glass-card">
+      <h2>No tenders available</h2>
+      <p class="muted">No live tenders are currently available in the cache.</p>
+    </section>
+  {% endif %}
+</section>
 {% endblock %}
