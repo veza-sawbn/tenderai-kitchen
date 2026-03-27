@@ -786,25 +786,22 @@ def analyze_tender_page(tender_id: int):
             flash("Please upload and activate a business profile first.", "error")
             return redirect(url_for("profiles"))
 
-        document_url = tender.document_url or tender.source_url
-        if not document_url:
-            flash("No tender document URL is available for this tender.", "error")
-            return redirect(url_for("tender_detail", tender_id=tender_id))
+        job = AnalysisJob(
+            profile_id=active_profile.id,
+            tender_id=tender_id,
+            status="running",
+        )
+        session.add(job)
+        session.flush()
 
-        doc = session.execute(
-            select(TenderDocumentCache)
-            .where(
-                TenderDocumentCache.tender_id == tender_id,
-                TenderDocumentCache.document_url == document_url,
-            )
-            .limit(1)
-        ).scalars().first()
-
-        if not doc or doc.fetch_status != "fetched":
-            fetch_result = fetch_tender_document(session, tender)
-            if not fetch_result.get("ok"):
-                flash(f"Unable to fetch tender document: {fetch_result.get('error')}", "error")
+        try:
+            document_url = tender.document_url or tender.source_url
+            if not document_url:
+                job.status = "failed"
+                job.error_message = "No tender document URL is available for this tender."
+                flash(job.error_message, "error")
                 return redirect(url_for("tender_detail", tender_id=tender_id))
+
             doc = session.execute(
                 select(TenderDocumentCache)
                 .where(
@@ -814,31 +811,53 @@ def analyze_tender_page(tender_id: int):
                 .limit(1)
             ).scalars().first()
 
-        extracted_text = (doc.extracted_text or "").strip()
-        if not extracted_text:
-            flash("Tender document was fetched, but no readable text was extracted.", "error")
+            if not doc or doc.fetch_status != "fetched":
+                fetch_result = fetch_tender_document(session, tender)
+                if not fetch_result.get("ok"):
+                    job.status = "failed"
+                    job.error_message = fetch_result.get("error") or "Unable to fetch tender document."
+                    flash(f"Unable to fetch tender document: {job.error_message}", "error")
+                    return redirect(url_for("tender_detail", tender_id=tender_id))
+
+                doc = session.execute(
+                    select(TenderDocumentCache)
+                    .where(
+                        TenderDocumentCache.tender_id == tender_id,
+                        TenderDocumentCache.document_url == document_url,
+                    )
+                    .limit(1)
+                ).scalars().first()
+
+            extracted_text = (doc.extracted_text or "").strip() if doc else ""
+            if not extracted_text:
+                job.status = "failed"
+                job.error_message = "Tender document was fetched, but no readable text was extracted."
+                flash(job.error_message, "error")
+                return redirect(url_for("tender_detail", tender_id=tender_id))
+
+            analysis = analyze_tender_against_profile(tender, active_profile, extracted_text) or {}
+
+            job.status = "completed"
+            job.score = float(analysis.get("score") or 0)
+            job.summary = analysis.get("summary")
+            job.strengths_text = "\n".join(analysis.get("strengths") or [])
+            job.risks_text = "\n".join(analysis.get("risks") or [])
+            job.recommendations_text = analysis.get("recommendation")
+            job.raw_result_json = json.dumps(analysis, ensure_ascii=False)
+            job.error_message = None
+
+            doc.parsed_json = json.dumps(analysis, ensure_ascii=False)
+            session.flush()
+
+            flash("Tender analysis completed.", "success")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
-        analysis = analyze_tender_against_profile(tender, active_profile, extracted_text)
-
-        job = AnalysisJob(
-            profile_id=active_profile.id,
-            tender_id=tender_id,
-            status="completed",
-            score=float(analysis.get("score") or 0),
-            summary=analysis.get("summary"),
-            strengths_text="\n".join(analysis.get("strengths") or []),
-            risks_text="\n".join(analysis.get("risks") or []),
-            recommendations_text=analysis.get("recommendation"),
-            raw_result_json=json.dumps(analysis, ensure_ascii=False),
-        )
-        session.add(job)
-
-        doc.parsed_json = json.dumps(analysis, ensure_ascii=False)
-        session.flush()
-
-    flash("Tender analysis completed.", "success")
-    return redirect(url_for("tender_detail", tender_id=tender_id))
+        except Exception as exc:
+            job.status = "failed"
+            job.error_message = str(exc)
+            session.flush()
+            flash(f"Analysis failed: {exc}", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
 
 
 @app.get("/profiles")
