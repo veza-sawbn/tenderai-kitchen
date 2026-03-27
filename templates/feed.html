@@ -9,6 +9,17 @@
     </div>
   </div>
 
+  <div class="detail-actions" style="margin: 14px 0 18px;">
+    <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
+      Readiness: {{ readiness_band|replace("_", " ")|title }}
+    </span>
+    {% if profile_gap_summary %}
+      <span class="muted">
+        Pending profile gaps: {{ profile_gap_summary.pending_count or 0 }}
+      </span>
+    {% endif %}
+  </div>
+
   <form method="get" class="filter-grid">
     <div>
       <label>Province</label>
@@ -45,6 +56,22 @@
       <input type="date" name="issued_from" value="{{ filters.issued_from or '' }}">
     </div>
 
+    <div>
+      <label>Fit Band</label>
+      <select name="fit_band">
+        <option value="">All</option>
+        <option value="high_potential" {% if filters.fit_band == 'high_potential' %}selected{% endif %}>
+          High Potential{% if band_counts %} ({{ band_counts.high_potential }}){% endif %}
+        </option>
+        <option value="possible_fit" {% if filters.fit_band == 'possible_fit' %}selected{% endif %}>
+          Possible Fit{% if band_counts %} ({{ band_counts.possible_fit }}){% endif %}
+        </option>
+        <option value="low_fit" {% if filters.fit_band == 'low_fit' %}selected{% endif %}>
+          Low Fit{% if band_counts %} ({{ band_counts.low_fit }}){% endif %}
+        </option>
+      </select>
+    </div>
+
     <div class="search-wide">
       <label>Search</label>
       <input type="text" name="q" value="{{ filters.q or '' }}" placeholder="Buyer, title, description, industry">
@@ -67,7 +94,10 @@
           <span>{{ tender.industry or "General" }}</span>
           <span>{{ tender.province or "Province n/a" }}</span>
           {% if item.fit_band %}
-            <span class="glow-chip">{{ item.fit_band|replace("_", " ")|title }}</span>
+            <span class="glow-chip band-{{ item.fit_band }}">{{ item.fit_band|replace("_", " ")|title }}</span>
+          {% endif %}
+          {% if item.readiness_band %}
+            <span class="pill">{{ item.readiness_band|replace("_", " ")|title }}</span>
           {% endif %}
         </div>
 
