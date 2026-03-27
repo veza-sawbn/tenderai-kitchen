@@ -2,143 +2,147 @@
 
 {% block content %}
 <section class="glass-card">
-    <div class="section-header">
-        <div>
-            <h1>Browse Tenders</h1>
-            <p class="muted">Filter current opportunities and review prequalification against your active profile.</p>
-        </div>
+  <div class="section-header">
+    <div>
+      <h1>Browse Tenders</h1>
+      <p class="muted">Filter current opportunities and review prequalification against your active profile.</p>
+    </div>
+  </div>
+
+  <form method="get" class="filter-grid">
+    <div>
+      <label>Province</label>
+      <select name="province">
+        <option value="">All</option>
+        {% for item in provinces %}
+          <option value="{{ item }}" {% if filters.province == item %}selected{% endif %}>{{ item }}</option>
+        {% endfor %}
+      </select>
     </div>
 
-    <form method="get" class="filter-grid">
-        <div>
-            <label>Province</label>
-            <select name="province">
-                <option value="">All</option>
-                {% for item in provinces %}
-                    <option value="{{ item }}" {% if filters.province == item %}selected{% endif %}>{{ item }}</option>
-                {% endfor %}
-            </select>
-        </div>
+    <div>
+      <label>Tender Type</label>
+      <select name="tender_type">
+        <option value="">All</option>
+        {% for item in tender_types %}
+          <option value="{{ item }}" {% if filters.tender_type == item %}selected{% endif %}>{{ item }}</option>
+        {% endfor %}
+      </select>
+    </div>
 
-        <div>
-            <label>Tender Type</label>
-            <select name="tender_type">
-                <option value="">All</option>
-                {% for item in tender_types %}
-                    <option value="{{ item }}" {% if filters.tender_type == item %}selected{% endif %}>{{ item }}</option>
-                {% endfor %}
-            </select>
-        </div>
+    <div>
+      <label>Industry</label>
+      <select name="industry">
+        <option value="">All</option>
+        {% for item in industries %}
+          <option value="{{ item }}" {% if filters.industry == item %}selected{% endif %}>{{ item }}</option>
+        {% endfor %}
+      </select>
+    </div>
 
-        <div>
-            <label>Industry</label>
-            <select name="industry">
-                <option value="">All</option>
-                {% for item in industries %}
-                    <option value="{{ item }}" {% if filters.industry == item %}selected{% endif %}>{{ item }}</option>
-                {% endfor %}
-            </select>
-        </div>
+    <div>
+      <label>Issued From</label>
+      <input type="date" name="issued_from" value="{{ filters.issued_from or '' }}">
+    </div>
 
-        <div>
-            <label>Issued From</label>
-            <input type="date" name="issued_from" value="{{ filters.issued_from or '' }}">
-        </div>
+    <div class="search-wide">
+      <label>Search</label>
+      <input type="text" name="q" value="{{ filters.q or '' }}" placeholder="Buyer, title, description, industry">
+    </div>
 
-        <div class="search-wide">
-            <label>Search</label>
-            <input type="text" name="q" value="{{ filters.q or '' }}" placeholder="Buyer, title, description, industry">
-        </div>
-
-        <div class="filter-actions">
-            <button type="submit" class="btn">Apply Filters</button>
-            <a href="{{ url_for('tenders') }}" class="btn btn-secondary">Reset</a>
-        </div>
-    </form>
+    <div class="filter-actions">
+      <button type="submit" class="btn">Apply Filters</button>
+      <a href="{{ url_for('tenders') }}" class="btn btn-secondary">Reset</a>
+    </div>
+  </form>
 </section>
 
 <section class="stack-list">
-    {% if ranked_tenders %}
-        {% for item in ranked_tenders %}
-            {% set tender = item.tender %}
-            <article class="glass-card tender-card">
-                <div class="card-meta">
-                    <span>{{ tender.tender_type or "Tender" }}</span>
-                    <span>{{ tender.industry or "General" }}</span>
-                    <span>{{ tender.province or "Province n/a" }}</span>
-                    {% if item.fit_band %}
-                        <span class="glow-chip">{{ item.fit_band|replace("_", " ")|title }}</span>
-                    {% endif %}
-                </div>
+  {% if ranked_tenders %}
+    {% for item in ranked_tenders %}
+      {% set tender = item.tender %}
+      <article class="glass-card tender-card">
+        <div class="card-meta">
+          <span>{{ tender.tender_type or "Tender" }}</span>
+          <span>{{ tender.industry or "General" }}</span>
+          <span>{{ tender.province or "Province n/a" }}</span>
+          {% if item.fit_band %}
+            <span class="glow-chip">{{ item.fit_band|replace("_", " ")|title }}</span>
+          {% endif %}
+        </div>
 
-                <div class="card-row between">
-                    <div>
-                        <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
-                        <p class="muted">{{ tender.buyer_name or "Buyer n/a" }}</p>
-                    </div>
+        <div class="card-row">
+          <div>
+            <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
+            <p class="muted">{{ tender.buyer_name or "Buyer n/a" }}</p>
+          </div>
 
-                    {% if item.score is not none %}
-                        <div class="score-panel glow-chip">
-                            <span>Fit</span>
-                            <strong>{{ "%.1f"|format(item.score) }}/100</strong>
-                        </div>
-                    {% endif %}
-                </div>
+          {% if item.score is not none %}
+            <div class="score-panel glow-chip">
+              <span>Fit</span>
+              <strong>{{ "%.1f"|format(item.score) }}/100</strong>
+            </div>
+          {% endif %}
+        </div>
 
-                <p>{{ tender.description or "No description available." }}</p>
+        <p>{{ tender.description or "No description available." }}</p>
 
-                {% if item.fit_summary %}
-                    <div class="detail-list">
-                        <label>Why it could fit</label>
-                        <p>{{ item.fit_summary }}</p>
-                    </div>
-                {% endif %}
+        {% if item.fit_summary %}
+          <div class="detail-list">
+            <label>Why it could fit</label>
+            <p>{{ item.fit_summary }}</p>
+          </div>
+        {% endif %}
 
-                {% if item.fit_reasons %}
-                    <div class="detail-list">
-                        <label>Fit indicators</label>
-                        <ul>
-                            {% for reason in item.fit_reasons %}
-                                <li>{{ reason }}</li>
-                            {% endfor %}
-                        </ul>
-                    </div>
-                {% endif %}
+        {% if item.fit_reasons %}
+          <div class="detail-list">
+            <label>Fit indicators</label>
+            <ul>
+              {% for reason in item.fit_reasons %}
+                <li>{{ reason }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endif %}
 
-                <div class="detail-grid">
-                    <div>
-                        <label>Issued</label>
-                        <p>{{ tender.issued_date or "n/a" }}</p>
-                    </div>
-                    <div>
-                        <label>Closing</label>
-                        <p>{{ tender.closing_date or "n/a" }}</p>
-                    </div>
-                    <div>
-                        <label>Days Left</label>
-                        <p>
-                            {% if tender.closing_date %}
-                                {{ tender.closing_date|days_left }}
-                            {% else %}
-                                n/a
-                            {% endif %}
-                        </p>
-                    </div>
-                </div>
+        <div class="detail-grid">
+          <div>
+            <label>Issued</label>
+            <p>{{ tender.issued_date or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Closing</label>
+            <p>{{ tender.closing_date or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Days Left</label>
+            <p>
+              {% if tender.closing_date %}
+                {{ tender.closing_date|days_left }}
+              {% else %}
+                n/a
+              {% endif %}
+            </p>
+          </div>
+          <div>
+            <label>Province</label>
+            <p>{{ tender.province or "n/a" }}</p>
+          </div>
+        </div>
 
-                <div class="detail-actions">
-                    <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">View Tender</a>
-                    {% if tender.source_url %}
-                        <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source</a>
-                    {% endif %}
-                </div>
-            </article>
-        {% endfor %}
-    {% else %}
-        <section class="glass-card">
-            <h2>No tenders found</h2>
-            <p class="muted">Try clearing some filters or broadening your search.</p>
-        </section>
-    {% endif %}
+        <div class="detail-actions">
+          <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">View Tender</a>
+          {% if tender.source_url %}
+            <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source</a>
+          {% endif %}
+        </div>
+      </article>
+    {% endfor %}
+  {% else %}
+    <section class="glass-card empty-state">
+      <h2>No tenders found</h2>
+      <p class="muted">Try clearing some filters or broadening your search.</p>
+    </section>
+  {% endif %}
 </section>
 {% endblock %}
