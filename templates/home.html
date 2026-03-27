@@ -12,6 +12,23 @@
       <strong>{{ total_live or 0 }}</strong>
     </div>
   </div>
+
+  <div class="detail-actions" style="margin-top: 16px;">
+    <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
+      Readiness: {{ readiness_band|replace("_", " ")|title }}
+    </span>
+    <span class="muted">{{ readiness_note }}</span>
+  </div>
+
+  {% if profile_gap_summary and profile_gap_summary.pending_count %}
+    <div class="detail-list" style="margin-top: 16px;">
+      <label>Profile readiness gaps</label>
+      <p>
+        You currently have <strong>{{ profile_gap_summary.pending_count }}</strong> unresolved profile gap(s)
+        affecting match confidence.
+      </p>
+    </div>
+  {% endif %}
 </section>
 
 <section class="stack-list">
@@ -24,7 +41,10 @@
           <span>{{ tender.industry or "General" }}</span>
           <span>{{ tender.province or "Province n/a" }}</span>
           {% if item.fit_band %}
-            <span class="glow-chip">{{ item.fit_band|replace("_", " ")|title }}</span>
+            <span class="glow-chip band-{{ item.fit_band }}">{{ item.fit_band|replace("_", " ")|title }}</span>
+          {% endif %}
+          {% if item.readiness_band %}
+            <span class="pill">{{ item.readiness_band|replace("_", " ")|title }}</span>
           {% endif %}
         </div>
 
