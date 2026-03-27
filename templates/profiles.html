@@ -2,110 +2,107 @@
 
 {% block content %}
 <section class="glass-card">
-    <div class="section-header">
-        <div>
-            <h1>Business Profiles</h1>
-            <p class="muted">Upload a supplier profile PDF. The latest uploaded profile becomes active automatically.</p>
-        </div>
+  <div class="section-header">
+    <div>
+      <h1>Business Profiles</h1>
+      <p class="muted">Upload a supplier profile PDF. The latest uploaded profile becomes active automatically.</p>
     </div>
+  </div>
 
-    <form method="post" action="{{ url_for('upload_profile') }}" enctype="multipart/form-data" class="upload-form">
-        <div>
-            <label>Upload Business Profile (PDF)</label>
-            <input type="file" name="profile_pdf" accept=".pdf,application/pdf" required>
-        </div>
-        <div class="filter-actions">
-            <button type="submit" class="btn">Upload Profile</button>
-        </div>
-    </form>
+  <form method="post" action="{{ url_for('upload_profile') }}" enctype="multipart/form-data" class="upload-form">
+    <div>
+      <label>Upload Business Profile (PDF)</label>
+      <input type="file" name="profile_pdf" accept=".pdf,application/pdf" required>
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="btn">Upload Profile</button>
+    </div>
+  </form>
 </section>
 
 <section class="stack-list">
-    {% if profiles %}
-        {% for profile in profiles %}
-            <article class="glass-card">
-                <div class="card-row between">
-                    <div>
-                        <h2>
-                            {{ profile.company_name or profile.name or "Unnamed Profile" }}
-                            {% if profile.is_active %}
-                                <span class="glow-chip">Active</span>
-                            {% endif %}
-                        </h2>
-                        <p class="muted">{{ profile.original_filename or "Uploaded profile" }}</p>
-                    </div>
+  {% if profiles %}
+    {% for profile in profiles %}
+      <article class="glass-card">
+        <div class="section-header">
+          <div>
+            <h2>
+              {{ profile.company_name or profile.name or "Unnamed Profile" }}
+              {% if profile.is_active %}
+                <span class="glow-chip">Active</span>
+              {% endif %}
+            </h2>
+            <p class="muted">{{ profile.original_filename or "Uploaded profile" }}</p>
+          </div>
 
-                    <div class="detail-actions">
-                        {% if not profile.is_active %}
-                            <form method="post" action="{{ url_for('activate_profile', profile_id=profile.id) }}">
-                                <button type="submit" class="btn">Make Active</button>
-                            </form>
-                        {% endif %}
-                    </div>
-                </div>
+          <div class="detail-actions">
+            {% if not profile.is_active %}
+              <form method="post" action="{{ url_for('activate_profile', profile_id=profile.id) }}">
+                <button type="submit" class="btn">Make Active</button>
+              </form>
+            {% endif %}
+          </div>
+        </div>
 
-                <div class="detail-grid">
-                    <div>
-                        <label>Industry</label>
-                        <p>{{ profile.industry or "n/a" }}</p>
-                    </div>
-                    <div>
-                        <label>Capabilities</label>
-                        <p>{{ profile.capabilities_text or "n/a" }}</p>
-                    </div>
-                    <div>
-                        <label>Locations</label>
-                        <p>{{ profile.locations_text or "n/a" }}</p>
-                    </div>
-                    <div>
-                        <label>Updated</label>
-                        <p>{{ profile.updated_at or "n/a" }}</p>
-                    </div>
-                </div>
+        <div class="detail-grid">
+          <div>
+            <label>Industry</label>
+            <p>{{ profile.industry or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Capabilities</label>
+            <p>{{ profile.capabilities_text or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Locations</label>
+            <p>{{ profile.locations_text or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Updated</label>
+            <p>{{ profile.updated_at or "n/a" }}</p>
+          </div>
+        </div>
 
-                {% if profile.parsed_json %}
-                    <div class="detail-list">
-                        <label>Parse summary</label>
-                        <p>
-                            Parse mode:
-                            <strong>{{ profile.parsed_json.get('_parse_mode', 'unknown') }}</strong>
-                        </p>
-                    </div>
-                {% endif %}
+        {% if profile.parsed_json %}
+          <div class="detail-list">
+            <label>Parse summary</label>
+            <p>Parse mode: <strong>{{ profile.parsed_json.get('_parse_mode', 'unknown') }}</strong></p>
+          </div>
+        {% endif %}
 
-                {% if profile.issues %}
-                    <div class="detail-list">
-                        <label>Profile issues</label>
-                        <ul>
-                            {% for issue in profile.issues %}
-                                <li>
-                                    <strong>{{ issue.title }}</strong>
-                                    {% if issue.detail %} — {{ issue.detail }}{% endif %}
-                                    <em>({{ issue.status }})</em>
+        {% if profile.issues %}
+          <div class="detail-list">
+            <label>Profile issues</label>
+            <ul>
+              {% for issue in profile.issues %}
+                <li>
+                  <strong>{{ issue.title }}</strong>
+                  {% if issue.detail %} — {{ issue.detail }}{% endif %}
+                  <em>({{ issue.status }})</em>
 
-                                    <form method="post" action="{{ url_for('update_issue_status', issue_id=issue.id) }}" style="display:inline; margin-left: 0.5rem;">
-                                        <input type="hidden" name="status" value="{% if issue.status == 'fixed' %}pending{% else %}fixed{% endif %}">
-                                        <button type="submit" class="btn btn-secondary">
-                                            Mark {% if issue.status == 'fixed' %}Pending{% else %}Fixed{% endif %}
-                                        </button>
-                                    </form>
-                                </li>
-                            {% endfor %}
-                        </ul>
-                    </div>
-                {% else %}
-                    <div class="detail-list">
-                        <label>Profile issues</label>
-                        <p class="muted">No issues detected.</p>
-                    </div>
-                {% endif %}
-            </article>
-        {% endfor %}
-    {% else %}
-        <section class="glass-card">
-            <h2>No profiles yet</h2>
-            <p class="muted">Upload your first supplier profile PDF to start matching tenders.</p>
-        </section>
-    {% endif %}
+                  <form method="post" action="{{ url_for('update_issue_status', issue_id=issue.id) }}" class="inline-form">
+                    <input type="hidden" name="status" value="{% if issue.status == 'fixed' %}pending{% else %}fixed{% endif %}">
+                    <button type="submit" class="btn btn-secondary">
+                      Mark {% if issue.status == 'fixed' %}Pending{% else %}Fixed{% endif %}
+                    </button>
+                  </form>
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% else %}
+          <div class="detail-list">
+            <label>Profile issues</label>
+            <p class="muted">No issues detected.</p>
+          </div>
+        {% endif %}
+      </article>
+    {% endfor %}
+  {% else %}
+    <section class="glass-card empty-state">
+      <h2>No profiles yet</h2>
+      <p class="muted">Upload your first supplier profile PDF to start matching tenders.</p>
+    </section>
+  {% endif %}
 </section>
 {% endblock %}
