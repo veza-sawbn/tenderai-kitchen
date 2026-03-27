@@ -144,6 +144,13 @@
         </div>
     {% endif %}
 
+    {% if latest_analysis.error_message %}
+        <div class="detail-list">
+            <label>Analysis Error</label>
+            <p>{{ latest_analysis.error_message }}</p>
+        </div>
+    {% endif %}
+
     {% if latest_analysis.updated_at %}
         <p class="muted">Last analysed: {{ latest_analysis.updated_at }}</p>
     {% endif %}
