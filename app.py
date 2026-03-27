@@ -3,7 +3,7 @@ import os
 import re
 import tempfile
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 try:
     from dotenv import load_dotenv
@@ -650,20 +650,43 @@ def home():
         ).scalars().all()
 
         featured = []
+        tender_cards = []
+
         for t in tenders:
             score = keyword_overlap_score(active_profile, t)
             reasons = build_fit_reasons(active_profile, t)
+            fit_band = fit_band_from_score(score)
+            fit_summary = build_fit_summary(score, reasons)
+
+            tender_vm = tender_to_view_model(t)
+
             featured.append({
-                "tender": tender_to_view_model(t),
+                "tender": tender_vm,
                 "score": score,
-                "fit_band": fit_band_from_score(score),
-                "fit_summary": build_fit_summary(score, reasons),
+                "fit_band": fit_band,
+                "fit_summary": fit_summary,
+                "fit_reasons": reasons,
+            })
+
+            tender_cards.append({
+                **tender_vm,
+                "alignment_score": score,
+                "fit_band": fit_band,
+                "fit_summary": fit_summary,
+                "fit_reasons": reasons,
             })
 
         if active_profile:
             featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
+            tender_cards.sort(key=lambda x: (x["alignment_score"] or 0), reverse=True)
 
-        return render_template("home.html", total_live=total_live, featured=featured[:12])
+        return render_template(
+            "home.html",
+            total_live=total_live,
+            featured=featured[:12],
+            tenders=tender_cards[:12],
+            ranked_tenders=featured[:12],
+        )
 
 
 @app.get("/tenders")
