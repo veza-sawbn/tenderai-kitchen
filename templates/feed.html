@@ -93,6 +93,12 @@
               {% if item.proposal_required %}
                 <span class="pill">Proposal Required</span>
               {% endif %}
+              {% if item.analysis_status %}
+                <span class="status-badge status-{{ item.analysis_status }}">{{ item.analysis_status|replace("_", " ")|title }}</span>
+              {% endif %}
+              {% if item.workspace and item.workspace.pursuit_status != 'not_decided' %}
+                <span class="status-badge status-workspace">{{ item.workspace.pursuit_status|replace("_", " ")|title }}</span>
+              {% endif %}
             </div>
             <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
             <p class="muted">{{ tender.buyer_name or "Department n/a" }}</p>
@@ -150,8 +156,8 @@
             <p>{{ item.contact_phone or "n/a" }}</p>
           </div>
           <div>
-            <label>Province</label>
-            <p>{{ tender.province or "n/a" }}</p>
+            <label>Pursuit Status</label>
+            <p>{{ item.workspace.pursuit_status|replace("_", " ")|title if item.workspace else "Not decided" }}</p>
           </div>
         </div>
 
