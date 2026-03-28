@@ -14,9 +14,7 @@
       Readiness: {{ readiness_band|replace("_", " ")|title }}
     </span>
     {% if profile_gap_summary %}
-      <span class="muted">
-        Pending profile gaps: {{ profile_gap_summary.pending_count or 0 }}
-      </span>
+      <span class="muted">Pending profile gaps: {{ profile_gap_summary.pending_count or 0 }}</span>
     {% endif %}
   </div>
 
@@ -60,15 +58,9 @@
       <label>Fit Band</label>
       <select name="fit_band">
         <option value="">All</option>
-        <option value="high_potential" {% if filters.fit_band == 'high_potential' %}selected{% endif %}>
-          High Potential{% if band_counts %} ({{ band_counts.high_potential }}){% endif %}
-        </option>
-        <option value="possible_fit" {% if filters.fit_band == 'possible_fit' %}selected{% endif %}>
-          Possible Fit{% if band_counts %} ({{ band_counts.possible_fit }}){% endif %}
-        </option>
-        <option value="low_fit" {% if filters.fit_band == 'low_fit' %}selected{% endif %}>
-          Low Fit{% if band_counts %} ({{ band_counts.low_fit }}){% endif %}
-        </option>
+        <option value="high_potential" {% if filters.fit_band == 'high_potential' %}selected{% endif %}>High Potential{% if band_counts %} ({{ band_counts.high_potential }}){% endif %}</option>
+        <option value="possible_fit" {% if filters.fit_band == 'possible_fit' %}selected{% endif %}>Possible Fit{% if band_counts %} ({{ band_counts.possible_fit }}){% endif %}</option>
+        <option value="low_fit" {% if filters.fit_band == 'low_fit' %}selected{% endif %}>Low Fit{% if band_counts %} ({{ band_counts.low_fit }}){% endif %}</option>
       </select>
     </div>
 
@@ -98,6 +90,9 @@
               {% if item.readiness_band %}
                 <span class="pill">{{ item.readiness_band|replace("_", " ")|title }}</span>
               {% endif %}
+              {% if item.proposal_required %}
+                <span class="pill">Proposal Required</span>
+              {% endif %}
             </div>
             <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
             <p class="muted">{{ tender.buyer_name or "Department n/a" }}</p>
@@ -123,9 +118,13 @@
           </div>
           <div>
             <label>Days Left</label>
+            <p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p>
+          </div>
+          <div>
+            <label>Briefing</label>
             <p>
-              {% if tender.closing_date %}
-                {{ tender.closing_date|days_left }}
+              {% if item.briefing_date %}
+                {{ item.briefing_date }} · {% set d = item.briefing_date|days_left %}{% if d is not none %}{{ d }} day(s){% else %}n/a{% endif %}
               {% else %}
                 n/a
               {% endif %}
@@ -135,9 +134,24 @@
             <label>Department</label>
             <p>{{ tender.buyer_name or "n/a" }}</p>
           </div>
+        </div>
+
+        <div class="detail-grid compact-grid">
           <div>
-            <label>Contact</label>
-            <p>See tender detail</p>
+            <label>Contact Person</label>
+            <p>{{ item.contact_person or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Contact Email</label>
+            <p>{{ item.contact_email or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Contact Phone</label>
+            <p>{{ item.contact_phone or "n/a" }}</p>
+          </div>
+          <div>
+            <label>Province</label>
+            <p>{{ tender.province or "n/a" }}</p>
           </div>
         </div>
 
