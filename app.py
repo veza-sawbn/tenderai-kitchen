@@ -4,7 +4,7 @@ import os
 import re
 import tempfile
 from datetime import date, datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from dotenv import load_dotenv
@@ -179,7 +179,24 @@ def extract_docx_text(path: str) -> str:
         return ""
     try:
         doc = DocxDocument(path)
-        return "\n".join([p.text for p in doc.paragraphs if p.text]).strip()
+        parts = []
+
+        for p in doc.paragraphs:
+            text = (p.text or "").strip()
+            if text:
+                parts.append(text)
+
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = []
+                for cell in row.cells:
+                    cell_text = (cell.text or "").strip()
+                    if cell_text:
+                        row_text.append(cell_text)
+                if row_text:
+                    parts.append(" | ".join(row_text))
+
+        return "\n".join(parts).strip()
     except Exception:
         return ""
 
@@ -408,19 +425,11 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
             score += 8.0
             break
 
-    if tender.title and any(word in tender.title.lower() for word in ["appointment", "panel", "framework", "supply", "services"]):
-        score += 4.0
-
     try:
         if tender.closing_date:
             days = (tender.closing_date - date.today()).days
             if days >= 0:
-                if days <= 7:
-                    score += 2.0
-                elif days <= 21:
-                    score += 5.0
-                else:
-                    score += 7.0
+                score += 2.0 if days <= 7 else 5.0 if days <= 21 else 7.0
     except Exception:
         pass
 
@@ -560,17 +569,36 @@ def build_document_match_check(tender: TenderCache, document_text: str) -> dict:
     confidence = max(0.0, min(score, 100.0))
     is_match = confidence >= 35.0 and (len(title_matches) >= 2 or buyer_matches)
 
-    if is_match:
-        reason = "Document content appears consistent with the selected tender."
-    else:
-        reason = "Document content does not sufficiently match the selected tender metadata."
-
     return {
         "document_match": is_match,
         "confidence": confidence,
-        "reason": reason,
+        "reason": "Document content appears consistent with the selected tender." if is_match else "Document content does not sufficiently match the selected tender metadata.",
         "matched_signals": matched_signals,
         "missing_signals": missing_signals,
+    }
+
+
+def extract_procurement_fields_fallback(tender: TenderCache, document_text: str) -> dict:
+    text = document_text or ""
+    briefing_date = None
+    m = re.search(r"(brief(?:ing)?(?: session)?)[^0-9]{0,20}(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})", text, re.I)
+    if m:
+        briefing_date = m.group(2).replace("/", "-")
+
+    email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", text)
+    phone_match = re.search(r"(\+?\d[\d\s\-()]{7,}\d)", text)
+
+    proposal_required = bool(re.search(r"\bproposal\b|\btechnical proposal\b|\bfinancial proposal\b", text, re.I))
+
+    scope_summary = tender.description or "Scope to be confirmed from tender document."
+
+    return {
+        "briefing_date": briefing_date,
+        "contact_person": None,
+        "contact_email": email_match.group(1) if email_match else None,
+        "contact_phone": phone_match.group(1) if phone_match else None,
+        "proposal_required": proposal_required,
+        "scope_summary": scope_summary[:700],
     }
 
 
@@ -647,10 +675,7 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
 
     job = session.execute(
         select(AnalysisJob)
-        .where(
-            AnalysisJob.tender_id == tender_id,
-            AnalysisJob.profile_id == profile_id,
-        )
+        .where(AnalysisJob.tender_id == tender_id, AnalysisJob.profile_id == profile_id)
         .order_by(desc(AnalysisJob.updated_at))
         .limit(1)
     ).scalars().first()
@@ -679,7 +704,45 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "pricing_complexity": raw.get("pricing_complexity"),
         "potential_revenue_range": raw.get("potential_revenue_range"),
         "margin_risk": raw.get("margin_risk"),
+        "briefing_date": raw.get("briefing_date"),
+        "contact_person": raw.get("contact_person"),
+        "contact_email": raw.get("contact_email"),
+        "contact_phone": raw.get("contact_phone"),
+        "proposal_required": raw.get("proposal_required"),
+        "scope_summary": raw.get("scope_summary"),
     }
+
+
+def latest_analysis_map_for_tenders(session, profile_id: Optional[int], tender_ids: List[int]) -> Dict[int, dict]:
+    if not profile_id or not tender_ids:
+        return {}
+
+    jobs = session.execute(
+        select(AnalysisJob)
+        .where(
+            AnalysisJob.profile_id == profile_id,
+            AnalysisJob.tender_id.in_(tender_ids),
+        )
+        .order_by(desc(AnalysisJob.updated_at))
+    ).scalars().all()
+
+    out: Dict[int, dict] = {}
+    for job in jobs:
+        if job.tender_id in out:
+            continue
+        raw = safe_loads(job.raw_result_json, {})
+        out[job.tender_id] = {
+            "score": job.score,
+            "summary": job.summary,
+            "briefing_date": raw.get("briefing_date"),
+            "contact_person": raw.get("contact_person"),
+            "contact_email": raw.get("contact_email"),
+            "contact_phone": raw.get("contact_phone"),
+            "proposal_required": raw.get("proposal_required"),
+            "scope_summary": raw.get("scope_summary"),
+            "document_match": raw.get("document_match"),
+        }
+    return out
 
 
 def fetch_tender_document(session, tender: TenderCache) -> dict:
@@ -689,10 +752,7 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
 
     doc = session.execute(
         select(TenderDocumentCache)
-        .where(
-            TenderDocumentCache.tender_id == tender.id,
-            TenderDocumentCache.document_url == document_url,
-        )
+        .where(TenderDocumentCache.tender_id == tender.id, TenderDocumentCache.document_url == document_url)
         .limit(1)
     ).scalars().first()
 
@@ -702,21 +762,58 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
         session.flush()
 
     try:
-        response = requests.get(document_url, timeout=25)
+        response = requests.get(document_url, timeout=25, allow_redirects=True)
         response.raise_for_status()
 
         content_type = (response.headers.get("Content-Type") or "").lower()
         filename = document_url.split("/")[-1][:255] if "/" in document_url else None
+        lower_name = (filename or "").lower()
+        lower_url = (document_url or "").lower()
 
-        suffix = ".pdf"
-        if (
+        is_docx = (
             "wordprocessingml" in content_type
-            or "msword" in content_type
-            or (filename and filename.lower().endswith(".docx"))
-        ):
+            or "msword" in content_type and lower_name.endswith(".docx")
+            or lower_name.endswith(".docx")
+            or lower_url.endswith(".docx")
+        )
+
+        is_doc = (
+            content_type == "application/msword"
+            or lower_name.endswith(".doc")
+            or lower_url.endswith(".doc")
+        ) and not is_docx
+
+        is_pdf = (
+            "pdf" in content_type
+            or lower_name.endswith(".pdf")
+            or lower_url.endswith(".pdf")
+        )
+
+        if is_doc:
+            doc.filename = filename
+            doc.content_type = content_type[:100] if content_type else None
+            doc.binary_content = response.content
+            doc.extracted_text = ""
+            doc.fetch_status = "parse_failed"
+            doc.error_message = "Legacy .doc files are not supported yet. Please convert to PDF or .docx."
+            doc.fetched_at = utcnow()
+            session.flush()
+            return {"ok": False, "error": doc.error_message}
+
+        if is_docx:
             suffix = ".docx"
-        elif "pdf" not in content_type and not (filename and filename.lower().endswith(".pdf")):
-            suffix = ".bin"
+        elif is_pdf:
+            suffix = ".pdf"
+        else:
+            doc.filename = filename
+            doc.content_type = content_type[:100] if content_type else None
+            doc.binary_content = response.content
+            doc.extracted_text = ""
+            doc.fetch_status = "parse_failed"
+            doc.error_message = f"Unsupported document type: {content_type or 'unknown'}"
+            doc.fetched_at = utcnow()
+            session.flush()
+            return {"ok": False, "error": doc.error_message}
 
         extracted_text = ""
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -734,16 +831,16 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
             except Exception:
                 pass
 
-        if suffix == ".docx" and not extracted_text.strip():
-            doc.fetch_status = "parse_failed"
-            doc.error_message = "DOCX was fetched but readable text could not be extracted."
+        if not extracted_text.strip():
             doc.filename = filename
             doc.content_type = content_type[:100] if content_type else None
             doc.binary_content = response.content
             doc.extracted_text = ""
+            doc.fetch_status = "parse_failed"
+            doc.error_message = f"{suffix} was fetched but readable text could not be extracted."
             doc.fetched_at = utcnow()
             session.flush()
-            return {"ok": False, "error": "DOCX was fetched but readable text could not be extracted."}
+            return {"ok": False, "error": doc.error_message}
 
         doc.filename = filename
         doc.content_type = content_type[:100] if content_type else None
@@ -754,7 +851,7 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
         doc.fetched_at = utcnow()
         session.flush()
 
-        return {"ok": True, "text_len": len(extracted_text)}
+        return {"ok": True, "text_len": len(extracted_text), "content_type": content_type, "filename": filename}
     except Exception as exc:
         doc.fetch_status = "fetch_failed"
         doc.error_message = str(exc)
@@ -768,6 +865,7 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
     profile_json = safe_loads(profile.parsed_json, {})
     tender_vm = tender_to_view_model(tender)
     match_check = build_document_match_check(tender, document_text)
+    extracted_fields = extract_procurement_fields_fallback(tender, document_text)
 
     if not match_check["document_match"]:
         commercial = estimate_commercial_fallback(tender, profile, document_text)
@@ -787,6 +885,7 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
             "pricing_complexity": commercial["pricing_complexity"],
             "potential_revenue_range": commercial["potential_revenue_range"],
             "margin_risk": commercial["margin_risk"],
+            **extracted_fields,
             "_analysis_mode": "document_validation_failed",
         }
 
@@ -796,11 +895,21 @@ You are TenderAI, a procurement intelligence assistant.
 First verify that the tender document belongs to the selected tender.
 If it does not match, return document_match=false and do not produce a meaningful opportunity score.
 If it matches, score and interpret the tender against the supplier profile.
+
+Also extract procurement fields where possible:
+- briefing_date
+- contact_person
+- contact_email
+- contact_phone
+- proposal_required
+- scope_summary
+
 Also estimate indicative commercial intelligence:
 - estimated_cost_drivers
 - pricing_complexity
 - potential_revenue_range
 - margin_risk
+
 Return JSON only.
 
 Schema:
@@ -816,7 +925,13 @@ Schema:
   "estimated_cost_drivers": ["string"],
   "pricing_complexity": "low|medium|high",
   "potential_revenue_range": "string",
-  "margin_risk": "low|medium|high"
+  "margin_risk": "low|medium|high",
+  "briefing_date": "string or null",
+  "contact_person": "string or null",
+  "contact_email": "string or null",
+  "contact_phone": "string or null",
+  "proposal_required": true,
+  "scope_summary": "string"
 }}
 
 Supplier profile JSON:
@@ -842,6 +957,12 @@ Tender document text:
                 parsed.setdefault("document_match_reason", match_check["reason"])
                 parsed.setdefault("matched_signals", match_check["matched_signals"])
                 parsed.setdefault("missing_signals", match_check["missing_signals"])
+                parsed.setdefault("briefing_date", extracted_fields["briefing_date"])
+                parsed.setdefault("contact_person", extracted_fields["contact_person"])
+                parsed.setdefault("contact_email", extracted_fields["contact_email"])
+                parsed.setdefault("contact_phone", extracted_fields["contact_phone"])
+                parsed.setdefault("proposal_required", extracted_fields["proposal_required"])
+                parsed.setdefault("scope_summary", extracted_fields["scope_summary"])
 
                 if parsed.get("document_match") is False:
                     parsed["score"] = 0
@@ -870,6 +991,7 @@ Tender document text:
         "pricing_complexity": commercial["pricing_complexity"],
         "potential_revenue_range": commercial["potential_revenue_range"],
         "margin_risk": commercial["margin_risk"],
+        **extracted_fields,
         "_analysis_mode": "heuristic",
     }
 
@@ -979,9 +1101,7 @@ def inject_globals():
     with get_db_session() as session:
         active_profile = get_active_profile(session)
         latest_ingest = session.execute(
-            select(IngestRun)
-            .order_by(desc(IngestRun.started_at), desc(IngestRun.id))
-            .limit(1)
+            select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)
         ).scalars().first()
 
         return {
@@ -995,15 +1115,15 @@ def inject_globals():
 
 
 @app.template_filter("days_left")
-def days_left_filter(closing_date):
-    if not closing_date:
+def days_left_filter(target_date):
+    if not target_date:
         return None
-    if isinstance(closing_date, str):
+    if isinstance(target_date, str):
         try:
-            closing_date = date.fromisoformat(closing_date)
+            target_date = date.fromisoformat(target_date[:10])
         except Exception:
             return None
-    return (closing_date - date.today()).days
+    return (target_date - date.today()).days
 
 
 @app.get("/health")
@@ -1032,44 +1152,40 @@ def home():
             .limit(24)
         ).scalars().all()
 
-        featured = []
-        tender_cards = []
+        analysis_map = latest_analysis_map_for_tenders(
+            session,
+            active_profile.id if active_profile else None,
+            [t.id for t in tenders],
+        )
 
+        featured = []
         for t in tenders:
             score = keyword_overlap_score(active_profile, t)
             reasons = build_fit_reasons(active_profile, t)
             fit_band = fit_band_from_score(score)
-            fit_summary = build_fit_summary(score, reasons, active_profile)
             tender_vm = tender_to_view_model(t)
+            latest = analysis_map.get(t.id, {})
 
             featured.append({
                 "tender": tender_vm,
                 "score": score,
                 "fit_band": fit_band,
-                "fit_summary": fit_summary,
+                "fit_summary": latest.get("scope_summary") or build_fit_summary(score, reasons, active_profile),
                 "fit_reasons": reasons,
                 "readiness_band": readiness_band,
-            })
-
-            tender_cards.append({
-                **tender_vm,
-                "alignment_score": score,
-                "fit_band": fit_band,
-                "fit_summary": fit_summary,
-                "fit_reasons": reasons,
-                "readiness_band": readiness_band,
+                "briefing_date": latest.get("briefing_date"),
+                "contact_person": latest.get("contact_person"),
+                "contact_email": latest.get("contact_email"),
+                "contact_phone": latest.get("contact_phone"),
             })
 
         if active_profile:
             featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
-            tender_cards.sort(key=lambda x: (x["alignment_score"] or 0), reverse=True)
 
         return render_template(
             "home.html",
             total_live=total_live,
             featured=featured[:12],
-            tenders=tender_cards[:12],
-            ranked_tenders=featured[:12],
             readiness_band=readiness_band,
             readiness_note=readiness_note,
             profile_gap_summary=gap_summary,
@@ -1119,6 +1235,12 @@ def tenders():
             query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)
         ).scalars().all()
 
+        analysis_map = latest_analysis_map_for_tenders(
+            session,
+            active_profile.id if active_profile else None,
+            [t.id for t in items],
+        )
+
         ranked = []
         for t in items:
             score = keyword_overlap_score(active_profile, t)
@@ -1127,37 +1249,34 @@ def tenders():
             if fit_band_filter and band != fit_band_filter:
                 continue
 
+            latest = analysis_map.get(t.id, {})
             ranked.append({
                 "tender": tender_to_view_model(t),
                 "score": score,
                 "fit_band": band,
-                "fit_summary": build_fit_summary(score, reasons, active_profile),
+                "fit_summary": latest.get("scope_summary") or build_fit_summary(score, reasons, active_profile),
                 "fit_reasons": reasons,
                 "readiness_band": readiness_band,
+                "briefing_date": latest.get("briefing_date"),
+                "contact_person": latest.get("contact_person"),
+                "contact_email": latest.get("contact_email"),
+                "contact_phone": latest.get("contact_phone"),
+                "proposal_required": latest.get("proposal_required"),
             })
 
         if active_profile:
             ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
 
         provinces = session.execute(
-            select(TenderCache.province)
-            .where(TenderCache.is_live.is_(True), TenderCache.province.is_not(None))
-            .distinct()
-            .order_by(TenderCache.province)
+            select(TenderCache.province).where(TenderCache.is_live.is_(True), TenderCache.province.is_not(None)).distinct().order_by(TenderCache.province)
         ).scalars().all()
 
         tender_types = session.execute(
-            select(TenderCache.tender_type)
-            .where(TenderCache.is_live.is_(True), TenderCache.tender_type.is_not(None))
-            .distinct()
-            .order_by(TenderCache.tender_type)
+            select(TenderCache.tender_type).where(TenderCache.is_live.is_(True), TenderCache.tender_type.is_not(None)).distinct().order_by(TenderCache.tender_type)
         ).scalars().all()
 
         industries = session.execute(
-            select(TenderCache.industry)
-            .where(TenderCache.is_live.is_(True), TenderCache.industry.is_not(None))
-            .distinct()
-            .order_by(TenderCache.industry)
+            select(TenderCache.industry).where(TenderCache.is_live.is_(True), TenderCache.industry.is_not(None)).distinct().order_by(TenderCache.industry)
         ).scalars().all()
 
         band_counts = {"high_potential": 0, "possible_fit": 0, "low_fit": 0}
@@ -1231,11 +1350,7 @@ def analyze_tender_page(tender_id: int):
             flash("Please upload and activate a business profile first.", "error")
             return redirect(url_for("profiles"))
 
-        job = AnalysisJob(
-            profile_id=active_profile.id,
-            tender_id=tender_id,
-            status="running",
-        )
+        job = AnalysisJob(profile_id=active_profile.id, tender_id=tender_id, status="running")
         session.add(job)
         session.flush()
 
@@ -1249,10 +1364,7 @@ def analyze_tender_page(tender_id: int):
 
             doc = session.execute(
                 select(TenderDocumentCache)
-                .where(
-                    TenderDocumentCache.tender_id == tender_id,
-                    TenderDocumentCache.document_url == document_url,
-                )
+                .where(TenderDocumentCache.tender_id == tender_id, TenderDocumentCache.document_url == document_url)
                 .limit(1)
             ).scalars().first()
 
@@ -1266,10 +1378,7 @@ def analyze_tender_page(tender_id: int):
 
                 doc = session.execute(
                     select(TenderDocumentCache)
-                    .where(
-                        TenderDocumentCache.tender_id == tender_id,
-                        TenderDocumentCache.document_url == document_url,
-                    )
+                    .where(TenderDocumentCache.tender_id == tender_id, TenderDocumentCache.document_url == document_url)
                     .limit(1)
                 ).scalars().first()
 
@@ -1353,11 +1462,10 @@ def download_proposal_docx(tender_id: int):
             flash(f"Unable to generate DOCX proposal: {exc}", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
-        filename = f"proposal_tender_{tender_id}.docx"
         return send_file(
             io.BytesIO(payload),
             as_attachment=True,
-            download_name=filename,
+            download_name=f"proposal_tender_{tender_id}.docx",
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
 
@@ -1365,14 +1473,8 @@ def download_proposal_docx(tender_id: int):
 @app.get("/profiles")
 def profiles():
     with get_db_session() as session:
-        profiles_list = session.execute(
-            select(Profile).order_by(desc(Profile.updated_at))
-        ).scalars().all()
-
-        return render_template(
-            "profiles.html",
-            profiles=[serialize_profile(p, include_issues=True) for p in profiles_list],
-        )
+        profiles_list = session.execute(select(Profile).order_by(desc(Profile.updated_at))).scalars().all()
+        return render_template("profiles.html", profiles=[serialize_profile(p, include_issues=True) for p in profiles_list])
 
 
 @app.post("/profiles")
@@ -1393,7 +1495,6 @@ def upload_profile():
 
     with get_db_session() as session:
         session.execute(Profile.__table__.update().values(is_active=False))
-
         profile = Profile(
             name=parsed.get("company_name") or os.path.splitext(uploaded.filename)[0],
             company_name=parsed.get("company_name"),
@@ -1407,7 +1508,6 @@ def upload_profile():
         )
         session.add(profile)
         session.flush()
-
         upsert_profile_issues(session, profile, parsed.get("issues") or [])
 
     flash(f"Profile uploaded and set as active. Parse mode: {parsed.get('_parse_mode', 'heuristic')}.", "success")
@@ -1465,10 +1565,7 @@ def api_run_ingest():
         return jsonify({"ok": False, "error": "unauthorized"}), 403
 
     with get_db_session() as session:
-        result = ingest_tenders(
-            session=session,
-            max_pages=int(os.getenv("INGEST_MAX_PAGES", "1")),
-        )
+        result = ingest_tenders(session=session, max_pages=int(os.getenv("INGEST_MAX_PAGES", "1")))
         return jsonify(result)
 
 
@@ -1483,9 +1580,7 @@ def api_fetch_documents():
     errors = []
 
     with get_db_session() as session:
-        tenders = session.execute(
-            select(TenderCache).order_by(desc(TenderCache.updated_at)).limit(limit)
-        ).scalars().all()
+        tenders = session.execute(select(TenderCache).order_by(desc(TenderCache.updated_at)).limit(limit)).scalars().all()
 
         for tender in tenders:
             result = fetch_tender_document(session, tender)
