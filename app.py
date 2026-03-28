@@ -648,25 +648,20 @@ def estimate_commercial_fallback(tender: TenderCache, profile: Profile, document
     }
 
 
-def upsert_profile_issues(session, profile: Profile, issues: List[dict]):
-    existing = session.execute(
-        select(ProfileIssue).where(ProfileIssue.profile_id == profile.id)
-    ).scalars().all()
-    for issue in existing:
-        session.delete(issue)
-    session.flush()
+def build_default_workspace() -> dict:
+    return {
+        "pursuit_status": "not_decided",
+        "submission_readiness": "not_started",
+        "next_action": "",
+        "internal_notes": "",
+        "document_override_status": "none",
+    }
 
-    for issue in issues or []:
-        session.add(
-            ProfileIssue(
-                profile_id=profile.id,
-                issue_type="profile_gap",
-                title=issue.get("title") or "Profile issue",
-                detail=issue.get("detail"),
-                penalty_weight=float(issue.get("penalty_weight") or 5),
-                status="pending",
-            )
-        )
+
+def merge_workspace(raw: dict) -> dict:
+    workspace = build_default_workspace()
+    workspace.update(raw.get("workspace") or {})
+    return workspace
 
 
 def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> Optional[dict]:
@@ -684,6 +679,8 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         return None
 
     raw = safe_loads(job.raw_result_json, {})
+    workspace = merge_workspace(raw)
+
     return {
         "id": job.id,
         "status": job.status,
@@ -710,6 +707,7 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "contact_phone": raw.get("contact_phone"),
         "proposal_required": raw.get("proposal_required"),
         "scope_summary": raw.get("scope_summary"),
+        "workspace": workspace,
     }
 
 
@@ -741,11 +739,32 @@ def latest_analysis_map_for_tenders(session, profile_id: Optional[int], tender_i
             "proposal_required": raw.get("proposal_required"),
             "scope_summary": raw.get("scope_summary"),
             "document_match": raw.get("document_match"),
+            "workspace": merge_workspace(raw),
+            "status": job.status,
         }
     return out
 
 
-def fetch_tender_document(session, tender: TenderCache) -> dict:
+def current_document_status(session, tender_id: int) -> Optional[dict]:
+    doc = session.execute(
+        select(TenderDocumentCache)
+        .where(TenderDocumentCache.tender_id == tender_id)
+        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
+        .limit(1)
+    ).scalars().first()
+    if not doc:
+        return None
+    return {
+        "fetch_status": doc.fetch_status,
+        "error_message": doc.error_message,
+        "filename": doc.filename,
+        "content_type": doc.content_type,
+        "fetched_at": doc.fetched_at.isoformat() if doc.fetched_at else None,
+        "document_url": doc.document_url,
+    }
+
+
+def fetch_tender_document(session, tender: TenderCache, force_refresh: bool = False) -> dict:
     document_url = tender.document_url or tender.source_url
     if not document_url:
         return {"ok": False, "error": "No tender document URL available."}
@@ -759,6 +778,11 @@ def fetch_tender_document(session, tender: TenderCache) -> dict:
     if not doc:
         doc = TenderDocumentCache(tender_id=tender.id, document_url=document_url)
         session.add(doc)
+        session.flush()
+
+    if force_refresh:
+        doc.fetch_status = "refreshing"
+        doc.error_message = None
         session.flush()
 
     try:
@@ -869,7 +893,7 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
 
     if not match_check["document_match"]:
         commercial = estimate_commercial_fallback(tender, profile, document_text)
-        return {
+        result = {
             "document_match": False,
             "document_match_confidence": match_check["confidence"],
             "document_match_reason": match_check["reason"],
@@ -888,6 +912,8 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
             **extracted_fields,
             "_analysis_mode": "document_validation_failed",
         }
+        result["workspace"] = build_default_workspace()
+        return result
 
     if client and document_text.strip():
         prompt = f"""
@@ -963,6 +989,7 @@ Tender document text:
                 parsed.setdefault("contact_phone", extracted_fields["contact_phone"])
                 parsed.setdefault("proposal_required", extracted_fields["proposal_required"])
                 parsed.setdefault("scope_summary", extracted_fields["scope_summary"])
+                parsed.setdefault("workspace", build_default_workspace())
 
                 if parsed.get("document_match") is False:
                     parsed["score"] = 0
@@ -975,7 +1002,7 @@ Tender document text:
     reasons = build_fit_reasons(profile, tender)
     commercial = estimate_commercial_fallback(tender, profile, document_text)
 
-    return {
+    result = {
         "document_match": True,
         "document_match_confidence": match_check["confidence"],
         "document_match_reason": match_check["reason"],
@@ -993,7 +1020,9 @@ Tender document text:
         "margin_risk": commercial["margin_risk"],
         **extracted_fields,
         "_analysis_mode": "heuristic",
+        "workspace": build_default_workspace(),
     }
+    return result
 
 
 def generate_proposal_content(tender: TenderCache, profile: Profile, analysis: dict) -> dict:
@@ -1094,6 +1123,19 @@ def build_proposal_docx(proposal: dict, tender: TenderCache, profile: Profile) -
     doc.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def find_running_analysis(session, tender_id: int, profile_id: int) -> Optional[AnalysisJob]:
+    return session.execute(
+        select(AnalysisJob)
+        .where(
+            AnalysisJob.tender_id == tender_id,
+            AnalysisJob.profile_id == profile_id,
+            AnalysisJob.status == "running",
+        )
+        .order_by(desc(AnalysisJob.updated_at))
+        .limit(1)
+    ).scalars().first()
 
 
 @app.context_processor
@@ -1262,6 +1304,8 @@ def tenders():
                 "contact_email": latest.get("contact_email"),
                 "contact_phone": latest.get("contact_phone"),
                 "proposal_required": latest.get("proposal_required"),
+                "analysis_status": latest.get("status"),
+                "workspace": latest.get("workspace") or build_default_workspace(),
             })
 
         if active_profile:
@@ -1320,6 +1364,17 @@ def tender_detail(tender_id: int):
         readiness_band = readiness_band_for_profile(active_profile)
         readiness_note = readiness_message(active_profile, score)
         gap_summary = build_profile_gap_summary(active_profile)
+        doc_status = current_document_status(session, tender_id)
+        running_job = None
+        if active_profile:
+            running_job = find_running_analysis(session, tender_id, active_profile.id)
+
+        proposal_preview = None
+        if latest_analysis and latest_analysis.get("proposal_required"):
+            try:
+                proposal_preview = generate_proposal_content(tender, active_profile, latest_analysis)
+            except Exception:
+                proposal_preview = None
 
         return render_template(
             "tender_detail.html",
@@ -1334,6 +1389,9 @@ def tender_detail(tender_id: int):
             readiness_band=readiness_band,
             readiness_note=readiness_note,
             profile_gap_summary=gap_summary,
+            document_status=doc_status,
+            running_job=running_job,
+            proposal_preview=proposal_preview,
         )
 
 
@@ -1349,6 +1407,11 @@ def analyze_tender_page(tender_id: int):
         if not active_profile:
             flash("Please upload and activate a business profile first.", "error")
             return redirect(url_for("profiles"))
+
+        existing_running = find_running_analysis(session, tender_id, active_profile.id)
+        if existing_running:
+            flash("An analysis is already running for this tender and profile.", "warning")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
 
         job = AnalysisJob(profile_id=active_profile.id, tender_id=tender_id, status="running")
         session.add(job)
@@ -1390,6 +1453,7 @@ def analyze_tender_page(tender_id: int):
                 return redirect(url_for("tender_detail", tender_id=tender_id))
 
             analysis = analyze_tender_against_profile(tender, active_profile, extracted_text) or {}
+            analysis.setdefault("workspace", build_default_workspace())
 
             job.status = "completed"
             job.score = float(analysis.get("score") or 0)
@@ -1400,7 +1464,7 @@ def analyze_tender_page(tender_id: int):
             job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
             job.error_message = None
 
-            doc.parsed_json = json.dumps(analysis, ensure_ascii=False, default=str)
+            doc.parsed_json = json.dumps({"analysis": analysis}, ensure_ascii=False, default=str)
             session.flush()
 
             if analysis.get("document_match") is False:
@@ -1416,6 +1480,60 @@ def analyze_tender_page(tender_id: int):
             session.flush()
             flash(f"Analysis failed: {exc}", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
+
+
+@app.post("/tender/<int:tender_id>/workspace")
+def update_workspace(tender_id: int):
+    with get_db_session() as session:
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            flash("Please upload and activate a profile first.", "error")
+            return redirect(url_for("profiles"))
+
+        job = session.execute(
+            select(AnalysisJob)
+            .where(AnalysisJob.tender_id == tender_id, AnalysisJob.profile_id == active_profile.id)
+            .order_by(desc(AnalysisJob.updated_at))
+            .limit(1)
+        ).scalars().first()
+
+        if not job:
+            flash("Analyze the tender first before updating the workspace.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        raw = safe_loads(job.raw_result_json, {})
+        workspace = merge_workspace(raw)
+        workspace["pursuit_status"] = (request.form.get("pursuit_status") or workspace["pursuit_status"]).strip()
+        workspace["submission_readiness"] = (request.form.get("submission_readiness") or workspace["submission_readiness"]).strip()
+        workspace["next_action"] = (request.form.get("next_action") or "").strip()
+        workspace["internal_notes"] = (request.form.get("internal_notes") or "").strip()
+        workspace["document_override_status"] = (request.form.get("document_override_status") or workspace["document_override_status"]).strip()
+
+        raw["workspace"] = workspace
+        job.raw_result_json = json.dumps(raw, ensure_ascii=False, default=str)
+        flash("Bid workspace updated.", "success")
+        return redirect(url_for("tender_detail", tender_id=tender_id))
+
+
+@app.post("/tender/<int:tender_id>/refetch-document")
+def refetch_document_page(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            flash("Tender not found.", "error")
+            return redirect(url_for("tenders"))
+
+        result = fetch_tender_document(session, tender, force_refresh=True)
+        if result.get("ok"):
+            flash("Tender document re-fetched successfully.", "success")
+        else:
+            flash(f"Document re-fetch failed: {result.get('error')}", "error")
+        return redirect(url_for("tender_detail", tender_id=tender_id))
+
+
+@app.post("/tender/<int:tender_id>/reanalyze")
+def reanalyze_tender_page(tender_id: int):
+    return analyze_tender_page(tender_id)
 
 
 @app.get("/api/tenders/<int:tender_id>/proposal")
