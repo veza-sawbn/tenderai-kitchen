@@ -15,6 +15,11 @@
     {% if latest_analysis and latest_analysis.proposal_required %}
       <span class="pill">Proposal Required</span>
     {% endif %}
+    {% if latest_analysis %}
+      <span class="status-badge status-{{ latest_analysis.status }}">{{ latest_analysis.status|replace("_", " ")|title }}</span>
+    {% elif running_job %}
+      <span class="status-badge status-running">Running</span>
+    {% endif %}
   </div>
 
   <h1>{{ tender.title }}</h1>
@@ -48,15 +53,113 @@
     {% endif %}
     {% if can_analyze and analyze_action_url %}
       <form method="post" action="{{ analyze_action_url }}" class="inline-form" data-analysis-form>
-        <button type="submit" class="btn" data-analysis-button>Analyse This Tender</button>
+        <button type="submit" class="btn" data-analysis-button {% if running_job %}disabled{% endif %}>
+          {% if running_job %}Analysis Running...{% else %}Analyse This Tender{% endif %}
+        </button>
       </form>
     {% endif %}
+    <form method="post" action="{{ url_for('refetch_document_page', tender_id=tender.id) }}" class="inline-form">
+      <button type="submit" class="btn btn-secondary">Re-fetch Document</button>
+    </form>
+    <form method="post" action="{{ url_for('reanalyze_tender_page', tender_id=tender.id) }}" class="inline-form">
+      <button type="submit" class="btn btn-secondary" {% if running_job %}disabled{% endif %}>Re-analyze</button>
+    </form>
     {% if latest_analysis and latest_analysis.proposal_required %}
       <a class="btn btn-secondary" href="{{ url_for('api_generate_proposal', tender_id=tender.id) }}" target="_blank" rel="noopener">Proposal Draft</a>
       <a class="btn btn-secondary" href="{{ url_for('download_proposal_docx', tender_id=tender.id) }}">Proposal DOCX</a>
     {% endif %}
   </div>
 </section>
+
+<section class="glass-card stack-list">
+  <h2>Operational Status</h2>
+
+  {% if document_status %}
+    <div class="detail-grid compact-grid">
+      <div>
+        <label>Document Status</label>
+        <p><span class="status-badge status-{{ document_status.fetch_status }}">{{ document_status.fetch_status|replace("_", " ")|title }}</span></p>
+      </div>
+      <div>
+        <label>Filename</label>
+        <p>{{ document_status.filename or "n/a" }}</p>
+      </div>
+      <div>
+        <label>Fetched At</label>
+        <p>{{ document_status.fetched_at or "n/a" }}</p>
+      </div>
+      <div>
+        <label>Content Type</label>
+        <p>{{ document_status.content_type or "n/a" }}</p>
+      </div>
+    </div>
+    {% if document_status.error_message %}
+      <div class="detail-list">
+        <label>Document Error</label>
+        <p>{{ document_status.error_message }}</p>
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="detail-list">
+      <label>Document Status</label>
+      <p>No tender document has been fetched yet.</p>
+    </div>
+  {% endif %}
+</section>
+
+{% if latest_analysis %}
+<section class="glass-card stack-list">
+  <h2>Bid Workspace</h2>
+
+  <form method="post" action="{{ url_for('update_workspace', tender_id=tender.id) }}" class="workspace-form">
+    <div class="detail-grid compact-grid">
+      <div>
+        <label>Pursuit Status</label>
+        <select name="pursuit_status">
+          {% set ws = latest_analysis.workspace %}
+          <option value="not_decided" {% if ws.pursuit_status == 'not_decided' %}selected{% endif %}>Not Decided</option>
+          <option value="shortlisted" {% if ws.pursuit_status == 'shortlisted' %}selected{% endif %}>Shortlisted</option>
+          <option value="pursue" {% if ws.pursuit_status == 'pursue' %}selected{% endif %}>Pursue</option>
+          <option value="do_not_pursue" {% if ws.pursuit_status == 'do_not_pursue' %}selected{% endif %}>Do Not Pursue</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Submission Readiness</label>
+        <select name="submission_readiness">
+          <option value="not_started" {% if ws.submission_readiness == 'not_started' %}selected{% endif %}>Not Started</option>
+          <option value="in_progress" {% if ws.submission_readiness == 'in_progress' %}selected{% endif %}>In Progress</option>
+          <option value="review_needed" {% if ws.submission_readiness == 'review_needed' %}selected{% endif %}>Review Needed</option>
+          <option value="ready_to_submit" {% if ws.submission_readiness == 'ready_to_submit' %}selected{% endif %}>Ready To Submit</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Document Override</label>
+        <select name="document_override_status">
+          <option value="none" {% if ws.document_override_status == 'none' %}selected{% endif %}>None</option>
+          <option value="confirmed_match" {% if ws.document_override_status == 'confirmed_match' %}selected{% endif %}>Confirmed Match</option>
+          <option value="confirmed_mismatch" {% if ws.document_override_status == 'confirmed_mismatch' %}selected{% endif %}>Confirmed Mismatch</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Next Action</label>
+        <input type="text" name="next_action" value="{{ ws.next_action or '' }}" placeholder="Call buyer, confirm briefing, prepare pricing">
+      </div>
+    </div>
+
+    <div class="detail-list">
+      <label>Internal Notes</label>
+      <textarea name="internal_notes" rows="5" placeholder="Capture notes, pricing thinking, missing docs, or team actions...">{{ ws.internal_notes or '' }}</textarea>
+    </div>
+
+    <div class="detail-actions">
+      <button type="submit" class="btn">Save Workspace</button>
+    </div>
+  </form>
+</section>
+{% endif %}
 
 <section class="glass-card stack-list">
   <h2>Prequalification View</h2>
@@ -262,6 +365,32 @@
           <li>{{ item }}</li>
         {% endfor %}
       </ul>
+    </div>
+  {% endif %}
+
+  {% if proposal_preview %}
+    <div class="detail-list">
+      <label>Proposal Preview</label>
+      <p><strong>{{ proposal_preview.title }}</strong></p>
+      <p style="margin-top: 8px;"><strong>Executive Summary:</strong> {{ proposal_preview.executive_summary }}</p>
+      <p style="margin-top: 8px;"><strong>Company Positioning:</strong> {{ proposal_preview.company_positioning }}</p>
+      <p style="margin-top: 8px;"><strong>Approach:</strong> {{ proposal_preview.approach }}</p>
+      {% if proposal_preview.compliance_notes %}
+        <p style="margin-top: 8px;"><strong>Compliance Notes:</strong></p>
+        <ul>
+          {% for item in proposal_preview.compliance_notes %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if proposal_preview.deliverables %}
+        <p style="margin-top: 8px;"><strong>Deliverables:</strong></p>
+        <ul>
+          {% for item in proposal_preview.deliverables %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
     </div>
   {% endif %}
 
