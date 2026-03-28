@@ -12,6 +12,9 @@
     {% if readiness_band %}
       <span class="pill">{{ readiness_band|replace("_", " ")|title }}</span>
     {% endif %}
+    {% if latest_analysis and latest_analysis.proposal_required %}
+      <span class="pill">Proposal Required</span>
+    {% endif %}
   </div>
 
   <h1>{{ tender.title }}</h1>
@@ -28,13 +31,7 @@
     </div>
     <div>
       <label>Days Left</label>
-      <p>
-        {% if tender.closing_date %}
-          {{ tender.closing_date|days_left }}
-        {% else %}
-          n/a
-        {% endif %}
-      </p>
+      <p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p>
     </div>
     <div>
       <label>Province</label>
@@ -46,23 +43,18 @@
     {% if tender.source_url %}
       <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source Link</a>
     {% endif %}
-
     {% if tender.document_url %}
       <a class="btn btn-secondary" href="{{ tender.document_url }}" target="_blank" rel="noopener">Tender Document</a>
     {% endif %}
-
     {% if can_analyze and analyze_action_url %}
       <form method="post" action="{{ analyze_action_url }}" class="inline-form" data-analysis-form>
         <button type="submit" class="btn" data-analysis-button>Analyse This Tender</button>
       </form>
     {% endif %}
-
-    <a class="btn btn-secondary" href="{{ url_for('api_generate_proposal', tender_id=tender.id) }}" target="_blank" rel="noopener">
-      Proposal Draft
-    </a>
-    <a class="btn btn-secondary" href="{{ url_for('download_proposal_docx', tender_id=tender.id) }}">
-      Proposal DOCX
-    </a>
+    {% if latest_analysis and latest_analysis.proposal_required %}
+      <a class="btn btn-secondary" href="{{ url_for('api_generate_proposal', tender_id=tender.id) }}" target="_blank" rel="noopener">Proposal Draft</a>
+      <a class="btn btn-secondary" href="{{ url_for('download_proposal_docx', tender_id=tender.id) }}">Proposal DOCX</a>
+    {% endif %}
   </div>
 </section>
 
@@ -76,7 +68,6 @@
         <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
       </div>
     {% endif %}
-
     <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
       Readiness: {{ readiness_band|replace("_", " ")|title }}
     </span>
@@ -124,6 +115,44 @@
     </div>
   {% endif %}
 
+  <div class="detail-grid compact-grid">
+    <div>
+      <label>Briefing Date</label>
+      <p>{{ latest_analysis.briefing_date or "n/a" }}</p>
+    </div>
+    <div>
+      <label>Briefing In</label>
+      <p>{% if latest_analysis.briefing_date %}{{ latest_analysis.briefing_date|days_left }} day(s){% else %}n/a{% endif %}</p>
+    </div>
+    <div>
+      <label>Contact Person</label>
+      <p>{{ latest_analysis.contact_person or "n/a" }}</p>
+    </div>
+    <div>
+      <label>Contact Email</label>
+      <p>{{ latest_analysis.contact_email or "n/a" }}</p>
+    </div>
+  </div>
+
+  <div class="detail-grid compact-grid">
+    <div>
+      <label>Contact Phone</label>
+      <p>{{ latest_analysis.contact_phone or "n/a" }}</p>
+    </div>
+    <div>
+      <label>Proposal Required</label>
+      <p>{% if latest_analysis.proposal_required %}Yes{% else %}No / not confirmed{% endif %}</p>
+    </div>
+    <div>
+      <label>Pricing Complexity</label>
+      <p>{{ latest_analysis.pricing_complexity or "n/a" }}</p>
+    </div>
+    <div>
+      <label>Margin Risk</label>
+      <p>{{ latest_analysis.margin_risk or "n/a" }}</p>
+    </div>
+  </div>
+
   {% if latest_analysis.document_match is not none %}
     <div class="detail-list">
       <label>Document Match Check</label>
@@ -140,6 +169,13 @@
       {% if latest_analysis.document_match_confidence is not none %}
         <p class="muted" style="margin-top: 8px;">Confidence: {{ latest_analysis.document_match_confidence }}</p>
       {% endif %}
+    </div>
+  {% endif %}
+
+  {% if latest_analysis.scope_summary %}
+    <div class="detail-list">
+      <label>Extracted Scope Summary</label>
+      <p>{{ latest_analysis.scope_summary }}</p>
     </div>
   {% endif %}
 
@@ -190,14 +226,8 @@
           {% endfor %}
         </ul>
       {% endif %}
-      {% if latest_analysis.pricing_complexity %}
-        <p><strong>Pricing complexity:</strong> {{ latest_analysis.pricing_complexity|title }}</p>
-      {% endif %}
       {% if latest_analysis.potential_revenue_range %}
         <p><strong>Potential revenue range:</strong> {{ latest_analysis.potential_revenue_range }}</p>
-      {% endif %}
-      {% if latest_analysis.margin_risk %}
-        <p><strong>Margin risk:</strong> {{ latest_analysis.margin_risk|title }}</p>
       {% endif %}
     </div>
   {% endif %}
