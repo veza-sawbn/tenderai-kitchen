@@ -159,9 +159,13 @@
             <p>{{ item.contact_phone or "n/a" }}</p>
           </div>
           <div>
-            <label>Pursuit Status</label>
-            <p>{{ item.workspace.pursuit_status|replace("_", " ")|title if item.workspace else "Not decided" }}</p>
+            <label>Checklist Progress</label>
+            <p>{{ item.checklist_progress or 0 }}%</p>
           </div>
+        </div>
+
+        <div class="progress-track">
+          <div class="progress-bar" style="width: {{ item.checklist_progress or 0 }}%;"></div>
         </div>
 
         <div class="detail-actions">
