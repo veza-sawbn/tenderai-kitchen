@@ -26,22 +26,10 @@
   <p class="muted">{{ tender.description or "No description available." }}</p>
 
   <div class="detail-grid compact-grid">
-    <div>
-      <label>Department</label>
-      <p>{{ tender.buyer_name or "n/a" }}</p>
-    </div>
-    <div>
-      <label>Closing Date</label>
-      <p>{{ tender.closing_date or "n/a" }}</p>
-    </div>
-    <div>
-      <label>Days Left</label>
-      <p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p>
-    </div>
-    <div>
-      <label>Province</label>
-      <p>{{ tender.province or "n/a" }}</p>
-    </div>
+    <div><label>Department</label><p>{{ tender.buyer_name or "n/a" }}</p></div>
+    <div><label>Closing Date</label><p>{{ tender.closing_date or "n/a" }}</p></div>
+    <div><label>Days Left</label><p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p></div>
+    <div><label>Province</label><p>{{ tender.province or "n/a" }}</p></div>
   </div>
 
   <div class="detail-actions">
@@ -64,9 +52,13 @@
     <form method="post" action="{{ url_for('reanalyze_tender_page', tender_id=tender.id) }}" class="inline-form">
       <button type="submit" class="btn btn-secondary" {% if running_job %}disabled{% endif %}>Re-analyze</button>
     </form>
-    {% if latest_analysis and latest_analysis.proposal_required %}
+    {% if latest_analysis and latest_analysis.proposal_enabled %}
       <a class="btn btn-secondary" href="{{ url_for('api_generate_proposal', tender_id=tender.id) }}" target="_blank" rel="noopener">Proposal Draft</a>
       <a class="btn btn-secondary" href="{{ url_for('download_proposal_docx', tender_id=tender.id) }}">Proposal DOCX</a>
+    {% endif %}
+    {% if latest_analysis %}
+      <a class="btn btn-secondary" href="{{ url_for('api_executive_summary', tender_id=tender.id) }}" target="_blank" rel="noopener">Executive JSON</a>
+      <a class="btn btn-secondary" href="{{ url_for('download_brief_docx', tender_id=tender.id) }}">Bid Brief DOCX</a>
     {% endif %}
   </div>
 </section>
@@ -101,6 +93,34 @@
     <div class="detail-list">
       <label>Executive Summary</label>
       <p>Run analysis to generate an executive bid decision summary.</p>
+    </div>
+  {% endif %}
+</section>
+
+<section class="glass-card stack-list">
+  <h2>Bid Brief / Handoff</h2>
+  {% if latest_analysis and latest_analysis.bid_brief %}
+    {% set brief = latest_analysis.bid_brief %}
+    <div class="detail-grid compact-grid">
+      <div><label>Owner</label><p>{{ brief.owner or "n/a" }}</p></div>
+      <div><label>Reviewer</label><p>{{ brief.reviewer or "n/a" }}</p></div>
+      <div><label>Due Date</label><p>{{ brief.due_date or "n/a" }}</p></div>
+      <div><label>Next Action</label><p>{{ brief.next_action or "n/a" }}</p></div>
+    </div>
+
+    <div class="detail-list">
+      <label>Pricing Notes</label>
+      <p>{{ brief.pricing_notes or "No pricing notes captured yet." }}</p>
+    </div>
+
+    <div class="detail-list">
+      <label>Compliance Notes</label>
+      <p>{{ brief.compliance_notes or "No compliance notes captured yet." }}</p>
+    </div>
+  {% else %}
+    <div class="detail-list">
+      <label>Bid Brief</label>
+      <p>Run analysis and save workspace details to build a handoff brief.</p>
     </div>
   {% endif %}
 </section>
@@ -167,6 +187,26 @@
       </div>
 
       <div>
+        <label>Checklist Progress</label>
+        <p>{{ latest_analysis.checklist_progress }}%</p>
+      </div>
+
+      <div>
+        <label>Owner</label>
+        <input type="text" name="owner" value="{{ ws.owner or '' }}" placeholder="Bid owner">
+      </div>
+
+      <div>
+        <label>Reviewer</label>
+        <input type="text" name="reviewer" value="{{ ws.reviewer or '' }}" placeholder="Internal reviewer">
+      </div>
+
+      <div>
+        <label>Due Date</label>
+        <input type="date" name="due_date" value="{{ ws.due_date or '' }}">
+      </div>
+
+      <div>
         <label>Document Override</label>
         <select name="document_override_status">
           <option value="none" {% if ws.document_override_status == 'none' %}selected{% endif %}>None</option>
@@ -181,9 +221,23 @@
       </div>
     </div>
 
+    <div class="progress-track">
+      <div class="progress-bar" style="width: {{ latest_analysis.checklist_progress }}%;"></div>
+    </div>
+
     <div class="detail-list">
       <label>Internal Notes</label>
-      <textarea name="internal_notes" rows="5" placeholder="Capture notes, pricing thinking, missing docs, or team actions...">{{ ws.internal_notes or '' }}</textarea>
+      <textarea name="internal_notes" rows="4" placeholder="Capture notes, pricing thinking, missing docs, or team actions...">{{ ws.internal_notes or '' }}</textarea>
+    </div>
+
+    <div class="detail-list">
+      <label>Pricing Notes</label>
+      <textarea name="pricing_notes" rows="3" placeholder="Internal pricing notes...">{{ ws.pricing_notes or '' }}</textarea>
+    </div>
+
+    <div class="detail-list">
+      <label>Compliance Notes</label>
+      <textarea name="compliance_notes" rows="3" placeholder="Internal compliance notes...">{{ ws.compliance_notes or '' }}</textarea>
     </div>
 
     <div class="detail-actions">
