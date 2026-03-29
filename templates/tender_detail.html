@@ -72,6 +72,68 @@
 </section>
 
 <section class="glass-card stack-list">
+  <h2>Executive Decision Summary</h2>
+
+  {% if latest_analysis and latest_analysis.executive_summary %}
+    {% set ex = latest_analysis.executive_summary %}
+    <div class="detail-grid compact-grid">
+      <div>
+        <label>Fit Score</label>
+        <p>{{ ex.fit_score if ex.fit_score is not none else 'n/a' }}</p>
+      </div>
+      <div>
+        <label>Document Match</label>
+        <p>{% if ex.document_match %}Confirmed{% else %}Uncertain / Failed{% endif %}</p>
+      </div>
+      <div>
+        <label>Commercial Signal</label>
+        <p>{{ ex.commercial_signal or 'n/a' }}</p>
+      </div>
+      <div>
+        <label>Next Action</label>
+        <p>{{ ex.next_action or 'n/a' }}</p>
+      </div>
+    </div>
+
+    <div class="detail-list">
+      <label>Go / No-Go</label>
+      <p><strong>{{ ex.go_no_go.decision|replace("_", " ")|title }}</strong></p>
+      {% if ex.go_no_go.reasons %}
+        <ul>
+          {% for item in ex.go_no_go.reasons %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+
+    <div class="detail-grid compact-grid">
+      <div>
+        <label>Pursuit Status</label>
+        <p>{{ ex.pursuit_status|replace("_", " ")|title if ex.pursuit_status else 'n/a' }}</p>
+      </div>
+      <div>
+        <label>Submission Readiness</label>
+        <p>{{ ex.submission_readiness|replace("_", " ")|title if ex.submission_readiness else 'n/a' }}</p>
+      </div>
+      <div>
+        <label>Pricing Complexity</label>
+        <p>{{ ex.pricing_complexity or 'n/a' }}</p>
+      </div>
+      <div>
+        <label>Margin Risk</label>
+        <p>{{ ex.margin_risk or 'n/a' }}</p>
+      </div>
+    </div>
+  {% else %}
+    <div class="detail-list">
+      <label>Executive Summary</label>
+      <p>Run analysis to generate an executive bid decision summary.</p>
+    </div>
+  {% endif %}
+</section>
+
+<section class="glass-card stack-list">
   <h2>Operational Status</h2>
 
   {% if document_status %}
@@ -131,6 +193,16 @@
           <option value="in_progress" {% if ws.submission_readiness == 'in_progress' %}selected{% endif %}>In Progress</option>
           <option value="review_needed" {% if ws.submission_readiness == 'review_needed' %}selected{% endif %}>Review Needed</option>
           <option value="ready_to_submit" {% if ws.submission_readiness == 'ready_to_submit' %}selected{% endif %}>Ready To Submit</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Checklist Status</label>
+        <select name="checklist_status">
+          <option value="not_started" {% if ws.checklist_status == 'not_started' %}selected{% endif %}>Not Started</option>
+          <option value="in_progress" {% if ws.checklist_status == 'in_progress' %}selected{% endif %}>In Progress</option>
+          <option value="completed" {% if ws.checklist_status == 'completed' %}selected{% endif %}>Completed</option>
+          <option value="blocked" {% if ws.checklist_status == 'blocked' %}selected{% endif %}>Blocked</option>
         </select>
       </div>
 
@@ -208,6 +280,47 @@
 </section>
 
 {% if latest_analysis %}
+<section class="glass-card stack-list">
+  <h2>Submission Checklist</h2>
+
+  {% set cl = latest_analysis.submission_checklist %}
+  <div class="detail-list">
+    <label>Mandatory Documents</label>
+    {% if cl.mandatory_documents %}
+      <ul>{% for item in cl.mandatory_documents %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% else %}
+      <p>No mandatory document list extracted yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="detail-list">
+    <label>Compliance Items</label>
+    {% if cl.compliance_items %}
+      <ul>{% for item in cl.compliance_items %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% else %}
+      <p>No compliance items extracted yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="detail-list">
+    <label>Technical Items</label>
+    {% if cl.technical_items %}
+      <ul>{% for item in cl.technical_items %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% else %}
+      <p>No technical items extracted yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="detail-list">
+    <label>Pricing Items</label>
+    {% if cl.pricing_items %}
+      <ul>{% for item in cl.pricing_items %}<li>{{ item }}</li>{% endfor %}</ul>
+    {% else %}
+      <p>No pricing items extracted yet.</p>
+    {% endif %}
+  </div>
+</section>
+
 <section class="glass-card stack-list">
   <h2>Latest Tender Analysis</h2>
 
@@ -318,7 +431,7 @@
     </div>
   {% endif %}
 
-  {% if latest_analysis.estimated_cost_drivers or latest_analysis.pricing_complexity or latest_analysis.potential_revenue_range or latest_analysis.margin_risk %}
+  {% if latest_analysis.estimated_cost_drivers or latest_analysis.potential_revenue_range %}
     <div class="detail-list">
       <label>Commercial View</label>
       {% if latest_analysis.estimated_cost_drivers %}
@@ -379,14 +492,6 @@
         <p style="margin-top: 8px;"><strong>Compliance Notes:</strong></p>
         <ul>
           {% for item in proposal_preview.compliance_notes %}
-            <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-      {% if proposal_preview.deliverables %}
-        <p style="margin-top: 8px;"><strong>Deliverables:</strong></p>
-        <ul>
-          {% for item in proposal_preview.deliverables %}
             <li>{{ item }}</li>
           {% endfor %}
         </ul>
