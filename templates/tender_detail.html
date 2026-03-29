@@ -9,12 +9,6 @@
     {% if fit_band %}
       <span class="glow-chip band-{{ fit_band }}">{{ fit_band|replace("_", " ")|title }}</span>
     {% endif %}
-    {% if readiness_band %}
-      <span class="pill">{{ readiness_band|replace("_", " ")|title }}</span>
-    {% endif %}
-    {% if latest_analysis and latest_analysis.proposal_required %}
-      <span class="pill">Proposal Required</span>
-    {% endif %}
     {% if latest_analysis %}
       <span class="status-badge status-{{ latest_analysis.status }}">{{ latest_analysis.status|replace("_", " ")|title }}</span>
     {% elif running_job %}
@@ -23,359 +17,144 @@
   </div>
 
   <h1>{{ tender.title }}</h1>
-  <p class="muted">{{ tender.description or "No description available." }}</p>
+  <p class="muted">{{ tender.buyer_name or "Department n/a" }}</p>
+
+  <div class="detail-list">
+    <label>Scope of work</label>
+    <p>{{ scope_summary }}</p>
+  </div>
 
   <div class="detail-grid compact-grid">
-    <div><label>Department</label><p>{{ tender.buyer_name or "n/a" }}</p></div>
-    <div><label>Closing Date</label><p>{{ tender.closing_date or "n/a" }}</p></div>
-    <div><label>Days Left</label><p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p></div>
+    <div><label>Closing</label><p>{{ tender.closing_date or "n/a" }}</p></div>
+    <div><label>Days left</label><p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p></div>
     <div><label>Province</label><p>{{ tender.province or "n/a" }}</p></div>
+    <div><label>Type</label><p>{{ tender.tender_type or "n/a" }}</p></div>
   </div>
 
   <div class="detail-actions">
     {% if tender.source_url %}
-      <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source Link</a>
+      <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source</a>
     {% endif %}
     {% if tender.document_url %}
-      <a class="btn btn-secondary" href="{{ tender.document_url }}" target="_blank" rel="noopener">Tender Document</a>
+      <a class="btn btn-secondary" href="{{ tender.document_url }}" target="_blank" rel="noopener">Document</a>
     {% endif %}
     {% if can_analyze and analyze_action_url %}
       <form method="post" action="{{ analyze_action_url }}" class="inline-form" data-analysis-form>
         <button type="submit" class="btn" data-analysis-button {% if running_job %}disabled{% endif %}>
-          {% if running_job %}Analysis Running...{% else %}Analyse This Tender{% endif %}
+          {% if running_job %}Analyzing...{% else %}Analyze Tender{% endif %}
         </button>
       </form>
     {% endif %}
     <form method="post" action="{{ url_for('refetch_document_page', tender_id=tender.id) }}" class="inline-form">
-      <button type="submit" class="btn btn-secondary">Re-fetch Document</button>
+      <button type="submit" class="btn btn-secondary">Re-fetch</button>
     </form>
-    <form method="post" action="{{ url_for('reanalyze_tender_page', tender_id=tender.id) }}" class="inline-form">
-      <button type="submit" class="btn btn-secondary" {% if running_job %}disabled{% endif %}>Re-analyze</button>
-    </form>
-    {% if latest_analysis and latest_analysis.proposal_enabled %}
-      <a class="btn btn-secondary" href="{{ url_for('api_generate_proposal', tender_id=tender.id) }}" target="_blank" rel="noopener">Proposal Draft</a>
-      <a class="btn btn-secondary" href="{{ url_for('download_proposal_docx', tender_id=tender.id) }}">Proposal DOCX</a>
-    {% endif %}
-    {% if latest_analysis %}
-      <a class="btn btn-secondary" href="{{ url_for('api_executive_summary', tender_id=tender.id) }}" target="_blank" rel="noopener">Executive JSON</a>
-      <a class="btn btn-secondary" href="{{ url_for('download_brief_docx', tender_id=tender.id) }}">Bid Brief DOCX</a>
-    {% endif %}
   </div>
 </section>
 
 <section class="glass-card stack-list">
-  <h2>Executive Decision Summary</h2>
+  <h2>Opportunity fit</h2>
 
-  {% if latest_analysis and latest_analysis.executive_summary %}
-    {% set ex = latest_analysis.executive_summary %}
-    <div class="detail-grid compact-grid">
-      <div><label>Fit Score</label><p>{{ ex.fit_score if ex.fit_score is not none else 'n/a' }}</p></div>
-      <div><label>Document Match</label><p>{% if ex.document_match %}Confirmed{% else %}Uncertain / Failed{% endif %}</p></div>
-      <div><label>Commercial Signal</label><p>{{ ex.commercial_signal or 'n/a' }}</p></div>
-      <div><label>Next Action</label><p>{{ ex.next_action or 'n/a' }}</p></div>
-    </div>
-
-    <div class="detail-list">
-      <label>Go / No-Go</label>
-      <p><strong>{{ ex.go_no_go.decision|replace("_", " ")|title }}</strong></p>
-      {% if ex.go_no_go.reasons %}
-        <ul>{% for item in ex.go_no_go.reasons %}<li>{{ item }}</li>{% endfor %}</ul>
-      {% endif %}
-    </div>
-
-    <div class="detail-grid compact-grid">
-      <div><label>Pursuit Status</label><p>{{ ex.pursuit_status|replace("_", " ")|title if ex.pursuit_status else 'n/a' }}</p></div>
-      <div><label>Submission Readiness</label><p>{{ ex.submission_readiness|replace("_", " ")|title if ex.submission_readiness else 'n/a' }}</p></div>
-      <div><label>Pricing Complexity</label><p>{{ ex.pricing_complexity or 'n/a' }}</p></div>
-      <div><label>Margin Risk</label><p>{{ ex.margin_risk or 'n/a' }}</p></div>
-    </div>
-  {% else %}
-    <div class="detail-list">
-      <label>Executive Summary</label>
-      <p>Run analysis to generate an executive bid decision summary.</p>
-    </div>
-  {% endif %}
-</section>
-
-<section class="glass-card stack-list">
-  <h2>Bid Brief / Handoff</h2>
-  {% if latest_analysis and latest_analysis.bid_brief %}
-    {% set brief = latest_analysis.bid_brief %}
-    <div class="detail-grid compact-grid">
-      <div><label>Owner</label><p>{{ brief.owner or "n/a" }}</p></div>
-      <div><label>Reviewer</label><p>{{ brief.reviewer or "n/a" }}</p></div>
-      <div><label>Due Date</label><p>{{ brief.due_date or "n/a" }}</p></div>
-      <div><label>Next Action</label><p>{{ brief.next_action or "n/a" }}</p></div>
-    </div>
-
-    <div class="detail-list">
-      <label>Pricing Notes</label>
-      <p>{{ brief.pricing_notes or "No pricing notes captured yet." }}</p>
-    </div>
-
-    <div class="detail-list">
-      <label>Compliance Notes</label>
-      <p>{{ brief.compliance_notes or "No compliance notes captured yet." }}</p>
-    </div>
-  {% else %}
-    <div class="detail-list">
-      <label>Bid Brief</label>
-      <p>Run analysis and save workspace details to build a handoff brief.</p>
-    </div>
-  {% endif %}
-</section>
-
-<section class="glass-card stack-list">
-  <h2>Operational Status</h2>
-
-  {% if document_status %}
-    <div class="detail-grid compact-grid">
-      <div><label>Document Status</label><p><span class="status-badge status-{{ document_status.fetch_status }}">{{ document_status.fetch_status|replace("_", " ")|title }}</span></p></div>
-      <div><label>Filename</label><p>{{ document_status.filename or "n/a" }}</p></div>
-      <div><label>Fetched At</label><p>{{ document_status.fetched_at or "n/a" }}</p></div>
-      <div><label>Content Type</label><p>{{ document_status.content_type or "n/a" }}</p></div>
-    </div>
-    {% if document_status.error_message %}
-      <div class="detail-list">
-        <label>Document Error</label>
-        <p>{{ document_status.error_message }}</p>
+  <div class="detail-actions">
+    {% if alignment_score is not none %}
+      <div class="score-panel glow-chip large">
+        <span>Relevance</span>
+        <strong>{{ "%.1f"|format(alignment_score) }}</strong>
       </div>
     {% endif %}
-  {% else %}
+    <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
+      {{ readiness_band|replace("_", " ")|title }}
+    </span>
+  </div>
+
+  <div class="detail-list">
+    <label>Profile readiness</label>
+    <p>{{ readiness_note }}</p>
+  </div>
+
+  {% if profile_gap_summary and profile_gap_summary.pending_count %}
     <div class="detail-list">
-      <label>Document Status</label>
-      <p>No tender document has been fetched yet.</p>
+      <label>Profile gaps</label>
+      <p>{{ profile_gap_summary.pending_count }} unresolved gap(s) remain on the active profile.</p>
     </div>
   {% endif %}
 </section>
+
+{% if document_status %}
+<section class="glass-card stack-list">
+  <h2>Document status</h2>
+  <div class="detail-grid compact-grid">
+    <div><label>Status</label><p><span class="status-badge status-{{ document_status.fetch_status }}">{{ document_status.fetch_status|replace("_", " ")|title }}</span></p></div>
+    <div><label>Filename</label><p>{{ document_status.filename or "n/a" }}</p></div>
+    <div><label>Fetched At</label><p>{{ document_status.fetched_at or "n/a" }}</p></div>
+    <div><label>Content Type</label><p>{{ document_status.content_type or "n/a" }}</p></div>
+  </div>
+  {% if document_status.error_message %}
+    <div class="detail-list">
+      <label>Error</label>
+      <p>{{ document_status.error_message }}</p>
+    </div>
+  {% endif %}
+</section>
+{% endif %}
 
 {% if latest_analysis %}
 <section class="glass-card stack-list">
-  <h2>Bid Workspace</h2>
+  <h2>Analysis</h2>
+
+  {% if latest_analysis.document_match is not none %}
+    <div class="detail-list">
+      <label>Document match</label>
+      <p>{% if latest_analysis.document_match %}Document appears to match this tender.{% else %}Document match could not be confirmed.{% endif %}</p>
+      {% if latest_analysis.document_match_reason %}
+        <p class="muted" style="margin-top: 8px;">{{ latest_analysis.document_match_reason }}</p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <div class="detail-grid compact-grid">
+    <div><label>Briefing date</label><p>{{ latest_analysis.briefing_date or "n/a" }}</p></div>
+    <div><label>Email</label><p>{{ latest_analysis.contact_email or "n/a" }}</p></div>
+    <div><label>Phone</label><p>{{ latest_analysis.contact_phone or "n/a" }}</p></div>
+    <div><label>Proposal required</label><p>{% if latest_analysis.proposal_required %}Yes{% else %}No / unconfirmed{% endif %}</p></div>
+  </div>
+</section>
+
+<section class="glass-card stack-list">
+  <h2>Decision</h2>
 
   <form method="post" action="{{ url_for('update_workspace', tender_id=tender.id) }}" class="workspace-form">
     {% set ws = latest_analysis.workspace %}
     <div class="detail-grid compact-grid">
       <div>
-        <label>Pursuit Status</label>
+        <label>Pursuit status</label>
         <select name="pursuit_status">
-          <option value="not_decided" {% if ws.pursuit_status == 'not_decided' %}selected{% endif %}>Not Decided</option>
+          <option value="not_decided" {% if ws.pursuit_status == 'not_decided' %}selected{% endif %}>Not decided</option>
           <option value="shortlisted" {% if ws.pursuit_status == 'shortlisted' %}selected{% endif %}>Shortlisted</option>
           <option value="pursue" {% if ws.pursuit_status == 'pursue' %}selected{% endif %}>Pursue</option>
-          <option value="do_not_pursue" {% if ws.pursuit_status == 'do_not_pursue' %}selected{% endif %}>Do Not Pursue</option>
+          <option value="do_not_pursue" {% if ws.pursuit_status == 'do_not_pursue' %}selected{% endif %}>Do not pursue</option>
         </select>
-      </div>
-
-      <div>
-        <label>Submission Readiness</label>
-        <select name="submission_readiness">
-          <option value="not_started" {% if ws.submission_readiness == 'not_started' %}selected{% endif %}>Not Started</option>
-          <option value="in_progress" {% if ws.submission_readiness == 'in_progress' %}selected{% endif %}>In Progress</option>
-          <option value="review_needed" {% if ws.submission_readiness == 'review_needed' %}selected{% endif %}>Review Needed</option>
-          <option value="ready_to_submit" {% if ws.submission_readiness == 'ready_to_submit' %}selected{% endif %}>Ready To Submit</option>
-        </select>
-      </div>
-
-      <div>
-        <label>Checklist Status</label>
-        <select name="checklist_status">
-          <option value="not_started" {% if ws.checklist_status == 'not_started' %}selected{% endif %}>Not Started</option>
-          <option value="in_progress" {% if ws.checklist_status == 'in_progress' %}selected{% endif %}>In Progress</option>
-          <option value="completed" {% if ws.checklist_status == 'completed' %}selected{% endif %}>Completed</option>
-          <option value="blocked" {% if ws.checklist_status == 'blocked' %}selected{% endif %}>Blocked</option>
-        </select>
-      </div>
-
-      <div>
-        <label>Checklist Progress</label>
-        <p>{{ latest_analysis.checklist_progress }}%</p>
       </div>
 
       <div>
         <label>Owner</label>
-        <input type="text" name="owner" value="{{ ws.owner or '' }}" placeholder="Bid owner">
+        <input type="text" name="owner" value="{{ ws.owner or '' }}" placeholder="Responsible person">
       </div>
 
       <div>
-        <label>Reviewer</label>
-        <input type="text" name="reviewer" value="{{ ws.reviewer or '' }}" placeholder="Internal reviewer">
+        <label>Next action</label>
+        <input type="text" name="next_action" value="{{ ws.next_action or '' }}" placeholder="Call buyer, price, review">
       </div>
-
-      <div>
-        <label>Due Date</label>
-        <input type="date" name="due_date" value="{{ ws.due_date or '' }}">
-      </div>
-
-      <div>
-        <label>Document Override</label>
-        <select name="document_override_status">
-          <option value="none" {% if ws.document_override_status == 'none' %}selected{% endif %}>None</option>
-          <option value="confirmed_match" {% if ws.document_override_status == 'confirmed_match' %}selected{% endif %}>Confirmed Match</option>
-          <option value="confirmed_mismatch" {% if ws.document_override_status == 'confirmed_mismatch' %}selected{% endif %}>Confirmed Mismatch</option>
-        </select>
-      </div>
-
-      <div>
-        <label>Next Action</label>
-        <input type="text" name="next_action" value="{{ ws.next_action or '' }}" placeholder="Call buyer, confirm briefing, prepare pricing">
-      </div>
-    </div>
-
-    <div class="progress-track">
-      <div class="progress-bar" style="width: {{ latest_analysis.checklist_progress }}%;"></div>
     </div>
 
     <div class="detail-list">
-      <label>Internal Notes</label>
-      <textarea name="internal_notes" rows="4" placeholder="Capture notes, pricing thinking, missing docs, or team actions...">{{ ws.internal_notes or '' }}</textarea>
-    </div>
-
-    <div class="detail-list">
-      <label>Pricing Notes</label>
-      <textarea name="pricing_notes" rows="3" placeholder="Internal pricing notes...">{{ ws.pricing_notes or '' }}</textarea>
-    </div>
-
-    <div class="detail-list">
-      <label>Compliance Notes</label>
-      <textarea name="compliance_notes" rows="3" placeholder="Internal compliance notes...">{{ ws.compliance_notes or '' }}</textarea>
+      <label>Notes</label>
+      <textarea name="notes" rows="4" placeholder="Decision notes...">{{ ws.notes or '' }}</textarea>
     </div>
 
     <div class="detail-actions">
-      <button type="submit" class="btn">Save Workspace</button>
+      <button type="submit" class="btn">Save Decision</button>
     </div>
   </form>
-</section>
-
-<section class="glass-card stack-list">
-  <h2>Submission Checklist</h2>
-
-  {% set cl = latest_analysis.submission_checklist %}
-  <div class="detail-list">
-    <label>Mandatory Documents</label>
-    {% if cl.mandatory_documents %}<ul>{% for item in cl.mandatory_documents %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No mandatory document list extracted yet.</p>{% endif %}
-  </div>
-  <div class="detail-list">
-    <label>Compliance Items</label>
-    {% if cl.compliance_items %}<ul>{% for item in cl.compliance_items %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No compliance items extracted yet.</p>{% endif %}
-  </div>
-  <div class="detail-list">
-    <label>Technical Items</label>
-    {% if cl.technical_items %}<ul>{% for item in cl.technical_items %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No technical items extracted yet.</p>{% endif %}
-  </div>
-  <div class="detail-list">
-    <label>Pricing Items</label>
-    {% if cl.pricing_items %}<ul>{% for item in cl.pricing_items %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No pricing items extracted yet.</p>{% endif %}
-  </div>
-</section>
-
-<section class="glass-card stack-list">
-  <h2>Latest Tender Analysis</h2>
-
-  {% if latest_analysis.score is not none %}
-    <div class="score-panel glow-chip large">
-      <span>Analysis Score</span>
-      <strong>{{ "%.1f"|format(latest_analysis.score) }}/100</strong>
-    </div>
-  {% endif %}
-
-  <div class="detail-grid compact-grid">
-    <div><label>Briefing Date</label><p>{{ latest_analysis.briefing_date or "n/a" }}</p></div>
-    <div><label>Briefing In</label><p>{% if latest_analysis.briefing_date %}{{ latest_analysis.briefing_date|days_left }} day(s){% else %}n/a{% endif %}</p></div>
-    <div><label>Contact Person</label><p>{{ latest_analysis.contact_person or "n/a" }}</p></div>
-    <div><label>Contact Email</label><p>{{ latest_analysis.contact_email or "n/a" }}</p></div>
-  </div>
-
-  <div class="detail-grid compact-grid">
-    <div><label>Contact Phone</label><p>{{ latest_analysis.contact_phone or "n/a" }}</p></div>
-    <div><label>Proposal Required</label><p>{% if latest_analysis.proposal_required %}Yes{% else %}No / not confirmed{% endif %}</p></div>
-    <div><label>Pricing Complexity</label><p>{{ latest_analysis.pricing_complexity or "n/a" }}</p></div>
-    <div><label>Margin Risk</label><p>{{ latest_analysis.margin_risk or "n/a" }}</p></div>
-  </div>
-
-  {% if latest_analysis.document_match is not none %}
-    <div class="detail-list">
-      <label>Document Match Check</label>
-      <p>{% if latest_analysis.document_match %}The fetched document appears to match this tender.{% else %}The fetched document may belong to another tender or a generic source page.{% endif %}</p>
-      {% if latest_analysis.document_match_reason %}<p class="muted" style="margin-top: 8px;">{{ latest_analysis.document_match_reason }}</p>{% endif %}
-      {% if latest_analysis.document_match_confidence is not none %}<p class="muted" style="margin-top: 8px;">Confidence: {{ latest_analysis.document_match_confidence }}</p>{% endif %}
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.scope_summary %}
-    <div class="detail-list">
-      <label>Extracted Scope Summary</label>
-      <p>{{ latest_analysis.scope_summary }}</p>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.summary %}
-    <div class="detail-list">
-      <label>Summary</label>
-      <p>{{ latest_analysis.summary }}</p>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.recommendation %}
-    <div class="detail-list">
-      <label>Recommendation</label>
-      <p>{{ latest_analysis.recommendation }}</p>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.estimated_cost_drivers or latest_analysis.potential_revenue_range %}
-    <div class="detail-list">
-      <label>Commercial View</label>
-      {% if latest_analysis.estimated_cost_drivers %}
-        <p><strong>Estimated cost drivers:</strong></p>
-        <ul>{% for item in latest_analysis.estimated_cost_drivers %}<li>{{ item }}</li>{% endfor %}</ul>
-      {% endif %}
-      {% if latest_analysis.potential_revenue_range %}
-        <p><strong>Potential revenue range:</strong> {{ latest_analysis.potential_revenue_range }}</p>
-      {% endif %}
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.strengths %}
-    <div class="detail-list">
-      <label>Strengths</label>
-      <ul>{% for item in latest_analysis.strengths %}<li>{{ item }}</li>{% endfor %}</ul>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.gaps %}
-    <div class="detail-list">
-      <label>Possible Gaps / Missing Requirements</label>
-      <ul>{% for item in latest_analysis.gaps %}<li>{{ item }}</li>{% endfor %}</ul>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.risks %}
-    <div class="detail-list">
-      <label>Risk Flags</label>
-      <ul>{% for item in latest_analysis.risks %}<li>{{ item }}</li>{% endfor %}</ul>
-    </div>
-  {% endif %}
-
-  {% if proposal_preview %}
-    <div class="detail-list">
-      <label>Proposal Preview</label>
-      <p><strong>{{ proposal_preview.title }}</strong></p>
-      <p style="margin-top: 8px;"><strong>Executive Summary:</strong> {{ proposal_preview.executive_summary }}</p>
-      <p style="margin-top: 8px;"><strong>Company Positioning:</strong> {{ proposal_preview.company_positioning }}</p>
-      <p style="margin-top: 8px;"><strong>Approach:</strong> {{ proposal_preview.approach }}</p>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.error_message %}
-    <div class="detail-list">
-      <label>Analysis Error</label>
-      <p>{{ latest_analysis.error_message }}</p>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.updated_at %}
-    <p class="muted">Last analysed: {{ latest_analysis.updated_at }}</p>
-  {% endif %}
 </section>
 {% endif %}
 {% endblock %}
