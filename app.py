@@ -655,6 +655,7 @@ def build_default_workspace() -> dict:
         "next_action": "",
         "internal_notes": "",
         "document_override_status": "none",
+        "checklist_status": "not_started",
     }
 
 
@@ -662,6 +663,99 @@ def merge_workspace(raw: dict) -> dict:
     workspace = build_default_workspace()
     workspace.update(raw.get("workspace") or {})
     return workspace
+
+
+def build_checklist_fallback(analysis: dict) -> dict:
+    mandatory = []
+    compliance = []
+    technical = []
+    pricing = []
+
+    if analysis.get("proposal_required"):
+        mandatory.append("Prepare technical and commercial proposal pack")
+        technical.append("Draft technical response aligned to scope")
+        pricing.append("Prepare pricing schedule / commercial response")
+
+    if analysis.get("briefing_date"):
+        mandatory.append("Confirm briefing attendance requirements")
+
+    compliance.append("Confirm company registration and statutory documents")
+    compliance.append("Confirm tax / compliance documents before submission")
+    technical.append("Review scope and delivery approach")
+    pricing.append("Confirm costing assumptions and margin position")
+
+    return {
+        "mandatory_documents": mandatory,
+        "compliance_items": compliance,
+        "technical_items": technical,
+        "pricing_items": pricing,
+    }
+
+
+def build_go_no_go(analysis: dict, profile: Optional[Profile]) -> dict:
+    score = float(analysis.get("score") or 0)
+    document_match = analysis.get("document_match")
+    pricing_complexity = (analysis.get("pricing_complexity") or "medium").lower()
+    margin_risk = (analysis.get("margin_risk") or "medium").lower()
+    briefing_date = analysis.get("briefing_date")
+    gap_summary = build_profile_gap_summary(profile)
+
+    reasons = []
+    decision = "pursue_with_caution"
+
+    if document_match is False:
+        decision = "do_not_pursue"
+        reasons.append("Document match is not reliable.")
+    elif score >= 75 and gap_summary["pending_count"] <= 2 and margin_risk != "high":
+        decision = "pursue"
+        reasons.append("Strong fit and manageable readiness risk.")
+    elif score < 50:
+        decision = "do_not_pursue"
+        reasons.append("Low opportunity fit.")
+    else:
+        reasons.append("Opportunity has potential but needs controlled review.")
+
+    if gap_summary["pending_count"] > 2:
+        reasons.append(f"{gap_summary['pending_count']} readiness gap(s) remain unresolved.")
+
+    if pricing_complexity == "high":
+        reasons.append("Pricing complexity is high.")
+
+    if margin_risk == "high":
+        reasons.append("Margin risk is high.")
+
+    if briefing_date:
+        d = None
+        try:
+            d = (date.fromisoformat(briefing_date[:10]) - date.today()).days
+        except Exception:
+            d = None
+        if d is not None and d <= 3:
+            reasons.append("Briefing timeline is tight.")
+
+    return {
+        "decision": decision,
+        "reasons": reasons,
+    }
+
+
+def build_executive_summary(tender: TenderCache, analysis: dict, workspace: dict, profile: Optional[Profile]) -> dict:
+    go_no_go = build_go_no_go(analysis, profile)
+    return {
+        "title": tender.title or "Tender Opportunity",
+        "department": tender.buyer_name,
+        "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
+        "fit_score": analysis.get("score"),
+        "document_match": analysis.get("document_match"),
+        "summary": analysis.get("summary"),
+        "commercial_signal": analysis.get("potential_revenue_range"),
+        "pricing_complexity": analysis.get("pricing_complexity"),
+        "margin_risk": analysis.get("margin_risk"),
+        "next_action": workspace.get("next_action"),
+        "pursuit_status": workspace.get("pursuit_status"),
+        "submission_readiness": workspace.get("submission_readiness"),
+        "go_no_go": go_no_go,
+    }
 
 
 def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> Optional[dict]:
@@ -680,6 +774,9 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
 
     raw = safe_loads(job.raw_result_json, {})
     workspace = merge_workspace(raw)
+    checklist = raw.get("submission_checklist") or build_checklist_fallback(raw)
+    go_no_go = raw.get("go_no_go") or build_go_no_go(raw, None)
+    executive_summary = raw.get("executive_summary")
 
     return {
         "id": job.id,
@@ -708,6 +805,9 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "proposal_required": raw.get("proposal_required"),
         "scope_summary": raw.get("scope_summary"),
         "workspace": workspace,
+        "submission_checklist": checklist,
+        "go_no_go": go_no_go,
+        "executive_summary": executive_summary,
     }
 
 
@@ -741,6 +841,7 @@ def latest_analysis_map_for_tenders(session, profile_id: Optional[int], tender_i
             "document_match": raw.get("document_match"),
             "workspace": merge_workspace(raw),
             "status": job.status,
+            "go_no_go": raw.get("go_no_go") or build_go_no_go(raw, None),
         }
     return out
 
@@ -913,6 +1014,9 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
             "_analysis_mode": "document_validation_failed",
         }
         result["workspace"] = build_default_workspace()
+        result["submission_checklist"] = build_checklist_fallback(result)
+        result["go_no_go"] = build_go_no_go(result, profile)
+        result["executive_summary"] = build_executive_summary(tender, result, result["workspace"], profile)
         return result
 
     if client and document_text.strip():
@@ -936,6 +1040,16 @@ Also estimate indicative commercial intelligence:
 - potential_revenue_range
 - margin_risk
 
+Also build a submission checklist:
+- mandatory_documents
+- compliance_items
+- technical_items
+- pricing_items
+
+Also return a final go/no-go block:
+- decision (pursue|pursue_with_caution|do_not_pursue)
+- reasons
+
 Return JSON only.
 
 Schema:
@@ -957,7 +1071,17 @@ Schema:
   "contact_email": "string or null",
   "contact_phone": "string or null",
   "proposal_required": true,
-  "scope_summary": "string"
+  "scope_summary": "string",
+  "submission_checklist": {{
+    "mandatory_documents": ["string"],
+    "compliance_items": ["string"],
+    "technical_items": ["string"],
+    "pricing_items": ["string"]
+  }},
+  "go_no_go": {{
+    "decision": "pursue",
+    "reasons": ["string"]
+  }}
 }}
 
 Supplier profile JSON:
@@ -990,6 +1114,9 @@ Tender document text:
                 parsed.setdefault("proposal_required", extracted_fields["proposal_required"])
                 parsed.setdefault("scope_summary", extracted_fields["scope_summary"])
                 parsed.setdefault("workspace", build_default_workspace())
+                parsed.setdefault("submission_checklist", build_checklist_fallback(parsed))
+                parsed.setdefault("go_no_go", build_go_no_go(parsed, profile))
+                parsed.setdefault("executive_summary", build_executive_summary(tender, parsed, parsed["workspace"], profile))
 
                 if parsed.get("document_match") is False:
                     parsed["score"] = 0
@@ -1022,6 +1149,9 @@ Tender document text:
         "_analysis_mode": "heuristic",
         "workspace": build_default_workspace(),
     }
+    result["submission_checklist"] = build_checklist_fallback(result)
+    result["go_no_go"] = build_go_no_go(result, profile)
+    result["executive_summary"] = build_executive_summary(tender, result, result["workspace"], profile)
     return result
 
 
@@ -1306,6 +1436,7 @@ def tenders():
                 "proposal_required": latest.get("proposal_required"),
                 "analysis_status": latest.get("status"),
                 "workspace": latest.get("workspace") or build_default_workspace(),
+                "go_no_go": latest.get("go_no_go"),
             })
 
         if active_profile:
@@ -1454,6 +1585,9 @@ def analyze_tender_page(tender_id: int):
 
             analysis = analyze_tender_against_profile(tender, active_profile, extracted_text) or {}
             analysis.setdefault("workspace", build_default_workspace())
+            analysis.setdefault("submission_checklist", build_checklist_fallback(analysis))
+            analysis.setdefault("go_no_go", build_go_no_go(analysis, active_profile))
+            analysis.setdefault("executive_summary", build_executive_summary(tender, analysis, analysis["workspace"], active_profile))
 
             job.status = "completed"
             job.score = float(analysis.get("score") or 0)
@@ -1508,8 +1642,13 @@ def update_workspace(tender_id: int):
         workspace["next_action"] = (request.form.get("next_action") or "").strip()
         workspace["internal_notes"] = (request.form.get("internal_notes") or "").strip()
         workspace["document_override_status"] = (request.form.get("document_override_status") or workspace["document_override_status"]).strip()
+        workspace["checklist_status"] = (request.form.get("checklist_status") or workspace["checklist_status"]).strip()
 
         raw["workspace"] = workspace
+        raw["go_no_go"] = build_go_no_go(raw, active_profile)
+        tender = session.get(TenderCache, tender_id)
+        if tender:
+            raw["executive_summary"] = build_executive_summary(tender, raw, workspace, active_profile)
         job.raw_result_json = json.dumps(raw, ensure_ascii=False, default=str)
         flash("Bid workspace updated.", "success")
         return redirect(url_for("tender_detail", tender_id=tender_id))
