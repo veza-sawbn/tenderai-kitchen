@@ -77,53 +77,25 @@
   {% if latest_analysis and latest_analysis.executive_summary %}
     {% set ex = latest_analysis.executive_summary %}
     <div class="detail-grid compact-grid">
-      <div>
-        <label>Fit Score</label>
-        <p>{{ ex.fit_score if ex.fit_score is not none else 'n/a' }}</p>
-      </div>
-      <div>
-        <label>Document Match</label>
-        <p>{% if ex.document_match %}Confirmed{% else %}Uncertain / Failed{% endif %}</p>
-      </div>
-      <div>
-        <label>Commercial Signal</label>
-        <p>{{ ex.commercial_signal or 'n/a' }}</p>
-      </div>
-      <div>
-        <label>Next Action</label>
-        <p>{{ ex.next_action or 'n/a' }}</p>
-      </div>
+      <div><label>Fit Score</label><p>{{ ex.fit_score if ex.fit_score is not none else 'n/a' }}</p></div>
+      <div><label>Document Match</label><p>{% if ex.document_match %}Confirmed{% else %}Uncertain / Failed{% endif %}</p></div>
+      <div><label>Commercial Signal</label><p>{{ ex.commercial_signal or 'n/a' }}</p></div>
+      <div><label>Next Action</label><p>{{ ex.next_action or 'n/a' }}</p></div>
     </div>
 
     <div class="detail-list">
       <label>Go / No-Go</label>
       <p><strong>{{ ex.go_no_go.decision|replace("_", " ")|title }}</strong></p>
       {% if ex.go_no_go.reasons %}
-        <ul>
-          {% for item in ex.go_no_go.reasons %}
-            <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
+        <ul>{% for item in ex.go_no_go.reasons %}<li>{{ item }}</li>{% endfor %}</ul>
       {% endif %}
     </div>
 
     <div class="detail-grid compact-grid">
-      <div>
-        <label>Pursuit Status</label>
-        <p>{{ ex.pursuit_status|replace("_", " ")|title if ex.pursuit_status else 'n/a' }}</p>
-      </div>
-      <div>
-        <label>Submission Readiness</label>
-        <p>{{ ex.submission_readiness|replace("_", " ")|title if ex.submission_readiness else 'n/a' }}</p>
-      </div>
-      <div>
-        <label>Pricing Complexity</label>
-        <p>{{ ex.pricing_complexity or 'n/a' }}</p>
-      </div>
-      <div>
-        <label>Margin Risk</label>
-        <p>{{ ex.margin_risk or 'n/a' }}</p>
-      </div>
+      <div><label>Pursuit Status</label><p>{{ ex.pursuit_status|replace("_", " ")|title if ex.pursuit_status else 'n/a' }}</p></div>
+      <div><label>Submission Readiness</label><p>{{ ex.submission_readiness|replace("_", " ")|title if ex.submission_readiness else 'n/a' }}</p></div>
+      <div><label>Pricing Complexity</label><p>{{ ex.pricing_complexity or 'n/a' }}</p></div>
+      <div><label>Margin Risk</label><p>{{ ex.margin_risk or 'n/a' }}</p></div>
     </div>
   {% else %}
     <div class="detail-list">
@@ -138,22 +110,10 @@
 
   {% if document_status %}
     <div class="detail-grid compact-grid">
-      <div>
-        <label>Document Status</label>
-        <p><span class="status-badge status-{{ document_status.fetch_status }}">{{ document_status.fetch_status|replace("_", " ")|title }}</span></p>
-      </div>
-      <div>
-        <label>Filename</label>
-        <p>{{ document_status.filename or "n/a" }}</p>
-      </div>
-      <div>
-        <label>Fetched At</label>
-        <p>{{ document_status.fetched_at or "n/a" }}</p>
-      </div>
-      <div>
-        <label>Content Type</label>
-        <p>{{ document_status.content_type or "n/a" }}</p>
-      </div>
+      <div><label>Document Status</label><p><span class="status-badge status-{{ document_status.fetch_status }}">{{ document_status.fetch_status|replace("_", " ")|title }}</span></p></div>
+      <div><label>Filename</label><p>{{ document_status.filename or "n/a" }}</p></div>
+      <div><label>Fetched At</label><p>{{ document_status.fetched_at or "n/a" }}</p></div>
+      <div><label>Content Type</label><p>{{ document_status.content_type or "n/a" }}</p></div>
     </div>
     {% if document_status.error_message %}
       <div class="detail-list">
@@ -174,11 +134,11 @@
   <h2>Bid Workspace</h2>
 
   <form method="post" action="{{ url_for('update_workspace', tender_id=tender.id) }}" class="workspace-form">
+    {% set ws = latest_analysis.workspace %}
     <div class="detail-grid compact-grid">
       <div>
         <label>Pursuit Status</label>
         <select name="pursuit_status">
-          {% set ws = latest_analysis.workspace %}
           <option value="not_decided" {% if ws.pursuit_status == 'not_decided' %}selected{% endif %}>Not Decided</option>
           <option value="shortlisted" {% if ws.pursuit_status == 'shortlisted' %}selected{% endif %}>Shortlisted</option>
           <option value="pursue" {% if ws.pursuit_status == 'pursue' %}selected{% endif %}>Pursue</option>
@@ -231,93 +191,26 @@
     </div>
   </form>
 </section>
-{% endif %}
 
-<section class="glass-card stack-list">
-  <h2>Prequalification View</h2>
-
-  <div class="detail-actions">
-    {% if alignment_score is not none %}
-      <div class="score-panel glow-chip large">
-        <span>Relevance Score</span>
-        <strong>{{ "%.1f"|format(alignment_score) }}/100</strong>
-      </div>
-    {% endif %}
-    <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
-      Readiness: {{ readiness_band|replace("_", " ")|title }}
-    </span>
-  </div>
-
-  {% if fit_summary %}
-    <div class="detail-list">
-      <label>Scope Summary</label>
-      <p>{{ fit_summary }}</p>
-    </div>
-  {% endif %}
-
-  <div class="detail-list">
-    <label>Readiness Note</label>
-    <p>{{ readiness_note }}</p>
-  </div>
-
-  {% if profile_gap_summary and profile_gap_summary.pending_count %}
-    <div class="detail-list">
-      <label>Active Profile Gaps</label>
-      <p>{{ profile_gap_summary.pending_count }} unresolved gap(s) are currently affecting bid readiness.</p>
-    </div>
-  {% endif %}
-
-  {% if fit_reasons %}
-    <div class="detail-list">
-      <label>Fit Indicators</label>
-      <ul>
-        {% for reason in fit_reasons %}
-          <li>{{ reason }}</li>
-        {% endfor %}
-      </ul>
-    </div>
-  {% endif %}
-</section>
-
-{% if latest_analysis %}
 <section class="glass-card stack-list">
   <h2>Submission Checklist</h2>
 
   {% set cl = latest_analysis.submission_checklist %}
   <div class="detail-list">
     <label>Mandatory Documents</label>
-    {% if cl.mandatory_documents %}
-      <ul>{% for item in cl.mandatory_documents %}<li>{{ item }}</li>{% endfor %}</ul>
-    {% else %}
-      <p>No mandatory document list extracted yet.</p>
-    {% endif %}
+    {% if cl.mandatory_documents %}<ul>{% for item in cl.mandatory_documents %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No mandatory document list extracted yet.</p>{% endif %}
   </div>
-
   <div class="detail-list">
     <label>Compliance Items</label>
-    {% if cl.compliance_items %}
-      <ul>{% for item in cl.compliance_items %}<li>{{ item }}</li>{% endfor %}</ul>
-    {% else %}
-      <p>No compliance items extracted yet.</p>
-    {% endif %}
+    {% if cl.compliance_items %}<ul>{% for item in cl.compliance_items %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No compliance items extracted yet.</p>{% endif %}
   </div>
-
   <div class="detail-list">
     <label>Technical Items</label>
-    {% if cl.technical_items %}
-      <ul>{% for item in cl.technical_items %}<li>{{ item }}</li>{% endfor %}</ul>
-    {% else %}
-      <p>No technical items extracted yet.</p>
-    {% endif %}
+    {% if cl.technical_items %}<ul>{% for item in cl.technical_items %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No technical items extracted yet.</p>{% endif %}
   </div>
-
   <div class="detail-list">
     <label>Pricing Items</label>
-    {% if cl.pricing_items %}
-      <ul>{% for item in cl.pricing_items %}<li>{{ item }}</li>{% endfor %}</ul>
-    {% else %}
-      <p>No pricing items extracted yet.</p>
-    {% endif %}
+    {% if cl.pricing_items %}<ul>{% for item in cl.pricing_items %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p>No pricing items extracted yet.</p>{% endif %}
   </div>
 </section>
 
@@ -332,59 +225,25 @@
   {% endif %}
 
   <div class="detail-grid compact-grid">
-    <div>
-      <label>Briefing Date</label>
-      <p>{{ latest_analysis.briefing_date or "n/a" }}</p>
-    </div>
-    <div>
-      <label>Briefing In</label>
-      <p>{% if latest_analysis.briefing_date %}{{ latest_analysis.briefing_date|days_left }} day(s){% else %}n/a{% endif %}</p>
-    </div>
-    <div>
-      <label>Contact Person</label>
-      <p>{{ latest_analysis.contact_person or "n/a" }}</p>
-    </div>
-    <div>
-      <label>Contact Email</label>
-      <p>{{ latest_analysis.contact_email or "n/a" }}</p>
-    </div>
+    <div><label>Briefing Date</label><p>{{ latest_analysis.briefing_date or "n/a" }}</p></div>
+    <div><label>Briefing In</label><p>{% if latest_analysis.briefing_date %}{{ latest_analysis.briefing_date|days_left }} day(s){% else %}n/a{% endif %}</p></div>
+    <div><label>Contact Person</label><p>{{ latest_analysis.contact_person or "n/a" }}</p></div>
+    <div><label>Contact Email</label><p>{{ latest_analysis.contact_email or "n/a" }}</p></div>
   </div>
 
   <div class="detail-grid compact-grid">
-    <div>
-      <label>Contact Phone</label>
-      <p>{{ latest_analysis.contact_phone or "n/a" }}</p>
-    </div>
-    <div>
-      <label>Proposal Required</label>
-      <p>{% if latest_analysis.proposal_required %}Yes{% else %}No / not confirmed{% endif %}</p>
-    </div>
-    <div>
-      <label>Pricing Complexity</label>
-      <p>{{ latest_analysis.pricing_complexity or "n/a" }}</p>
-    </div>
-    <div>
-      <label>Margin Risk</label>
-      <p>{{ latest_analysis.margin_risk or "n/a" }}</p>
-    </div>
+    <div><label>Contact Phone</label><p>{{ latest_analysis.contact_phone or "n/a" }}</p></div>
+    <div><label>Proposal Required</label><p>{% if latest_analysis.proposal_required %}Yes{% else %}No / not confirmed{% endif %}</p></div>
+    <div><label>Pricing Complexity</label><p>{{ latest_analysis.pricing_complexity or "n/a" }}</p></div>
+    <div><label>Margin Risk</label><p>{{ latest_analysis.margin_risk or "n/a" }}</p></div>
   </div>
 
   {% if latest_analysis.document_match is not none %}
     <div class="detail-list">
       <label>Document Match Check</label>
-      <p>
-        {% if latest_analysis.document_match %}
-          The fetched document appears to match this tender.
-        {% else %}
-          The fetched document may belong to another tender or a generic source page.
-        {% endif %}
-      </p>
-      {% if latest_analysis.document_match_reason %}
-        <p class="muted" style="margin-top: 8px;">{{ latest_analysis.document_match_reason }}</p>
-      {% endif %}
-      {% if latest_analysis.document_match_confidence is not none %}
-        <p class="muted" style="margin-top: 8px;">Confidence: {{ latest_analysis.document_match_confidence }}</p>
-      {% endif %}
+      <p>{% if latest_analysis.document_match %}The fetched document appears to match this tender.{% else %}The fetched document may belong to another tender or a generic source page.{% endif %}</p>
+      {% if latest_analysis.document_match_reason %}<p class="muted" style="margin-top: 8px;">{{ latest_analysis.document_match_reason }}</p>{% endif %}
+      {% if latest_analysis.document_match_confidence is not none %}<p class="muted" style="margin-top: 8px;">Confidence: {{ latest_analysis.document_match_confidence }}</p>{% endif %}
     </div>
   {% endif %}
 
@@ -392,28 +251,6 @@
     <div class="detail-list">
       <label>Extracted Scope Summary</label>
       <p>{{ latest_analysis.scope_summary }}</p>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.matched_signals %}
-    <div class="detail-list">
-      <label>Matched Document Signals</label>
-      <ul>
-        {% for item in latest_analysis.matched_signals %}
-          <li>{{ item }}</li>
-        {% endfor %}
-      </ul>
-    </div>
-  {% endif %}
-
-  {% if latest_analysis.missing_signals %}
-    <div class="detail-list">
-      <label>Missing Match Signals</label>
-      <ul>
-        {% for item in latest_analysis.missing_signals %}
-          <li>{{ item }}</li>
-        {% endfor %}
-      </ul>
     </div>
   {% endif %}
 
@@ -436,11 +273,7 @@
       <label>Commercial View</label>
       {% if latest_analysis.estimated_cost_drivers %}
         <p><strong>Estimated cost drivers:</strong></p>
-        <ul>
-          {% for item in latest_analysis.estimated_cost_drivers %}
-            <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
+        <ul>{% for item in latest_analysis.estimated_cost_drivers %}<li>{{ item }}</li>{% endfor %}</ul>
       {% endif %}
       {% if latest_analysis.potential_revenue_range %}
         <p><strong>Potential revenue range:</strong> {{ latest_analysis.potential_revenue_range }}</p>
@@ -451,33 +284,21 @@
   {% if latest_analysis.strengths %}
     <div class="detail-list">
       <label>Strengths</label>
-      <ul>
-        {% for item in latest_analysis.strengths %}
-          <li>{{ item }}</li>
-        {% endfor %}
-      </ul>
+      <ul>{% for item in latest_analysis.strengths %}<li>{{ item }}</li>{% endfor %}</ul>
     </div>
   {% endif %}
 
   {% if latest_analysis.gaps %}
     <div class="detail-list">
       <label>Possible Gaps / Missing Requirements</label>
-      <ul>
-        {% for item in latest_analysis.gaps %}
-          <li>{{ item }}</li>
-        {% endfor %}
-      </ul>
+      <ul>{% for item in latest_analysis.gaps %}<li>{{ item }}</li>{% endfor %}</ul>
     </div>
   {% endif %}
 
   {% if latest_analysis.risks %}
     <div class="detail-list">
       <label>Risk Flags</label>
-      <ul>
-        {% for item in latest_analysis.risks %}
-          <li>{{ item }}</li>
-        {% endfor %}
-      </ul>
+      <ul>{% for item in latest_analysis.risks %}<li>{{ item }}</li>{% endfor %}</ul>
     </div>
   {% endif %}
 
@@ -488,14 +309,6 @@
       <p style="margin-top: 8px;"><strong>Executive Summary:</strong> {{ proposal_preview.executive_summary }}</p>
       <p style="margin-top: 8px;"><strong>Company Positioning:</strong> {{ proposal_preview.company_positioning }}</p>
       <p style="margin-top: 8px;"><strong>Approach:</strong> {{ proposal_preview.approach }}</p>
-      {% if proposal_preview.compliance_notes %}
-        <p style="margin-top: 8px;"><strong>Compliance Notes:</strong></p>
-        <ul>
-          {% for item in proposal_preview.compliance_notes %}
-            <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
     </div>
   {% endif %}
 
