@@ -99,6 +99,9 @@
               {% if item.workspace and item.workspace.pursuit_status != 'not_decided' %}
                 <span class="status-badge status-workspace">{{ item.workspace.pursuit_status|replace("_", " ")|title }}</span>
               {% endif %}
+              {% if item.go_no_go and item.go_no_go.decision %}
+                <span class="status-badge status-workspace">{{ item.go_no_go.decision|replace("_", " ")|title }}</span>
+              {% endif %}
             </div>
             <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
             <p class="muted">{{ tender.buyer_name or "Department n/a" }}</p>
