@@ -439,6 +439,39 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache) -> float
     return max(0.0, min(score, 100.0))
 
 
+def build_fit_reasons(profile: Profile | None, tender: TenderCache) -> List[str]:
+    if not profile:
+        return []
+
+    reasons = []
+    capabilities = [x.strip() for x in (profile.capabilities_text or "").split(",") if x.strip()]
+    locations = [x.strip() for x in (profile.locations_text or "").split(",") if x.strip()]
+    tender_blob = f"{tender.title or ''} {tender.description or ''}".lower()
+
+    matched_caps = [cap for cap in capabilities if cap.lower() in tender_blob]
+    if matched_caps:
+        reasons.append(f"Matches your service keywords: {', '.join(matched_caps[:4])}")
+
+    if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
+        reasons.append(f"Industry alignment with {tender.industry}")
+
+    if locations and tender.province and any(loc.lower() == tender.province.lower() for loc in locations):
+        reasons.append(f"Location alignment in {tender.province}")
+
+    if tender.buyer_name:
+        reasons.append(f"Issued by {tender.buyer_name}")
+
+    if tender.closing_date:
+        try:
+            days = (tender.closing_date - date.today()).days
+            if days >= 0:
+                reasons.append(f"Still open with {days} day(s) remaining")
+        except Exception:
+            pass
+
+    return reasons
+
+
 def fit_band_from_score(score: Optional[float]) -> Optional[str]:
     if score is None:
         return None
@@ -469,6 +502,23 @@ def readiness_message(profile: Profile | None, score: Optional[float]) -> str:
     if score is not None and score >= 70:
         return "This looks promising, but profile gaps may reduce readiness."
     return "Profile readiness gaps may weaken your bid position."
+
+
+def build_fit_summary(score: Optional[float], reasons: List[str], profile: Profile | None = None) -> Optional[str]:
+    if score is None:
+        return None
+    if reasons:
+        base = "This tender could be a good fit because " + "; ".join(reasons[:3]) + "."
+    elif score >= 60:
+        base = "This tender shows promising metadata alignment with your active profile."
+    else:
+        base = "This tender has limited visible alignment from metadata alone and may require careful review."
+
+    if profile:
+        gap_summary = build_profile_gap_summary(profile)
+        if gap_summary["pending_count"] > 0:
+            base += f" Your active profile currently has {gap_summary['pending_count']} unresolved readiness gap(s)."
+    return base
 
 
 def build_document_match_check(tender: TenderCache, document_text: str) -> dict:
@@ -502,6 +552,20 @@ def build_document_match_check(tender: TenderCache, document_text: str) -> dict:
     elif tender.buyer_name:
         missing_signals.append("buyer name overlap")
 
+    desc_tokens = tokenize(tender.description or "")[:10]
+    desc_matches = [tok for tok in desc_tokens if tok in text]
+    if len(desc_matches) >= 2:
+        matched_signals.append(f"Description overlap: {', '.join(desc_matches[:5])}")
+        score += min(len(desc_matches) * 4.0, 20.0)
+
+    if tender.industry and tender.industry.lower() in text:
+        matched_signals.append(f"Industry reference: {tender.industry}")
+        score += 10.0
+
+    if tender.province and tender.province.lower() in text:
+        matched_signals.append(f"Province reference: {tender.province}")
+        score += 6.0
+
     confidence = max(0.0, min(score, 100.0))
     is_match = confidence >= 35.0 and (len(title_matches) >= 2 or buyer_matches)
 
@@ -514,12 +578,89 @@ def build_document_match_check(tender: TenderCache, document_text: str) -> dict:
     }
 
 
+def extract_procurement_fields_fallback(tender: TenderCache, document_text: str) -> dict:
+    text = document_text or ""
+    briefing_date = None
+    m = re.search(r"(brief(?:ing)?(?: session)?)[^0-9]{0,20}(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})", text, re.I)
+    if m:
+        briefing_date = m.group(2).replace("/", "-")
+
+    email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", text)
+    phone_match = re.search(r"(\+?\d[\d\s\-()]{7,}\d)", text)
+
+    proposal_required = bool(re.search(r"\bproposal\b|\btechnical proposal\b|\bfinancial proposal\b", text, re.I))
+
+    scope_summary = tender.description or "Scope to be confirmed from tender document."
+
+    return {
+        "briefing_date": briefing_date,
+        "contact_person": None,
+        "contact_email": email_match.group(1) if email_match else None,
+        "contact_phone": phone_match.group(1) if phone_match else None,
+        "proposal_required": proposal_required,
+        "scope_summary": scope_summary[:700],
+    }
+
+
+def estimate_commercial_fallback(tender: TenderCache, profile: Profile, document_text: str) -> dict:
+    text = (document_text or "").lower()
+    title_blob = f"{tender.title or ''} {tender.description or ''}".lower()
+
+    cost_drivers = []
+    if any(w in text for w in ["delivery", "transport", "logistics", "site"]):
+        cost_drivers.append("Delivery / logistics")
+    if any(w in text for w in ["materials", "equipment", "supply"]):
+        cost_drivers.append("Materials or equipment inputs")
+    if any(w in text for w in ["staff", "labour", "training", "support"]):
+        cost_drivers.append("Labour and delivery team capacity")
+    if any(w in text for w in ["maintenance", "support", "service level", "sla"]):
+        cost_drivers.append("Ongoing support or service obligations")
+    if not cost_drivers:
+        cost_drivers.append("Scope-specific execution costs need validation")
+
+    pricing_complexity = "medium"
+    if any(w in text for w in ["bill of quantities", "boq", "pricing schedule", "rate per", "unit price"]):
+        pricing_complexity = "high"
+    elif any(w in title_blob for w in ["appointment of panel", "framework", "supply and delivery"]):
+        pricing_complexity = "medium"
+    else:
+        pricing_complexity = "low"
+
+    potential_revenue_range = "Unknown — tender document does not clearly reveal contract value."
+    if any(w in text for w in ["multi-year", "36 months", "three years", "framework", "panel"]):
+        potential_revenue_range = "Potentially medium to high, depending on awarded scope and call-off volume."
+    elif any(w in text for w in ["once-off", "one-time", "single project"]):
+        potential_revenue_range = "Potentially low to medium, likely linked to a once-off scope."
+    elif any(w in title_blob for w in ["supply", "services", "maintenance"]):
+        potential_revenue_range = "Potentially medium, subject to actual quantities and pricing schedule."
+
+    margin_risk = "medium"
+    if pricing_complexity == "high":
+        margin_risk = "high"
+    elif pricing_complexity == "low":
+        margin_risk = "low"
+
+    return {
+        "estimated_cost_drivers": cost_drivers,
+        "pricing_complexity": pricing_complexity,
+        "potential_revenue_range": potential_revenue_range,
+        "margin_risk": margin_risk,
+    }
+
+
 def build_default_workspace() -> dict:
     return {
         "pursuit_status": "not_decided",
+        "submission_readiness": "not_started",
         "next_action": "",
+        "internal_notes": "",
+        "document_override_status": "none",
+        "checklist_status": "not_started",
         "owner": "",
-        "notes": "",
+        "reviewer": "",
+        "due_date": "",
+        "pricing_notes": "",
+        "compliance_notes": "",
     }
 
 
@@ -529,35 +670,138 @@ def merge_workspace(raw: dict) -> dict:
     return workspace
 
 
-def current_document_status(session, tender_id: int) -> Optional[dict]:
-    doc = session.execute(
-        select(TenderDocumentCache)
-        .where(TenderDocumentCache.tender_id == tender_id)
-        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
-        .limit(1)
-    ).scalars().first()
-    if not doc:
-        return None
+def checklist_progress_percent(workspace: dict) -> int:
+    status = (workspace or {}).get("checklist_status", "not_started")
+    mapping = {
+        "not_started": 0,
+        "in_progress": 50,
+        "completed": 100,
+        "blocked": 15,
+    }
+    return mapping.get(status, 0)
+
+
+def build_checklist_fallback(analysis: dict) -> dict:
+    mandatory = []
+    compliance = []
+    technical = []
+    pricing = []
+
+    if analysis.get("proposal_required"):
+        mandatory.append("Prepare technical and commercial proposal pack")
+        technical.append("Draft technical response aligned to scope")
+        pricing.append("Prepare pricing schedule / commercial response")
+
+    if analysis.get("briefing_date"):
+        mandatory.append("Confirm briefing attendance requirements")
+
+    compliance.append("Confirm company registration and statutory documents")
+    compliance.append("Confirm tax / compliance documents before submission")
+    technical.append("Review scope and delivery approach")
+    pricing.append("Confirm costing assumptions and margin position")
+
     return {
-        "fetch_status": doc.fetch_status,
-        "error_message": doc.error_message,
-        "filename": doc.filename,
-        "content_type": doc.content_type,
-        "fetched_at": doc.fetched_at.isoformat() if doc.fetched_at else None,
-        "document_url": doc.document_url,
+        "mandatory_documents": mandatory,
+        "compliance_items": compliance,
+        "technical_items": technical,
+        "pricing_items": pricing,
     }
 
 
-def extract_scope_summary(tender: TenderCache, analysis_raw: Optional[dict] = None) -> str:
-    analysis_raw = analysis_raw or {}
-    scope = (
-        analysis_raw.get("scope_summary")
-        or tender.description
-        or tender.title
-        or "Scope of work summary not available."
-    )
-    scope = re.sub(r"\s+", " ", scope).strip()
-    return scope[:260]
+def build_go_no_go(analysis: dict, profile: Optional[Profile]) -> dict:
+    score = float(analysis.get("score") or 0)
+    document_match = analysis.get("document_match")
+    pricing_complexity = (analysis.get("pricing_complexity") or "medium").lower()
+    margin_risk = (analysis.get("margin_risk") or "medium").lower()
+    briefing_date = analysis.get("briefing_date")
+    gap_summary = build_profile_gap_summary(profile)
+
+    reasons = []
+    decision = "pursue_with_caution"
+
+    if document_match is False:
+        decision = "do_not_pursue"
+        reasons.append("Document match is not reliable.")
+    elif score >= 75 and gap_summary["pending_count"] <= 2 and margin_risk != "high":
+        decision = "pursue"
+        reasons.append("Strong fit and manageable readiness risk.")
+    elif score < 50:
+        decision = "do_not_pursue"
+        reasons.append("Low opportunity fit.")
+    else:
+        reasons.append("Opportunity has potential but needs controlled review.")
+
+    if gap_summary["pending_count"] > 2:
+        reasons.append(f"{gap_summary['pending_count']} readiness gap(s) remain unresolved.")
+
+    if pricing_complexity == "high":
+        reasons.append("Pricing complexity is high.")
+
+    if margin_risk == "high":
+        reasons.append("Margin risk is high.")
+
+    if briefing_date:
+        d = None
+        try:
+            d = (date.fromisoformat(briefing_date[:10]) - date.today()).days
+        except Exception:
+            d = None
+        if d is not None and d <= 3:
+            reasons.append("Briefing timeline is tight.")
+
+    return {
+        "decision": decision,
+        "reasons": reasons,
+    }
+
+
+def build_executive_summary(tender: TenderCache, analysis: dict, workspace: dict, profile: Optional[Profile]) -> dict:
+    go_no_go = analysis.get("go_no_go") or build_go_no_go(analysis, profile)
+    return {
+        "title": tender.title or "Tender Opportunity",
+        "department": tender.buyer_name,
+        "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
+        "fit_score": analysis.get("score"),
+        "document_match": analysis.get("document_match"),
+        "summary": analysis.get("summary"),
+        "commercial_signal": analysis.get("potential_revenue_range"),
+        "pricing_complexity": analysis.get("pricing_complexity"),
+        "margin_risk": analysis.get("margin_risk"),
+        "next_action": workspace.get("next_action"),
+        "pursuit_status": workspace.get("pursuit_status"),
+        "submission_readiness": workspace.get("submission_readiness"),
+        "go_no_go": go_no_go,
+    }
+
+
+def build_bid_brief(tender: TenderCache, analysis: dict, workspace: dict) -> dict:
+    return {
+        "title": tender.title or "Tender Opportunity",
+        "department": tender.buyer_name,
+        "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
+        "owner": workspace.get("owner"),
+        "reviewer": workspace.get("reviewer"),
+        "due_date": workspace.get("due_date"),
+        "next_action": workspace.get("next_action"),
+        "pricing_notes": workspace.get("pricing_notes"),
+        "compliance_notes": workspace.get("compliance_notes"),
+        "summary": analysis.get("summary"),
+        "scope_summary": analysis.get("scope_summary"),
+        "go_no_go": analysis.get("go_no_go"),
+    }
+
+
+def can_offer_proposal(analysis: Optional[dict]) -> bool:
+    if not analysis:
+        return False
+    if not analysis.get("proposal_required"):
+        return False
+    if analysis.get("document_match") is False:
+        return False
+    go_no_go = analysis.get("go_no_go") or {}
+    if go_no_go.get("decision") == "do_not_pursue":
+        return False
+    return True
 
 
 def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> Optional[dict]:
@@ -576,21 +820,28 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
 
     raw = safe_loads(job.raw_result_json, {})
     workspace = merge_workspace(raw)
+    checklist = raw.get("submission_checklist") or build_checklist_fallback(raw)
+    go_no_go = raw.get("go_no_go") or build_go_no_go(raw, None)
+    executive_summary = raw.get("executive_summary")
+    bid_brief = raw.get("bid_brief")
+    progress = checklist_progress_percent(workspace)
 
     return {
         "id": job.id,
         "status": job.status,
         "score": job.score,
         "summary": job.summary,
-        "strengths": raw.get("strengths") or [],
+        "strengths": raw.get("strengths") or [x.strip() for x in (job.strengths_text or "").split("\n") if x.strip()],
         "gaps": raw.get("gaps") or [],
-        "risks": raw.get("risks") or [],
+        "risks": raw.get("risks") or [x.strip() for x in (job.risks_text or "").split("\n") if x.strip()],
         "recommendation": job.recommendations_text,
         "error_message": job.error_message,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "document_match": raw.get("document_match"),
         "document_match_confidence": raw.get("document_match_confidence"),
         "document_match_reason": raw.get("document_match_reason"),
+        "matched_signals": raw.get("matched_signals") or [],
+        "missing_signals": raw.get("missing_signals") or [],
         "estimated_cost_drivers": raw.get("estimated_cost_drivers") or [],
         "pricing_complexity": raw.get("pricing_complexity"),
         "potential_revenue_range": raw.get("potential_revenue_range"),
@@ -600,8 +851,14 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "contact_email": raw.get("contact_email"),
         "contact_phone": raw.get("contact_phone"),
         "proposal_required": raw.get("proposal_required"),
-        "scope_summary": extract_scope_summary(None if False else TenderCache(description=""), raw),  # unused fallback shim
+        "scope_summary": raw.get("scope_summary"),
         "workspace": workspace,
+        "submission_checklist": checklist,
+        "go_no_go": go_no_go,
+        "executive_summary": executive_summary,
+        "bid_brief": bid_brief,
+        "checklist_progress": progress,
+        "proposal_enabled": can_offer_proposal(raw),
     }
 
 
@@ -623,54 +880,42 @@ def latest_analysis_map_for_tenders(session, profile_id: Optional[int], tender_i
         if job.tender_id in out:
             continue
         raw = safe_loads(job.raw_result_json, {})
+        workspace = merge_workspace(raw)
         out[job.tender_id] = {
             "score": job.score,
-            "status": job.status,
+            "summary": job.summary,
             "briefing_date": raw.get("briefing_date"),
             "contact_person": raw.get("contact_person"),
             "contact_email": raw.get("contact_email"),
             "contact_phone": raw.get("contact_phone"),
             "proposal_required": raw.get("proposal_required"),
             "scope_summary": raw.get("scope_summary"),
-            "workspace": merge_workspace(raw),
+            "document_match": raw.get("document_match"),
+            "workspace": workspace,
+            "status": job.status,
+            "go_no_go": raw.get("go_no_go") or build_go_no_go(raw, None),
+            "checklist_progress": checklist_progress_percent(workspace),
         }
     return out
 
 
-def build_minimal_analysis(tender: TenderCache, profile: Profile, document_text: str) -> dict:
-    match_check = build_document_match_check(tender, document_text)
-    score = keyword_overlap_score(profile, tender) or 0
-
-    email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", document_text or "")
-    phone_match = re.search(r"(\+?\d[\d\s\-()]{7,}\d)", document_text or "")
-    briefing_match = re.search(r"(?:brief(?:ing)?(?: session)?)[^0-9]{0,20}(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})", document_text or "", re.I)
-
-    return {
-        "document_match": match_check["document_match"],
-        "document_match_confidence": match_check["confidence"],
-        "document_match_reason": match_check["reason"],
-        "score": score,
-        "summary": "Opportunity analyzed successfully." if match_check["document_match"] else "Document match could not be confirmed.",
-        "scope_summary": extract_scope_summary(tender),
-        "briefing_date": briefing_match.group(1).replace("/", "-") if briefing_match else None,
-        "contact_email": email_match.group(1) if email_match else None,
-        "contact_phone": phone_match.group(1) if phone_match else None,
-        "proposal_required": bool(re.search(r"\bproposal\b", document_text or "", re.I)),
-        "workspace": build_default_workspace(),
-    }
-
-
-def find_running_analysis(session, tender_id: int, profile_id: int) -> Optional[AnalysisJob]:
-    return session.execute(
-        select(AnalysisJob)
-        .where(
-            AnalysisJob.tender_id == tender_id,
-            AnalysisJob.profile_id == profile_id,
-            AnalysisJob.status == "running",
-        )
-        .order_by(desc(AnalysisJob.updated_at))
+def current_document_status(session, tender_id: int) -> Optional[dict]:
+    doc = session.execute(
+        select(TenderDocumentCache)
+        .where(TenderDocumentCache.tender_id == tender_id)
+        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
         .limit(1)
     ).scalars().first()
+    if not doc:
+        return None
+    return {
+        "fetch_status": doc.fetch_status,
+        "error_message": doc.error_message,
+        "filename": doc.filename,
+        "content_type": doc.content_type,
+        "fetched_at": doc.fetched_at.isoformat() if doc.fetched_at else None,
+        "document_url": doc.document_url,
+    }
 
 
 def fetch_tender_document(session, tender: TenderCache, force_refresh: bool = False) -> dict:
@@ -705,14 +950,33 @@ def fetch_tender_document(session, tender: TenderCache, force_refresh: bool = Fa
 
         is_docx = (
             "wordprocessingml" in content_type
+            or "msword" in content_type and lower_name.endswith(".docx")
             or lower_name.endswith(".docx")
             or lower_url.endswith(".docx")
         )
+
+        is_doc = (
+            content_type == "application/msword"
+            or lower_name.endswith(".doc")
+            or lower_url.endswith(".doc")
+        ) and not is_docx
+
         is_pdf = (
             "pdf" in content_type
             or lower_name.endswith(".pdf")
             or lower_url.endswith(".pdf")
         )
+
+        if is_doc:
+            doc.filename = filename
+            doc.content_type = content_type[:100] if content_type else None
+            doc.binary_content = response.content
+            doc.extracted_text = ""
+            doc.fetch_status = "parse_failed"
+            doc.error_message = "Legacy .doc files are not supported yet. Please convert to PDF or .docx."
+            doc.fetched_at = utcnow()
+            session.flush()
+            return {"ok": False, "error": doc.error_message}
 
         if is_docx:
             suffix = ".docx"
@@ -737,7 +1001,7 @@ def fetch_tender_document(session, tender: TenderCache, force_refresh: bool = Fa
         try:
             if suffix == ".pdf":
                 extracted_text = extract_pdf_text(temp_path)
-            else:
+            elif suffix == ".docx":
                 extracted_text = extract_docx_text(temp_path)
         finally:
             try:
@@ -765,12 +1029,347 @@ def fetch_tender_document(session, tender: TenderCache, force_refresh: bool = Fa
         doc.fetched_at = utcnow()
         session.flush()
 
-        return {"ok": True, "text_len": len(extracted_text)}
+        return {"ok": True, "text_len": len(extracted_text), "content_type": content_type, "filename": filename}
     except Exception as exc:
         doc.fetch_status = "fetch_failed"
         doc.error_message = str(exc)
         session.flush()
         return {"ok": False, "error": str(exc)}
+
+
+def analyze_tender_against_profile(tender: TenderCache, profile: Profile, document_text: str) -> dict:
+    client = get_openai_client()
+
+    profile_json = safe_loads(profile.parsed_json, {})
+    tender_vm = tender_to_view_model(tender)
+    match_check = build_document_match_check(tender, document_text)
+    extracted_fields = extract_procurement_fields_fallback(tender, document_text)
+
+    if not match_check["document_match"]:
+        commercial = estimate_commercial_fallback(tender, profile, document_text)
+        result = {
+            "document_match": False,
+            "document_match_confidence": match_check["confidence"],
+            "document_match_reason": match_check["reason"],
+            "matched_signals": match_check["matched_signals"],
+            "missing_signals": match_check["missing_signals"],
+            "score": 0,
+            "summary": "TenderAI could not trust this analysis because the fetched document may belong to a different tender or a generic source page.",
+            "strengths": [],
+            "gaps": ["Document match could not be confirmed for this tender."],
+            "risks": ["Analysis was blocked to avoid scoring the wrong tender document."],
+            "recommendation": "Verify the tender document URL and retry analysis.",
+            "estimated_cost_drivers": commercial["estimated_cost_drivers"],
+            "pricing_complexity": commercial["pricing_complexity"],
+            "potential_revenue_range": commercial["potential_revenue_range"],
+            "margin_risk": commercial["margin_risk"],
+            **extracted_fields,
+            "_analysis_mode": "document_validation_failed",
+        }
+        result["workspace"] = build_default_workspace()
+        result["submission_checklist"] = build_checklist_fallback(result)
+        result["go_no_go"] = build_go_no_go(result, profile)
+        result["executive_summary"] = build_executive_summary(tender, result, result["workspace"], profile)
+        result["bid_brief"] = build_bid_brief(tender, result, result["workspace"])
+        return result
+
+    if client and document_text.strip():
+        prompt = f"""
+You are TenderAI, a procurement intelligence assistant.
+First verify that the tender document belongs to the selected tender.
+If it does not match, return document_match=false and do not produce a meaningful opportunity score.
+If it matches, score and interpret the tender against the supplier profile.
+
+Also extract procurement fields where possible:
+- briefing_date
+- contact_person
+- contact_email
+- contact_phone
+- proposal_required
+- scope_summary
+
+Also estimate indicative commercial intelligence:
+- estimated_cost_drivers
+- pricing_complexity
+- potential_revenue_range
+- margin_risk
+
+Also build a submission checklist:
+- mandatory_documents
+- compliance_items
+- technical_items
+- pricing_items
+
+Also return a final go/no-go block:
+- decision (pursue|pursue_with_caution|do_not_pursue)
+- reasons
+
+Return JSON only.
+
+Schema:
+{{
+  "document_match": true,
+  "document_match_reason": "string",
+  "score": 0,
+  "summary": "string",
+  "strengths": ["string"],
+  "gaps": ["string"],
+  "risks": ["string"],
+  "recommendation": "string",
+  "estimated_cost_drivers": ["string"],
+  "pricing_complexity": "low|medium|high",
+  "potential_revenue_range": "string",
+  "margin_risk": "low|medium|high",
+  "briefing_date": "string or null",
+  "contact_person": "string or null",
+  "contact_email": "string or null",
+  "contact_phone": "string or null",
+  "proposal_required": true,
+  "scope_summary": "string",
+  "submission_checklist": {{
+    "mandatory_documents": ["string"],
+    "compliance_items": ["string"],
+    "technical_items": ["string"],
+    "pricing_items": ["string"]
+  }},
+  "go_no_go": {{
+    "decision": "pursue",
+    "reasons": ["string"]
+  }}
+}}
+
+Supplier profile JSON:
+{json.dumps(profile_json, ensure_ascii=False, default=str)[:12000]}
+
+Tender metadata:
+{json.dumps(tender_vm, ensure_ascii=False, default=str)[:6000]}
+
+Pre-check:
+{json.dumps(match_check, ensure_ascii=False, default=str)[:2000]}
+
+Tender document text:
+{document_text[:22000]}
+""".strip()
+
+        try:
+            response = client.responses.create(model=OPENAI_MODEL, input=prompt)
+            parsed = json_from_text(response.output_text)
+            if parsed:
+                parsed["_analysis_mode"] = "openai"
+                parsed.setdefault("document_match", True)
+                parsed.setdefault("document_match_confidence", match_check["confidence"])
+                parsed.setdefault("document_match_reason", match_check["reason"])
+                parsed.setdefault("matched_signals", match_check["matched_signals"])
+                parsed.setdefault("missing_signals", match_check["missing_signals"])
+                parsed.setdefault("briefing_date", extracted_fields["briefing_date"])
+                parsed.setdefault("contact_person", extracted_fields["contact_person"])
+                parsed.setdefault("contact_email", extracted_fields["contact_email"])
+                parsed.setdefault("contact_phone", extracted_fields["contact_phone"])
+                parsed.setdefault("proposal_required", extracted_fields["proposal_required"])
+                parsed.setdefault("scope_summary", extracted_fields["scope_summary"])
+                parsed.setdefault("workspace", build_default_workspace())
+                parsed.setdefault("submission_checklist", build_checklist_fallback(parsed))
+                parsed.setdefault("go_no_go", build_go_no_go(parsed, profile))
+                parsed.setdefault("executive_summary", build_executive_summary(tender, parsed, parsed["workspace"], profile))
+                parsed.setdefault("bid_brief", build_bid_brief(tender, parsed, parsed["workspace"]))
+
+                if parsed.get("document_match") is False:
+                    parsed["score"] = 0
+                    parsed.setdefault("recommendation", "Verify the tender document URL and retry analysis.")
+                return parsed
+        except Exception:
+            pass
+
+    score = keyword_overlap_score(profile, tender) or 0
+    reasons = build_fit_reasons(profile, tender)
+    commercial = estimate_commercial_fallback(tender, profile, document_text)
+
+    result = {
+        "document_match": True,
+        "document_match_confidence": match_check["confidence"],
+        "document_match_reason": match_check["reason"],
+        "matched_signals": match_check["matched_signals"],
+        "missing_signals": match_check["missing_signals"],
+        "score": score,
+        "summary": build_fit_summary(score, reasons, profile) or "Fallback analysis was used.",
+        "strengths": reasons[:4],
+        "gaps": ["Detailed AI interpretation was unavailable."],
+        "risks": [] if score >= 60 else ["Profile alignment appears limited from the available metadata."],
+        "recommendation": "Proceed to full response preparation." if score >= 60 else "Review carefully before committing resources.",
+        "estimated_cost_drivers": commercial["estimated_cost_drivers"],
+        "pricing_complexity": commercial["pricing_complexity"],
+        "potential_revenue_range": commercial["potential_revenue_range"],
+        "margin_risk": commercial["margin_risk"],
+        **extracted_fields,
+        "_analysis_mode": "heuristic",
+        "workspace": build_default_workspace(),
+    }
+    result["submission_checklist"] = build_checklist_fallback(result)
+    result["go_no_go"] = build_go_no_go(result, profile)
+    result["executive_summary"] = build_executive_summary(tender, result, result["workspace"], profile)
+    result["bid_brief"] = build_bid_brief(tender, result, result["workspace"])
+    return result
+
+
+def generate_proposal_content(tender: TenderCache, profile: Profile, analysis: dict) -> dict:
+    client = get_openai_client()
+
+    profile_json = safe_loads(profile.parsed_json, {})
+    tender_vm = tender_to_view_model(tender)
+
+    if client:
+        prompt = f"""
+You are TenderAI. Draft a procurement proposal response for the supplier.
+Write a professional proposal structure suitable for submission or adaptation.
+Return JSON only.
+
+Schema:
+{{
+  "title": "string",
+  "executive_summary": "string",
+  "company_positioning": "string",
+  "approach": "string",
+  "compliance_notes": ["string"],
+  "deliverables": ["string"],
+  "commercial_notes": "string",
+  "closing_statement": "string"
+}}
+
+Supplier profile JSON:
+{json.dumps(profile_json, ensure_ascii=False, default=str)[:12000]}
+
+Tender metadata:
+{json.dumps(tender_vm, ensure_ascii=False, default=str)[:7000]}
+
+Tender analysis JSON:
+{json.dumps(analysis, ensure_ascii=False, default=str)[:10000]}
+""".strip()
+
+        try:
+            response = client.responses.create(model=OPENAI_MODEL, input=prompt)
+            parsed = json_from_text(response.output_text)
+            if parsed:
+                parsed["_proposal_mode"] = "openai"
+                return parsed
+        except Exception:
+            pass
+
+    company_name = profile.company_name or profile.name or "The Supplier"
+    return {
+        "title": f"Proposal Response: {tender.title or 'Tender Opportunity'}",
+        "executive_summary": f"{company_name} submits this response in relation to the opportunity issued by {tender.buyer_name or 'the department'}.",
+        "company_positioning": f"{company_name} is positioned to deliver within the required scope, supported by relevant capabilities captured in the active supplier profile.",
+        "approach": "Our team will review the final tender requirements, align delivery resources, confirm compliance items, and structure execution around the tender scope and timelines.",
+        "compliance_notes": analysis.get("gaps") or ["Final compliance review is required before submission."],
+        "deliverables": analysis.get("strengths") or ["Delivery aligned to tender scope and requirements."],
+        "commercial_notes": f"Indicative commercial view: {analysis.get('potential_revenue_range', 'Value to be confirmed')} with margin risk assessed as {analysis.get('margin_risk', 'medium')}.",
+        "closing_statement": "We welcome the opportunity to submit a compliant and competitive response and remain available for clarification or presentation.",
+        "_proposal_mode": "heuristic",
+    }
+
+
+def build_proposal_docx(proposal: dict, tender: TenderCache, profile: Profile) -> bytes:
+    if DocxDocument is None:
+        raise RuntimeError("python-docx is not installed.")
+
+    doc = DocxDocument()
+    doc.add_heading(proposal.get("title") or f"Proposal: {tender.title}", 0)
+
+    doc.add_paragraph(f"Tender: {tender.title or 'N/A'}")
+    doc.add_paragraph(f"Department / Buyer: {tender.buyer_name or 'N/A'}")
+    doc.add_paragraph(f"Supplier: {profile.company_name or profile.name or 'N/A'}")
+    doc.add_paragraph(f"Closing Date: {tender.closing_date.isoformat() if tender.closing_date else 'N/A'}")
+
+    sections = [
+        ("Executive Summary", proposal.get("executive_summary")),
+        ("Company Positioning", proposal.get("company_positioning")),
+        ("Approach", proposal.get("approach")),
+        ("Commercial Notes", proposal.get("commercial_notes")),
+        ("Closing Statement", proposal.get("closing_statement")),
+    ]
+
+    for heading, body in sections:
+        if body:
+            doc.add_heading(heading, level=1)
+            doc.add_paragraph(body)
+
+    compliance_notes = proposal.get("compliance_notes") or []
+    if compliance_notes:
+        doc.add_heading("Compliance Notes", level=1)
+        for item in compliance_notes:
+            doc.add_paragraph(str(item), style="List Bullet")
+
+    deliverables = proposal.get("deliverables") or []
+    if deliverables:
+        doc.add_heading("Deliverables / Strengths", level=1)
+        for item in deliverables:
+            doc.add_paragraph(str(item), style="List Bullet")
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def build_brief_docx(tender: TenderCache, analysis: dict, workspace: dict, profile: Optional[Profile]) -> bytes:
+    if DocxDocument is None:
+        raise RuntimeError("python-docx is not installed.")
+
+    doc = DocxDocument()
+    doc.add_heading("TenderAI Bid Brief", 0)
+
+    executive = analysis.get("executive_summary") or {}
+    brief = analysis.get("bid_brief") or {}
+    checklist = analysis.get("submission_checklist") or {}
+
+    doc.add_paragraph(f"Tender: {tender.title or 'N/A'}")
+    doc.add_paragraph(f"Department: {tender.buyer_name or 'N/A'}")
+    doc.add_paragraph(f"Supplier: {(profile.company_name or profile.name) if profile else 'N/A'}")
+    doc.add_paragraph(f"Closing Date: {tender.closing_date.isoformat() if tender.closing_date else 'N/A'}")
+
+    doc.add_heading("Decision Summary", level=1)
+    doc.add_paragraph(f"Go / No-Go: {(executive.get('go_no_go') or {}).get('decision', 'n/a')}")
+    doc.add_paragraph(f"Fit Score: {executive.get('fit_score', 'n/a')}")
+    doc.add_paragraph(f"Summary: {executive.get('summary', analysis.get('summary', 'n/a'))}")
+    doc.add_paragraph(f"Next Action: {executive.get('next_action', 'n/a')}")
+
+    doc.add_heading("Handoff", level=1)
+    doc.add_paragraph(f"Owner: {brief.get('owner') or 'n/a'}")
+    doc.add_paragraph(f"Reviewer: {brief.get('reviewer') or 'n/a'}")
+    doc.add_paragraph(f"Due Date: {brief.get('due_date') or 'n/a'}")
+    doc.add_paragraph(f"Pricing Notes: {brief.get('pricing_notes') or 'n/a'}")
+    doc.add_paragraph(f"Compliance Notes: {brief.get('compliance_notes') or 'n/a'}")
+
+    def add_list_section(title: str, items: List[str]):
+        doc.add_heading(title, level=1)
+        if items:
+            for item in items:
+                doc.add_paragraph(str(item), style="List Bullet")
+        else:
+            doc.add_paragraph("No items extracted.")
+
+    add_list_section("Mandatory Documents", checklist.get("mandatory_documents") or [])
+    add_list_section("Compliance Items", checklist.get("compliance_items") or [])
+    add_list_section("Technical Items", checklist.get("technical_items") or [])
+    add_list_section("Pricing Items", checklist.get("pricing_items") or [])
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def find_running_analysis(session, tender_id: int, profile_id: int) -> Optional[AnalysisJob]:
+    return session.execute(
+        select(AnalysisJob)
+        .where(
+            AnalysisJob.tender_id == tender_id,
+            AnalysisJob.profile_id == profile_id,
+            AnalysisJob.status == "running",
+        )
+        .order_by(desc(AnalysisJob.updated_at))
+        .limit(1)
+    ).scalars().first()
 
 
 @app.context_processor
@@ -826,27 +1425,43 @@ def home():
             select(TenderCache)
             .where(TenderCache.is_live.is_(True))
             .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
-            .limit(100)
+            .limit(24)
         ).scalars().all()
+
+        analysis_map = latest_analysis_map_for_tenders(
+            session,
+            active_profile.id if active_profile else None,
+            [t.id for t in tenders],
+        )
 
         featured = []
         for t in tenders:
-            if not active_profile:
-                continue
             score = keyword_overlap_score(active_profile, t)
+            reasons = build_fit_reasons(active_profile, t)
+            fit_band = fit_band_from_score(score)
+            tender_vm = tender_to_view_model(t)
+            latest = analysis_map.get(t.id, {})
+
             featured.append({
-                "tender": tender_to_view_model(t),
+                "tender": tender_vm,
                 "score": score,
-                "fit_band": fit_band_from_score(score),
-                "scope_summary": extract_scope_summary(t),
+                "fit_band": fit_band,
+                "fit_summary": latest.get("scope_summary") or build_fit_summary(score, reasons, active_profile),
+                "fit_reasons": reasons,
+                "readiness_band": readiness_band,
+                "briefing_date": latest.get("briefing_date"),
+                "contact_person": latest.get("contact_person"),
+                "contact_email": latest.get("contact_email"),
+                "contact_phone": latest.get("contact_phone"),
             })
 
-        featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
+        if active_profile:
+            featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
 
         return render_template(
             "home.html",
             total_live=total_live,
-            featured=featured[:8],
+            featured=featured[:12],
             readiness_band=readiness_band,
             readiness_note=readiness_note,
             profile_gap_summary=gap_summary,
@@ -896,18 +1511,37 @@ def tenders():
             query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)
         ).scalars().all()
 
+        analysis_map = latest_analysis_map_for_tenders(
+            session,
+            active_profile.id if active_profile else None,
+            [t.id for t in items],
+        )
+
         ranked = []
         for t in items:
-            score = keyword_overlap_score(active_profile, t) if active_profile else None
-            band = fit_band_from_score(score) if score is not None else None
+            score = keyword_overlap_score(active_profile, t)
+            reasons = build_fit_reasons(active_profile, t)
+            band = fit_band_from_score(score)
             if fit_band_filter and band != fit_band_filter:
                 continue
 
+            latest = analysis_map.get(t.id, {})
             ranked.append({
                 "tender": tender_to_view_model(t),
                 "score": score,
                 "fit_band": band,
-                "scope_summary": extract_scope_summary(t),
+                "fit_summary": latest.get("scope_summary") or build_fit_summary(score, reasons, active_profile),
+                "fit_reasons": reasons,
+                "readiness_band": readiness_band,
+                "briefing_date": latest.get("briefing_date"),
+                "contact_person": latest.get("contact_person"),
+                "contact_email": latest.get("contact_email"),
+                "contact_phone": latest.get("contact_phone"),
+                "proposal_required": latest.get("proposal_required"),
+                "analysis_status": latest.get("status"),
+                "workspace": latest.get("workspace") or build_default_workspace(),
+                "go_no_go": latest.get("go_no_go"),
+                "checklist_progress": latest.get("checklist_progress", 0),
             })
 
         if active_profile:
@@ -958,9 +1592,11 @@ def tender_detail(tender_id: int):
             abort(404)
 
         active_profile = get_active_profile(session)
+        score = keyword_overlap_score(active_profile, tender)
+        reasons = build_fit_reasons(active_profile, tender)
+        fit_band = fit_band_from_score(score)
+        fit_summary = build_fit_summary(score, reasons, active_profile)
         latest_analysis = latest_analysis_for(session, tender_id, active_profile.id if active_profile else None)
-        score = keyword_overlap_score(active_profile, tender) if active_profile else None
-        fit_band = fit_band_from_score(score) if score is not None else None
         readiness_band = readiness_band_for_profile(active_profile)
         readiness_note = readiness_message(active_profile, score)
         gap_summary = build_profile_gap_summary(active_profile)
@@ -969,11 +1605,19 @@ def tender_detail(tender_id: int):
         if active_profile:
             running_job = find_running_analysis(session, tender_id, active_profile.id)
 
+        proposal_preview = None
+        if latest_analysis and latest_analysis.get("proposal_enabled"):
+            try:
+                proposal_preview = generate_proposal_content(tender, active_profile, latest_analysis)
+            except Exception:
+                proposal_preview = None
+
         return render_template(
             "tender_detail.html",
             tender=tender_to_view_model(tender),
             alignment_score=score,
-            scope_summary=extract_scope_summary(tender, latest_analysis or {}),
+            fit_summary=fit_summary,
+            fit_reasons=reasons,
             fit_band=fit_band,
             can_analyze=bool(active_profile),
             analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id),
@@ -983,6 +1627,7 @@ def tender_detail(tender_id: int):
             profile_gap_summary=gap_summary,
             document_status=doc_status,
             running_job=running_job,
+            proposal_preview=proposal_preview,
         )
 
 
@@ -1043,19 +1688,30 @@ def analyze_tender_page(tender_id: int):
                 flash(job.error_message, "error")
                 return redirect(url_for("tender_detail", tender_id=tender_id))
 
-            analysis = build_minimal_analysis(tender, active_profile, extracted_text)
+            analysis = analyze_tender_against_profile(tender, active_profile, extracted_text) or {}
+            analysis.setdefault("workspace", build_default_workspace())
+            analysis.setdefault("submission_checklist", build_checklist_fallback(analysis))
+            analysis.setdefault("go_no_go", build_go_no_go(analysis, active_profile))
+            analysis.setdefault("executive_summary", build_executive_summary(tender, analysis, analysis["workspace"], active_profile))
+            analysis.setdefault("bid_brief", build_bid_brief(tender, analysis, analysis["workspace"]))
 
             job.status = "completed"
             job.score = float(analysis.get("score") or 0)
             job.summary = analysis.get("summary")
-            job.strengths_text = ""
-            job.risks_text = ""
-            job.recommendations_text = ""
+            job.strengths_text = "\n".join(analysis.get("strengths") or [])
+            job.risks_text = "\n".join(analysis.get("risks") or [])
+            job.recommendations_text = analysis.get("recommendation")
             job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
             job.error_message = None
+
+            doc.parsed_json = json.dumps({"analysis": analysis}, ensure_ascii=False, default=str)
             session.flush()
 
-            flash("Tender analysis completed.", "success")
+            if analysis.get("document_match") is False:
+                flash("Tender analysis blocked because the fetched document may belong to another tender.", "warning")
+            else:
+                flash("Tender analysis completed.", "success")
+
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
         except Exception as exc:
@@ -1082,19 +1738,31 @@ def update_workspace(tender_id: int):
         ).scalars().first()
 
         if not job:
-            flash("Analyze the tender first before saving a decision.", "error")
+            flash("Analyze the tender first before updating the workspace.", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
         raw = safe_loads(job.raw_result_json, {})
         workspace = merge_workspace(raw)
         workspace["pursuit_status"] = (request.form.get("pursuit_status") or workspace["pursuit_status"]).strip()
+        workspace["submission_readiness"] = (request.form.get("submission_readiness") or workspace["submission_readiness"]).strip()
         workspace["next_action"] = (request.form.get("next_action") or "").strip()
+        workspace["internal_notes"] = (request.form.get("internal_notes") or "").strip()
+        workspace["document_override_status"] = (request.form.get("document_override_status") or workspace["document_override_status"]).strip()
+        workspace["checklist_status"] = (request.form.get("checklist_status") or workspace["checklist_status"]).strip()
         workspace["owner"] = (request.form.get("owner") or "").strip()
-        workspace["notes"] = (request.form.get("notes") or "").strip()
-        raw["workspace"] = workspace
-        job.raw_result_json = json.dumps(raw, ensure_ascii=False, default=str)
+        workspace["reviewer"] = (request.form.get("reviewer") or "").strip()
+        workspace["due_date"] = (request.form.get("due_date") or "").strip()
+        workspace["pricing_notes"] = (request.form.get("pricing_notes") or "").strip()
+        workspace["compliance_notes"] = (request.form.get("compliance_notes") or "").strip()
 
-        flash("Decision workspace updated.", "success")
+        raw["workspace"] = workspace
+        raw["go_no_go"] = build_go_no_go(raw, active_profile)
+        tender = session.get(TenderCache, tender_id)
+        if tender:
+            raw["executive_summary"] = build_executive_summary(tender, raw, workspace, active_profile)
+            raw["bid_brief"] = build_bid_brief(tender, raw, workspace)
+        job.raw_result_json = json.dumps(raw, ensure_ascii=False, default=str)
+        flash("Bid workspace updated.", "success")
         return redirect(url_for("tender_detail", tender_id=tender_id))
 
 
@@ -1117,6 +1785,119 @@ def refetch_document_page(tender_id: int):
 @app.post("/tender/<int:tender_id>/reanalyze")
 def reanalyze_tender_page(tender_id: int):
     return analyze_tender_page(tender_id)
+
+
+@app.get("/api/tenders/<int:tender_id>/proposal")
+def api_generate_proposal(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            return jsonify({"ok": False, "error": "Tender not found."}), 404
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            return jsonify({"ok": False, "error": "No active profile found."}), 400
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            return jsonify({"ok": False, "error": "No analysis found. Analyze the tender first."}), 400
+
+        if not can_offer_proposal(latest):
+            return jsonify({"ok": False, "error": "Proposal generation is not enabled for this tender."}), 400
+
+        proposal = generate_proposal_content(tender, active_profile, latest)
+        return jsonify({"ok": True, "proposal": proposal})
+
+
+@app.get("/api/tenders/<int:tender_id>/executive-summary")
+def api_executive_summary(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            return jsonify({"ok": False, "error": "Tender not found."}), 404
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            return jsonify({"ok": False, "error": "No active profile found."}), 400
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            return jsonify({"ok": False, "error": "No analysis found."}), 400
+
+        return jsonify({
+            "ok": True,
+            "executive_summary": latest.get("executive_summary"),
+            "bid_brief": latest.get("bid_brief"),
+            "submission_checklist": latest.get("submission_checklist"),
+        })
+
+
+@app.get("/tender/<int:tender_id>/brief.docx")
+def download_brief_docx(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            abort(404)
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            flash("No active profile found.", "error")
+            return redirect(url_for("profiles"))
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            flash("Analyze the tender before exporting a bid brief.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        try:
+            payload = build_brief_docx(tender, latest, latest.get("workspace") or build_default_workspace(), active_profile)
+        except Exception as exc:
+            flash(f"Unable to generate bid brief DOCX: {exc}", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        return send_file(
+            io.BytesIO(payload),
+            as_attachment=True,
+            download_name=f"tender_brief_{tender_id}.docx",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+
+@app.get("/tender/<int:tender_id>/proposal.docx")
+def download_proposal_docx(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            abort(404)
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            flash("No active profile found.", "error")
+            return redirect(url_for("profiles"))
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            flash("Analyze the tender before generating a proposal.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        if not can_offer_proposal(latest):
+            flash("Proposal generation is not enabled for this tender.", "warning")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        proposal = generate_proposal_content(tender, active_profile, latest)
+
+        try:
+            payload = build_proposal_docx(proposal, tender, active_profile)
+        except Exception as exc:
+            flash(f"Unable to generate DOCX proposal: {exc}", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        return send_file(
+            io.BytesIO(payload),
+            as_attachment=True,
+            download_name=f"proposal_tender_{tender_id}.docx",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
 
 
 @app.get("/profiles")
