@@ -656,6 +656,11 @@ def build_default_workspace() -> dict:
         "internal_notes": "",
         "document_override_status": "none",
         "checklist_status": "not_started",
+        "owner": "",
+        "reviewer": "",
+        "due_date": "",
+        "pricing_notes": "",
+        "compliance_notes": "",
     }
 
 
@@ -663,6 +668,17 @@ def merge_workspace(raw: dict) -> dict:
     workspace = build_default_workspace()
     workspace.update(raw.get("workspace") or {})
     return workspace
+
+
+def checklist_progress_percent(workspace: dict) -> int:
+    status = (workspace or {}).get("checklist_status", "not_started")
+    mapping = {
+        "not_started": 0,
+        "in_progress": 50,
+        "completed": 100,
+        "blocked": 15,
+    }
+    return mapping.get(status, 0)
 
 
 def build_checklist_fallback(analysis: dict) -> dict:
@@ -740,7 +756,7 @@ def build_go_no_go(analysis: dict, profile: Optional[Profile]) -> dict:
 
 
 def build_executive_summary(tender: TenderCache, analysis: dict, workspace: dict, profile: Optional[Profile]) -> dict:
-    go_no_go = build_go_no_go(analysis, profile)
+    go_no_go = analysis.get("go_no_go") or build_go_no_go(analysis, profile)
     return {
         "title": tender.title or "Tender Opportunity",
         "department": tender.buyer_name,
@@ -756,6 +772,36 @@ def build_executive_summary(tender: TenderCache, analysis: dict, workspace: dict
         "submission_readiness": workspace.get("submission_readiness"),
         "go_no_go": go_no_go,
     }
+
+
+def build_bid_brief(tender: TenderCache, analysis: dict, workspace: dict) -> dict:
+    return {
+        "title": tender.title or "Tender Opportunity",
+        "department": tender.buyer_name,
+        "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
+        "owner": workspace.get("owner"),
+        "reviewer": workspace.get("reviewer"),
+        "due_date": workspace.get("due_date"),
+        "next_action": workspace.get("next_action"),
+        "pricing_notes": workspace.get("pricing_notes"),
+        "compliance_notes": workspace.get("compliance_notes"),
+        "summary": analysis.get("summary"),
+        "scope_summary": analysis.get("scope_summary"),
+        "go_no_go": analysis.get("go_no_go"),
+    }
+
+
+def can_offer_proposal(analysis: Optional[dict]) -> bool:
+    if not analysis:
+        return False
+    if not analysis.get("proposal_required"):
+        return False
+    if analysis.get("document_match") is False:
+        return False
+    go_no_go = analysis.get("go_no_go") or {}
+    if go_no_go.get("decision") == "do_not_pursue":
+        return False
+    return True
 
 
 def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> Optional[dict]:
@@ -777,6 +823,8 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
     checklist = raw.get("submission_checklist") or build_checklist_fallback(raw)
     go_no_go = raw.get("go_no_go") or build_go_no_go(raw, None)
     executive_summary = raw.get("executive_summary")
+    bid_brief = raw.get("bid_brief")
+    progress = checklist_progress_percent(workspace)
 
     return {
         "id": job.id,
@@ -808,6 +856,9 @@ def latest_analysis_for(session, tender_id: int, profile_id: Optional[int]) -> O
         "submission_checklist": checklist,
         "go_no_go": go_no_go,
         "executive_summary": executive_summary,
+        "bid_brief": bid_brief,
+        "checklist_progress": progress,
+        "proposal_enabled": can_offer_proposal(raw),
     }
 
 
@@ -829,6 +880,7 @@ def latest_analysis_map_for_tenders(session, profile_id: Optional[int], tender_i
         if job.tender_id in out:
             continue
         raw = safe_loads(job.raw_result_json, {})
+        workspace = merge_workspace(raw)
         out[job.tender_id] = {
             "score": job.score,
             "summary": job.summary,
@@ -839,9 +891,10 @@ def latest_analysis_map_for_tenders(session, profile_id: Optional[int], tender_i
             "proposal_required": raw.get("proposal_required"),
             "scope_summary": raw.get("scope_summary"),
             "document_match": raw.get("document_match"),
-            "workspace": merge_workspace(raw),
+            "workspace": workspace,
             "status": job.status,
             "go_no_go": raw.get("go_no_go") or build_go_no_go(raw, None),
+            "checklist_progress": checklist_progress_percent(workspace),
         }
     return out
 
@@ -1017,6 +1070,7 @@ def analyze_tender_against_profile(tender: TenderCache, profile: Profile, docume
         result["submission_checklist"] = build_checklist_fallback(result)
         result["go_no_go"] = build_go_no_go(result, profile)
         result["executive_summary"] = build_executive_summary(tender, result, result["workspace"], profile)
+        result["bid_brief"] = build_bid_brief(tender, result, result["workspace"])
         return result
 
     if client and document_text.strip():
@@ -1117,6 +1171,7 @@ Tender document text:
                 parsed.setdefault("submission_checklist", build_checklist_fallback(parsed))
                 parsed.setdefault("go_no_go", build_go_no_go(parsed, profile))
                 parsed.setdefault("executive_summary", build_executive_summary(tender, parsed, parsed["workspace"], profile))
+                parsed.setdefault("bid_brief", build_bid_brief(tender, parsed, parsed["workspace"]))
 
                 if parsed.get("document_match") is False:
                     parsed["score"] = 0
@@ -1152,6 +1207,7 @@ Tender document text:
     result["submission_checklist"] = build_checklist_fallback(result)
     result["go_no_go"] = build_go_no_go(result, profile)
     result["executive_summary"] = build_executive_summary(tender, result, result["workspace"], profile)
+    result["bid_brief"] = build_bid_brief(tender, result, result["workspace"])
     return result
 
 
@@ -1248,6 +1304,54 @@ def build_proposal_docx(proposal: dict, tender: TenderCache, profile: Profile) -
         doc.add_heading("Deliverables / Strengths", level=1)
         for item in deliverables:
             doc.add_paragraph(str(item), style="List Bullet")
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def build_brief_docx(tender: TenderCache, analysis: dict, workspace: dict, profile: Optional[Profile]) -> bytes:
+    if DocxDocument is None:
+        raise RuntimeError("python-docx is not installed.")
+
+    doc = DocxDocument()
+    doc.add_heading("TenderAI Bid Brief", 0)
+
+    executive = analysis.get("executive_summary") or {}
+    brief = analysis.get("bid_brief") or {}
+    checklist = analysis.get("submission_checklist") or {}
+
+    doc.add_paragraph(f"Tender: {tender.title or 'N/A'}")
+    doc.add_paragraph(f"Department: {tender.buyer_name or 'N/A'}")
+    doc.add_paragraph(f"Supplier: {(profile.company_name or profile.name) if profile else 'N/A'}")
+    doc.add_paragraph(f"Closing Date: {tender.closing_date.isoformat() if tender.closing_date else 'N/A'}")
+
+    doc.add_heading("Decision Summary", level=1)
+    doc.add_paragraph(f"Go / No-Go: {(executive.get('go_no_go') or {}).get('decision', 'n/a')}")
+    doc.add_paragraph(f"Fit Score: {executive.get('fit_score', 'n/a')}")
+    doc.add_paragraph(f"Summary: {executive.get('summary', analysis.get('summary', 'n/a'))}")
+    doc.add_paragraph(f"Next Action: {executive.get('next_action', 'n/a')}")
+
+    doc.add_heading("Handoff", level=1)
+    doc.add_paragraph(f"Owner: {brief.get('owner') or 'n/a'}")
+    doc.add_paragraph(f"Reviewer: {brief.get('reviewer') or 'n/a'}")
+    doc.add_paragraph(f"Due Date: {brief.get('due_date') or 'n/a'}")
+    doc.add_paragraph(f"Pricing Notes: {brief.get('pricing_notes') or 'n/a'}")
+    doc.add_paragraph(f"Compliance Notes: {brief.get('compliance_notes') or 'n/a'}")
+
+    def add_list_section(title: str, items: List[str]):
+        doc.add_heading(title, level=1)
+        if items:
+            for item in items:
+                doc.add_paragraph(str(item), style="List Bullet")
+        else:
+            doc.add_paragraph("No items extracted.")
+
+    add_list_section("Mandatory Documents", checklist.get("mandatory_documents") or [])
+    add_list_section("Compliance Items", checklist.get("compliance_items") or [])
+    add_list_section("Technical Items", checklist.get("technical_items") or [])
+    add_list_section("Pricing Items", checklist.get("pricing_items") or [])
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -1437,6 +1541,7 @@ def tenders():
                 "analysis_status": latest.get("status"),
                 "workspace": latest.get("workspace") or build_default_workspace(),
                 "go_no_go": latest.get("go_no_go"),
+                "checklist_progress": latest.get("checklist_progress", 0),
             })
 
         if active_profile:
@@ -1501,7 +1606,7 @@ def tender_detail(tender_id: int):
             running_job = find_running_analysis(session, tender_id, active_profile.id)
 
         proposal_preview = None
-        if latest_analysis and latest_analysis.get("proposal_required"):
+        if latest_analysis and latest_analysis.get("proposal_enabled"):
             try:
                 proposal_preview = generate_proposal_content(tender, active_profile, latest_analysis)
             except Exception:
@@ -1588,6 +1693,7 @@ def analyze_tender_page(tender_id: int):
             analysis.setdefault("submission_checklist", build_checklist_fallback(analysis))
             analysis.setdefault("go_no_go", build_go_no_go(analysis, active_profile))
             analysis.setdefault("executive_summary", build_executive_summary(tender, analysis, analysis["workspace"], active_profile))
+            analysis.setdefault("bid_brief", build_bid_brief(tender, analysis, analysis["workspace"]))
 
             job.status = "completed"
             job.score = float(analysis.get("score") or 0)
@@ -1643,12 +1749,18 @@ def update_workspace(tender_id: int):
         workspace["internal_notes"] = (request.form.get("internal_notes") or "").strip()
         workspace["document_override_status"] = (request.form.get("document_override_status") or workspace["document_override_status"]).strip()
         workspace["checklist_status"] = (request.form.get("checklist_status") or workspace["checklist_status"]).strip()
+        workspace["owner"] = (request.form.get("owner") or "").strip()
+        workspace["reviewer"] = (request.form.get("reviewer") or "").strip()
+        workspace["due_date"] = (request.form.get("due_date") or "").strip()
+        workspace["pricing_notes"] = (request.form.get("pricing_notes") or "").strip()
+        workspace["compliance_notes"] = (request.form.get("compliance_notes") or "").strip()
 
         raw["workspace"] = workspace
         raw["go_no_go"] = build_go_no_go(raw, active_profile)
         tender = session.get(TenderCache, tender_id)
         if tender:
             raw["executive_summary"] = build_executive_summary(tender, raw, workspace, active_profile)
+            raw["bid_brief"] = build_bid_brief(tender, raw, workspace)
         job.raw_result_json = json.dumps(raw, ensure_ascii=False, default=str)
         flash("Bid workspace updated.", "success")
         return redirect(url_for("tender_detail", tender_id=tender_id))
@@ -1690,8 +1802,65 @@ def api_generate_proposal(tender_id: int):
         if not latest:
             return jsonify({"ok": False, "error": "No analysis found. Analyze the tender first."}), 400
 
+        if not can_offer_proposal(latest):
+            return jsonify({"ok": False, "error": "Proposal generation is not enabled for this tender."}), 400
+
         proposal = generate_proposal_content(tender, active_profile, latest)
         return jsonify({"ok": True, "proposal": proposal})
+
+
+@app.get("/api/tenders/<int:tender_id>/executive-summary")
+def api_executive_summary(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            return jsonify({"ok": False, "error": "Tender not found."}), 404
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            return jsonify({"ok": False, "error": "No active profile found."}), 400
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            return jsonify({"ok": False, "error": "No analysis found."}), 400
+
+        return jsonify({
+            "ok": True,
+            "executive_summary": latest.get("executive_summary"),
+            "bid_brief": latest.get("bid_brief"),
+            "submission_checklist": latest.get("submission_checklist"),
+        })
+
+
+@app.get("/tender/<int:tender_id>/brief.docx")
+def download_brief_docx(tender_id: int):
+    with get_db_session() as session:
+        tender = session.get(TenderCache, tender_id)
+        if not tender:
+            abort(404)
+
+        active_profile = get_active_profile(session)
+        if not active_profile:
+            flash("No active profile found.", "error")
+            return redirect(url_for("profiles"))
+
+        latest = latest_analysis_for(session, tender_id, active_profile.id)
+        if not latest:
+            flash("Analyze the tender before exporting a bid brief.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        try:
+            payload = build_brief_docx(tender, latest, latest.get("workspace") or build_default_workspace(), active_profile)
+        except Exception as exc:
+            flash(f"Unable to generate bid brief DOCX: {exc}", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        return send_file(
+            io.BytesIO(payload),
+            as_attachment=True,
+            download_name=f"tender_brief_{tender_id}.docx",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
 
 
 @app.get("/tender/<int:tender_id>/proposal.docx")
@@ -1709,6 +1878,10 @@ def download_proposal_docx(tender_id: int):
         latest = latest_analysis_for(session, tender_id, active_profile.id)
         if not latest:
             flash("Analyze the tender before generating a proposal.", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        if not can_offer_proposal(latest):
+            flash("Proposal generation is not enabled for this tender.", "warning")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
         proposal = generate_proposal_content(tender, active_profile, latest)
@@ -1765,7 +1938,25 @@ def upload_profile():
         )
         session.add(profile)
         session.flush()
-        upsert_profile_issues(session, profile, parsed.get("issues") or [])
+
+        existing = session.execute(
+            select(ProfileIssue).where(ProfileIssue.profile_id == profile.id)
+        ).scalars().all()
+        for issue in existing:
+            session.delete(issue)
+        session.flush()
+
+        for issue in parsed.get("issues") or []:
+            session.add(
+                ProfileIssue(
+                    profile_id=profile.id,
+                    issue_type="profile_gap",
+                    title=issue.get("title") or "Profile issue",
+                    detail=issue.get("detail"),
+                    penalty_weight=float(issue.get("penalty_weight") or 5),
+                    status="pending",
+                )
+            )
 
     flash(f"Profile uploaded and set as active. Parse mode: {parsed.get('_parse_mode', 'heuristic')}.", "success")
     return redirect(url_for("profiles"))
