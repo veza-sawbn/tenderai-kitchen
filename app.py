@@ -1384,7 +1384,7 @@ def inject_globals():
             "active_profile": serialize_profile(active_profile, include_issues=False) if active_profile else None,
             "latest_ingest": {
                 "status": latest_ingest.status,
-                "started_at": latest_ingest.started_at.isoformat() if latest_ingest.started_at else None,
+                "started_at": latest_ingest.started_at,
             } if latest_ingest else None,
             "today": date.today().isoformat(),
         }
