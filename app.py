@@ -36,6 +36,7 @@ from models import (
     User,
     UserTenderDecision,
 )
+from services.etenders_ingest import ingest_tenders
 
 load_dotenv()
 
@@ -859,6 +860,28 @@ def update_issue_status(issue_id: int):
         issue.status = status
         flash("Issue status updated.", "success")
         return redirect(url_for("profiles"))
+
+
+@app.get("/api/admin/run-ingest")
+@app.post("/api/admin/run-ingest")
+def api_run_ingest():
+    with get_db_session() as session_db:
+        page_size = int(request.args.get("page_size", os.getenv("ETENDERS_PAGE_SIZE", "100")))
+        max_pages = int(request.args.get("max_pages", os.getenv("INGEST_MAX_PAGES", "3")))
+        date_from = request.args.get("date_from")
+        date_to = request.args.get("date_to")
+
+        try:
+            result = ingest_tenders(
+                session=session_db,
+                page_size=page_size,
+                max_pages=max_pages,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            return jsonify(result)
+        except Exception as exc:
+            return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
 
 
 @app.get("/health")
