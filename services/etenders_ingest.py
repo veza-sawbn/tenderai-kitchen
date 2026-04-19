@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,16 +13,18 @@ from models import IngestRun, TenderCache
 
 DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "60"))
 DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "25"))
-DEFAULT_MAX_PAGES = int(os.getenv("INGEST_MAX_PAGES", "3"))
+DEFAULT_MAX_PAGES = int(os.getenv("INGEST_MAX_PAGES", "5"))
 DEFAULT_BASE_URL = os.getenv(
     "ETENDERS_OCDS_URL",
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
 )
-DEFAULT_DAYS_BACK = int(os.getenv("ETENDERS_DAYS_BACK", "3"))
+DEFAULT_DAYS_BACK = int(os.getenv("ETENDERS_DAYS_BACK", "120"))
 DEFAULT_USER_AGENT = os.getenv(
     "ETENDERS_USER_AGENT",
     "TenderAI/1.0 (+https://visitdrakensberg.com)"
 )
+DEFAULT_RETRIES = int(os.getenv("ETENDERS_RETRIES", "3"))
+DEFAULT_RETRY_SLEEP = float(os.getenv("ETENDERS_RETRY_SLEEP", "2"))
 
 
 def _today() -> date:
@@ -74,6 +77,19 @@ def _extract_release_list(payload: Any) -> List[Dict[str, Any]]:
 def _tender_obj(release: Dict[str, Any]) -> Dict[str, Any]:
     tender = release.get("tender")
     return tender if isinstance(tender, dict) else {}
+
+
+def _extract_status(release: Dict[str, Any]) -> Optional[str]:
+    tender = _tender_obj(release)
+    value = _safe_str(tender.get("status"))
+    if value:
+        return value.lower()
+    tag = release.get("tag")
+    if isinstance(tag, list) and tag:
+        first = _safe_str(tag[0])
+        return first.lower() if first else None
+    tag_val = _safe_str(tag)
+    return tag_val.lower() if tag_val else None
 
 
 def _build_uid(release: Dict[str, Any]) -> str:
@@ -200,6 +216,14 @@ def _extract_document_url(release: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _is_live_tender(release: Dict[str, Any], closing_date: Optional[date]) -> bool:
+    today = _today()
+    status = _extract_status(release)
+    if closing_date is not None:
+        return closing_date >= today
+    return status in {"active", "planning", "planned", "published", "tender", "open"}
+
+
 def fetch_release_page(
     page_number: int,
     page_size: int,
@@ -207,6 +231,7 @@ def fetch_release_page(
     date_to: str,
     timeout: int = DEFAULT_TIMEOUT,
     base_url: str = DEFAULT_BASE_URL,
+    retries: int = DEFAULT_RETRIES,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     headers = {"Accept": "application/json", "User-Agent": DEFAULT_USER_AGENT}
     params = {
@@ -215,18 +240,26 @@ def fetch_release_page(
         "PageNumber": page_number,
         "PageSize": page_size,
     }
-    response = requests.get(base_url, params=params, headers=headers, timeout=timeout)
-    response.raise_for_status()
-    payload = response.json()
-    return payload, _extract_release_list(payload)
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(base_url, params=params, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            return payload, _extract_release_list(payload)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(DEFAULT_RETRY_SLEEP * attempt)
+                continue
+            raise
+    raise last_exc
 
 
 def upsert_release(session, release: Dict[str, Any]) -> Tuple[str, str]:
     tender_uid = _build_uid(release)
-
-    existing = session.execute(
-        select(TenderCache).where(TenderCache.tender_uid == tender_uid)
-    ).scalar_one_or_none()
+    closing_date = _extract_closing_date(release)
+    existing = session.execute(select(TenderCache).where(TenderCache.tender_uid == tender_uid)).scalar_one_or_none()
 
     values = {
         "tender_uid": tender_uid,
@@ -237,10 +270,10 @@ def upsert_release(session, release: Dict[str, Any]) -> Tuple[str, str]:
         "tender_type": _extract_tender_type(release),
         "industry": _extract_industry(release),
         "issued_date": _extract_issued_date(release),
-        "closing_date": _extract_closing_date(release),
+        "closing_date": closing_date,
         "document_url": _extract_document_url(release),
         "source_url": _extract_source_url(release),
-        "is_live": True,
+        "is_live": _is_live_tender(release, closing_date),
     }
 
     if existing is None:
@@ -257,6 +290,22 @@ def _create_ingest_run(session) -> IngestRun:
     session.add(ingest_run)
     session.flush()
     return ingest_run
+
+
+def _mark_expired_tenders_not_live(session):
+    today = _today()
+    stale = session.execute(
+        select(TenderCache).where(
+            TenderCache.closing_date.is_not(None),
+            TenderCache.closing_date < today,
+            TenderCache.is_live.is_(True),
+        )
+    ).scalars().all()
+    count = 0
+    for tender in stale:
+        tender.is_live = False
+        count += 1
+    return count
 
 
 def run_ingest(
@@ -283,6 +332,7 @@ def run_ingest(
         "tenders_upserted": 0,
         "inserted": 0,
         "updated": 0,
+        "expired_marked_not_live": 0,
         "date_from": resolved_date_from,
         "date_to": resolved_date_to,
         "error": None,
@@ -293,8 +343,7 @@ def run_ingest(
     try:
         for page_number in range(1, max_pages + 1):
             stats["pages_attempted"] += 1
-
-            payload, releases = fetch_release_page(
+            _payload, releases = fetch_release_page(
                 page_number=page_number,
                 page_size=page_size,
                 date_from=resolved_date_from,
@@ -302,7 +351,6 @@ def run_ingest(
                 timeout=timeout,
                 base_url=base_url,
             )
-
             if not releases:
                 break
 
@@ -320,6 +368,7 @@ def run_ingest(
             if len(releases) < page_size:
                 break
 
+        stats["expired_marked_not_live"] = _mark_expired_tenders_not_live(session)
         ingest_run.status = "success"
         ingest_run.finished_at = datetime.now(timezone.utc)
         ingest_run.result_json = _safe_json(stats)
@@ -330,11 +379,13 @@ def run_ingest(
         stats["ok"] = False
         stats["status"] = "failed"
         stats["error"] = str(exc)
-
-        ingest_run.status = "failed"
-        ingest_run.finished_at = datetime.now(timezone.utc)
-        ingest_run.result_json = _safe_json(stats)
-        session.add(ingest_run)
+        try:
+            ingest_run.status = "failed"
+            ingest_run.finished_at = datetime.now(timezone.utc)
+            ingest_run.result_json = _safe_json(stats)
+            session.add(ingest_run)
+        except Exception:
+            pass
         raise
 
 
