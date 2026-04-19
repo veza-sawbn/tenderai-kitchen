@@ -1,23 +1,14 @@
 {% extends "base.html" %}
 
 {% block content %}
+<section class="section-topline">
+  <div>
+    <h1>All Tenders</h1>
+    <p class="muted">Browse all currently cached live tenders.</p>
+  </div>
+</section>
+
 <section class="glass-card">
-  <div class="section-header">
-    <div>
-      <h1>Browse Tenders</h1>
-      <p class="muted">Shortlisted essentials for procurement review.</p>
-    </div>
-  </div>
-
-  <div class="detail-actions" style="margin: 14px 0 18px;">
-    <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
-      Readiness: {{ readiness_band|replace("_", " ")|title }}
-    </span>
-    {% if profile_gap_summary %}
-      <span class="muted">Pending profile gaps: {{ profile_gap_summary.pending_count or 0 }}</span>
-    {% endif %}
-  </div>
-
   <form method="get" class="filter-grid">
     <div>
       <label>Province</label>
@@ -57,20 +48,20 @@
     <div>
       <label>Fit Band</label>
       <select name="fit_band">
-        <option value="">All</option>
-        <option value="high_potential" {% if filters.fit_band == 'high_potential' %}selected{% endif %}>High Potential{% if band_counts %} ({{ band_counts.high_potential }}){% endif %}</option>
-        <option value="possible_fit" {% if filters.fit_band == 'possible_fit' %}selected{% endif %}>Possible Fit{% if band_counts %} ({{ band_counts.possible_fit }}){% endif %}</option>
-        <option value="low_fit" {% if filters.fit_band == 'low_fit' %}selected{% endif %}>Low Fit{% if band_counts %} ({{ band_counts.low_fit }}){% endif %}</option>
+        <option value="">Any</option>
+        <option value="high_potential" {% if filters.fit_band == 'high_potential' %}selected{% endif %}>High Potential</option>
+        <option value="possible_fit" {% if filters.fit_band == 'possible_fit' %}selected{% endif %}>Possible Fit</option>
+        <option value="low_fit" {% if filters.fit_band == 'low_fit' %}selected{% endif %}>Low Fit</option>
       </select>
     </div>
 
     <div class="search-wide">
       <label>Search</label>
-      <input type="text" name="q" value="{{ filters.q or '' }}" placeholder="Department, title, scope, contact">
+      <input type="text" name="q" value="{{ filters.q or '' }}" placeholder="Department, title, description">
     </div>
 
     <div class="filter-actions">
-      <button type="submit" class="btn">Apply Filters</button>
+      <button type="submit" class="btn">Apply</button>
       <a href="{{ url_for('tenders') }}" class="btn btn-secondary">Reset</a>
     </div>
   </form>
@@ -80,27 +71,12 @@
   {% if ranked_tenders %}
     {% for item in ranked_tenders %}
       {% set tender = item.tender %}
-      <article class="glass-card tender-card compact-card">
+      <article class="glass-card tender-card clean-card">
         <div class="card-row">
           <div>
             <div class="card-meta">
               {% if item.fit_band %}
                 <span class="glow-chip band-{{ item.fit_band }}">{{ item.fit_band|replace("_", " ")|title }}</span>
-              {% endif %}
-              {% if item.readiness_band %}
-                <span class="pill">{{ item.readiness_band|replace("_", " ")|title }}</span>
-              {% endif %}
-              {% if item.proposal_required %}
-                <span class="pill">Proposal Required</span>
-              {% endif %}
-              {% if item.analysis_status %}
-                <span class="status-badge status-{{ item.analysis_status }}">{{ item.analysis_status|replace("_", " ")|title }}</span>
-              {% endif %}
-              {% if item.workspace and item.workspace.pursuit_status != 'not_decided' %}
-                <span class="status-badge status-workspace">{{ item.workspace.pursuit_status|replace("_", " ")|title }}</span>
-              {% endif %}
-              {% if item.go_no_go and item.go_no_go.decision %}
-                <span class="status-badge status-workspace">{{ item.go_no_go.decision|replace("_", " ")|title }}</span>
               {% endif %}
             </div>
             <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
@@ -110,62 +86,25 @@
           {% if item.score is not none %}
             <div class="score-panel glow-chip">
               <span>Relevance</span>
-              <strong>{{ "%.1f"|format(item.score) }}/100</strong>
+              <strong>{{ "%.1f"|format(item.score) }}</strong>
             </div>
           {% endif %}
         </div>
 
         <div class="detail-list">
-          <label>Scope Summary</label>
-          <p>{{ item.fit_summary or tender.description or "Scope summary not available." }}</p>
+          <label>Scope of work</label>
+          <p>{{ item.scope_summary }}</p>
         </div>
 
         <div class="detail-grid compact-grid">
-          <div>
-            <label>Closing Date</label>
-            <p>{{ tender.closing_date or "n/a" }}</p>
-          </div>
-          <div>
-            <label>Days Left</label>
-            <p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p>
-          </div>
-          <div>
-            <label>Briefing</label>
-            <p>
-              {% if item.briefing_date %}
-                {{ item.briefing_date }} · {% set d = item.briefing_date|days_left %}{% if d is not none %}{{ d }} day(s){% else %}n/a{% endif %}
-              {% else %}
-                n/a
-              {% endif %}
-            </p>
-          </div>
-          <div>
-            <label>Department</label>
-            <p>{{ tender.buyer_name or "n/a" }}</p>
-          </div>
-        </div>
-
-        <div class="detail-grid compact-grid">
-          <div>
-            <label>Contact Person</label>
-            <p>{{ item.contact_person or "n/a" }}</p>
-          </div>
-          <div>
-            <label>Contact Email</label>
-            <p>{{ item.contact_email or "n/a" }}</p>
-          </div>
-          <div>
-            <label>Contact Phone</label>
-            <p>{{ item.contact_phone or "n/a" }}</p>
-          </div>
-          <div>
-            <label>Pursuit Status</label>
-            <p>{{ item.workspace.pursuit_status|replace("_", " ")|title if item.workspace else "Not decided" }}</p>
-          </div>
+          <div><label>Closing</label><p>{{ tender.closing_date or "n/a" }}</p></div>
+          <div><label>Days left</label><p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p></div>
+          <div><label>Province</label><p>{{ tender.province or "n/a" }}</p></div>
+          <div><label>Type</label><p>{{ tender.tender_type or "n/a" }}</p></div>
         </div>
 
         <div class="detail-actions">
-          <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">View Tender</a>
+          <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">Open Tender</a>
           {% if tender.source_url %}
             <a class="btn btn-secondary" href="{{ tender.source_url }}" target="_blank" rel="noopener">Source</a>
           {% endif %}
@@ -175,7 +114,7 @@
   {% else %}
     <section class="glass-card empty-state">
       <h2>No tenders found</h2>
-      <p class="muted">Try clearing some filters or broadening your search.</p>
+      <p class="muted">Try clearing filters or broadening your search.</p>
     </section>
   {% endif %}
 </section>

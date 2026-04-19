@@ -1,49 +1,59 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="glass-card">
-  <div class="section-header">
-    <div>
-      <h1>Current Tender Opportunities</h1>
-      <p class="muted">Live tender view with profile-based prequalification.</p>
+<section class="hero-panel">
+  <div class="hero-copy">
+    <h1>Potential Opportunities</h1>
+    <p class="muted">Best-fit tenders for your active profile.</p>
+
+    <div class="hero-meta">
+      <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
+        {{ readiness_band|replace("_", " ")|title }}
+      </span>
+      <span class="muted">{{ readiness_note }}</span>
     </div>
-    <div class="score-panel glow-chip large">
-      <span>Live Tenders</span>
-      <strong>{{ total_live or 0 }}</strong>
+
+    <div class="hero-actions">
+      <a class="btn" href="{{ url_for('tenders') }}">Browse All Tenders</a>
+      <a class="btn btn-secondary" href="{{ url_for('profiles') }}">Manage Profile</a>
     </div>
   </div>
 
-  <div class="detail-actions" style="margin-top: 16px;">
-    <span class="glow-chip band-{{ readiness_band|default('no_profile') }}">
-      Readiness: {{ readiness_band|replace("_", " ")|title }}
-    </span>
-    <span class="muted">{{ readiness_note }}</span>
+  <div class="hero-orb-wrap">
+    <div class="orb-ring"></div>
+    <div class="orb-core"></div>
   </div>
+</section>
 
-  {% if profile_gap_summary and profile_gap_summary.pending_count %}
-    <div class="detail-list" style="margin-top: 16px;">
-      <label>Profile readiness gaps</label>
-      <p>
-        You currently have <strong>{{ profile_gap_summary.pending_count }}</strong> unresolved profile gap(s)
-        affecting match confidence.
-      </p>
-    </div>
-  {% endif %}
+{% if profile_gap_summary and profile_gap_summary.pending_count %}
+<section class="glass-card slim-card">
+  <p class="muted">
+    Your active profile still has <strong>{{ profile_gap_summary.pending_count }}</strong> unresolved readiness gap(s).
+  </p>
+</section>
+{% endif %}
+
+<section class="section-topline">
+  <div>
+    <h2>Top matched opportunities</h2>
+    <p class="muted">Live opportunities ranked against your active profile.</p>
+  </div>
+  <div class="score-panel glow-chip">
+    <span>Live Tenders</span>
+    <strong>{{ total_live or 0 }}</strong>
+  </div>
 </section>
 
 <section class="stack-list">
   {% if featured %}
     {% for item in featured %}
       {% set tender = item.tender %}
-      <article class="glass-card tender-card compact-card">
+      <article class="glass-card tender-card clean-card">
         <div class="card-row">
           <div>
             <div class="card-meta">
               {% if item.fit_band %}
                 <span class="glow-chip band-{{ item.fit_band }}">{{ item.fit_band|replace("_", " ")|title }}</span>
-              {% endif %}
-              {% if item.readiness_band %}
-                <span class="pill">{{ item.readiness_band|replace("_", " ")|title }}</span>
               {% endif %}
             </div>
             <h2><a href="{{ url_for('tender_detail', tender_id=tender.id) }}">{{ tender.title }}</a></h2>
@@ -53,53 +63,32 @@
           {% if item.score is not none %}
             <div class="score-panel glow-chip">
               <span>Relevance</span>
-              <strong>{{ "%.1f"|format(item.score) }}/100</strong>
+              <strong>{{ "%.1f"|format(item.score) }}</strong>
             </div>
           {% endif %}
         </div>
 
-        {% if item.fit_summary %}
-          <div class="detail-list">
-            <label>Scope Summary</label>
-            <p>{{ item.fit_summary }}</p>
-          </div>
-        {% endif %}
+        <div class="detail-list">
+          <label>Scope of work</label>
+          <p>{{ item.scope_summary }}</p>
+        </div>
 
         <div class="detail-grid compact-grid">
-          <div>
-            <label>Closing Date</label>
-            <p>{{ tender.closing_date or "n/a" }}</p>
-          </div>
-          <div>
-            <label>Days Left</label>
-            <p>
-              {% if tender.closing_date %}
-                {{ tender.closing_date|days_left }}
-              {% else %}
-                n/a
-              {% endif %}
-            </p>
-          </div>
-          <div>
-            <label>Department</label>
-            <p>{{ tender.buyer_name or "n/a" }}</p>
-          </div>
-          <div>
-            <label>Province</label>
-            <p>{{ tender.province or "n/a" }}</p>
-          </div>
+          <div><label>Closing</label><p>{{ tender.closing_date or "n/a" }}</p></div>
+          <div><label>Days left</label><p>{% if tender.closing_date %}{{ tender.closing_date|days_left }}{% else %}n/a{% endif %}</p></div>
+          <div><label>Province</label><p>{{ tender.province or "n/a" }}</p></div>
+          <div><label>Type</label><p>{{ tender.tender_type or "n/a" }}</p></div>
         </div>
 
         <div class="detail-actions">
-          <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">View Tender</a>
-          <a class="btn btn-secondary" href="{{ url_for('tenders') }}">Browse All</a>
+          <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">Open Tender</a>
         </div>
       </article>
     {% endfor %}
   {% else %}
     <section class="glass-card empty-state">
-      <h2>No tenders available</h2>
-      <p class="muted">No live tenders are currently available in the cache.</p>
+      <h2>No matched opportunities yet</h2>
+      <p class="muted">Upload and activate a profile, then TenderAI will rank relevant tenders here.</p>
     </section>
   {% endif %}
 </section>

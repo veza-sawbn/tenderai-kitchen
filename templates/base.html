@@ -13,36 +13,39 @@
   <header class="site-header">
     <div class="shell shell-wide header-row">
       <div>
-        <a href="{{ url_for('home') }}" class="brand">TenderAI</a>
-        <p class="header-sub">Procurement intelligence powered by live tender data and profile matching.</p>
+        <a href="{{ url_for('home') if current_user else url_for('login') }}" class="brand">TenderAI</a>
+        <p class="header-sub">Discover relevant tenders and decide faster.</p>
       </div>
 
       <nav class="header-nav">
-        <a href="{{ url_for('home') }}">Home</a>
-        <a href="{{ url_for('tenders') }}">Browse Tenders</a>
-        <a href="{{ url_for('profiles') }}">Profiles</a>
+        {% if current_user %}
+          <a href="{{ url_for('home') }}">Home</a>
+          <a href="{{ url_for('tenders') }}">Browse Tenders</a>
+          <a href="{{ url_for('profiles') }}">Profiles</a>
+          <form method="post" action="{{ url_for('logout') }}" class="inline-form">
+            <button type="submit" class="btn btn-secondary small-btn">Sign out</button>
+          </form>
+        {% else %}
+          <a href="{{ url_for('login') }}">Sign in</a>
+          <a href="{{ url_for('signup') }}">Create account</a>
+        {% endif %}
       </nav>
     </div>
 
-    <div class="shell shell-wide header-meta">
-      <div>
-        {% if active_profile %}
-          <strong>Active profile:</strong>
-          {{ active_profile.company_name or active_profile.name or "Unnamed profile" }}
-        {% else %}
-          <strong>Active profile:</strong> None
-        {% endif %}
+    {% if current_user %}
+      <div class="shell shell-wide header-meta">
+        <div>
+          <strong>Signed in as:</strong> {{ current_user.full_name or current_user.email }}
+        </div>
+        <div>
+          {% if active_profile %}
+            <strong>Active profile:</strong> {{ active_profile.company_name or active_profile.name }}
+          {% else %}
+            <strong>Active profile:</strong> None
+          {% endif %}
+        </div>
       </div>
-
-      <div>
-        {% if latest_ingest %}
-          <strong>Latest ingest:</strong>
-          {{ latest_ingest.status }}{% if latest_ingest.started_at %} · {{ latest_ingest.started_at }}{% endif %}
-        {% else %}
-          <strong>Latest ingest:</strong> n/a
-        {% endif %}
-      </div>
-    </div>
+    {% endif %}
   </header>
 
   <main class="shell shell-wide">
@@ -68,7 +71,7 @@
           if (button) {
             button.disabled = true;
             button.classList.add("is-loading");
-            button.textContent = "Analyzing tender...";
+            button.textContent = "Analyzing...";
           }
         });
       });

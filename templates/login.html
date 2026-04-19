@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="auth-wrap">
+  <section class="glass-card auth-card">
+    <h1>Sign in</h1>
+    <p class="muted">Access your TenderAI workspace.</p>
+
+    <form method="post" action="{{ url_for('login_post') }}" class="workspace-form">
+      <div>
+        <label>Email</label>
+        <input type="email" name="email" required>
+      </div>
+
+      <div>
+        <label>Password</label>
+        <input type="password" name="password" required>
+      </div>
+
+      <div class="detail-actions">
+        <button type="submit" class="btn">Sign in</button>
+        <a href="{{ url_for('signup') }}" class="btn btn-secondary">Create account</a>
+      </div>
+    </form>
+  </section>
+</section>
+{% endblock %}
