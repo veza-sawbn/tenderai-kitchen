@@ -10,14 +10,14 @@ from sqlalchemy import select
 
 from models import IngestRun, TenderCache
 
-DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "30"))
-DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "100"))
+DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "60"))
+DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "25"))
 DEFAULT_MAX_PAGES = int(os.getenv("INGEST_MAX_PAGES", "3"))
 DEFAULT_BASE_URL = os.getenv(
     "ETENDERS_OCDS_URL",
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
 )
-DEFAULT_DAYS_BACK = int(os.getenv("ETENDERS_DAYS_BACK", "14"))
+DEFAULT_DAYS_BACK = int(os.getenv("ETENDERS_DAYS_BACK", "3"))
 DEFAULT_USER_AGENT = os.getenv(
     "ETENDERS_USER_AGENT",
     "TenderAI/1.0 (+https://visitdrakensberg.com)"
