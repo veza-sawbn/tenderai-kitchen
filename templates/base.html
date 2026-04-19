@@ -35,7 +35,7 @@
     {% if current_user %}
       <div class="shell shell-wide header-meta">
         <div>
-          <strong>Signed in as:</strong> {{ current_user.full_name or current_user.email }}
+          <strong>Signed in as:</strong> {{ current_user.full_name or current_user.email if current_user else "" }}
         </div>
         <div>
           {% if active_profile %}
