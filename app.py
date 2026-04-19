@@ -366,8 +366,8 @@ def inject_globals():
     with get_db_session() as session_db:
         user = get_current_user(session_db)
         active_profile = get_active_profile(session_db, user.id) if user else None
-
         latest_ingest = None
+
         try:
             latest_ingest = session_db.execute(
                 select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)
@@ -375,13 +375,27 @@ def inject_globals():
         except Exception:
             latest_ingest = None
 
-        return {
-            "current_user": user,
-            "active_profile": serialize_profile(active_profile) if active_profile else None,
-            "latest_ingest": {
+        current_user_data = None
+        if user:
+            current_user_data = {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+            }
+
+        active_profile_data = serialize_profile(active_profile) if active_profile else None
+
+        latest_ingest_data = None
+        if latest_ingest:
+            latest_ingest_data = {
                 "status": latest_ingest.status,
-                "started_at": latest_ingest.started_at.isoformat() if latest_ingest and latest_ingest.started_at else None,
-            } if latest_ingest else None,
+                "started_at": latest_ingest.started_at.isoformat() if latest_ingest.started_at else None,
+            }
+
+        return {
+            "current_user": current_user_data,
+            "active_profile": active_profile_data,
+            "latest_ingest": latest_ingest_data,
         }
 
 
