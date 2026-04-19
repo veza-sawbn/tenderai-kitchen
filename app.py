@@ -366,9 +366,14 @@ def inject_globals():
     with get_db_session() as session_db:
         user = get_current_user(session_db)
         active_profile = get_active_profile(session_db, user.id) if user else None
-        latest_ingest = session_db.execute(
-            select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)
-        ).scalars().first()
+
+        latest_ingest = None
+        try:
+            latest_ingest = session_db.execute(
+                select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)
+            ).scalars().first()
+        except Exception:
+            latest_ingest = None
 
         return {
             "current_user": user,
