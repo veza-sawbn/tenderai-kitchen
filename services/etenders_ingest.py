@@ -13,12 +13,12 @@ from models import IngestRun, TenderCache
 
 DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "60"))
 DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "25"))
-DEFAULT_MAX_PAGES = int(os.getenv("INGEST_MAX_PAGES", "5"))
+DEFAULT_MAX_PAGES = int(os.getenv("INGEST_MAX_PAGES", "8"))
 DEFAULT_BASE_URL = os.getenv(
     "ETENDERS_OCDS_URL",
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
 )
-DEFAULT_DAYS_BACK = int(os.getenv("ETENDERS_DAYS_BACK", "120"))
+DEFAULT_DAYS_BACK = int(os.getenv("ETENDERS_DAYS_BACK", "365"))
 DEFAULT_USER_AGENT = os.getenv(
     "ETENDERS_USER_AGENT",
     "TenderAI/1.0 (+https://visitdrakensberg.com)"
@@ -240,6 +240,7 @@ def fetch_release_page(
         "PageNumber": page_number,
         "PageSize": page_size,
     }
+
     last_exc = None
     for attempt in range(1, retries + 1):
         try:
@@ -259,7 +260,9 @@ def fetch_release_page(
 def upsert_release(session, release: Dict[str, Any]) -> Tuple[str, str]:
     tender_uid = _build_uid(release)
     closing_date = _extract_closing_date(release)
-    existing = session.execute(select(TenderCache).where(TenderCache.tender_uid == tender_uid)).scalar_one_or_none()
+    existing = session.execute(
+        select(TenderCache).where(TenderCache.tender_uid == tender_uid)
+    ).scalar_one_or_none()
 
     values = {
         "tender_uid": tender_uid,
@@ -326,6 +329,7 @@ def run_ingest(
         "status": "success",
         "base_url": base_url,
         "page_size": page_size,
+        "max_pages": max_pages,
         "pages_attempted": 0,
         "pages_succeeded": 0,
         "tenders_seen": 0,
@@ -369,6 +373,7 @@ def run_ingest(
                 break
 
         stats["expired_marked_not_live"] = _mark_expired_tenders_not_live(session)
+
         ingest_run.status = "success"
         ingest_run.finished_at = datetime.now(timezone.utc)
         ingest_run.result_json = _safe_json(stats)
