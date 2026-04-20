@@ -167,3 +167,11 @@ class IngestRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
