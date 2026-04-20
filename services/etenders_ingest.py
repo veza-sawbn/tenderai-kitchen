@@ -13,7 +13,7 @@ from models import IngestRun, SystemSetting, TenderCache
 
 # Hardened defaults baked into code
 DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "90"))
-DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "10"))
+DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "5"))
 DEFAULT_BASE_URL = os.getenv(
     "ETENDERS_OCDS_URL",
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
