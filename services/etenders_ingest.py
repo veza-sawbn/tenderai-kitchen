@@ -11,16 +11,16 @@ from sqlalchemy import select
 
 from models import IngestRun, SystemSetting, TenderCache
 
-DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "60"))
-DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "25"))
+DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "90"))
+DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "10"))
 DEFAULT_BASE_URL = os.getenv(
     "ETENDERS_OCDS_URL",
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
 )
 MAINTENANCE_DAYS_BACK = int(os.getenv("ETENDERS_MAINTENANCE_DAYS_BACK", "14"))
-MAINTENANCE_MAX_PAGES = int(os.getenv("ETENDERS_MAINTENANCE_MAX_PAGES", "3"))
+MAINTENANCE_MAX_PAGES = int(os.getenv("ETENDERS_MAINTENANCE_MAX_PAGES", "1"))
 BACKFILL_DAYS_BACK = int(os.getenv("ETENDERS_BACKFILL_DAYS_BACK", "365"))
-BACKFILL_PAGES_PER_RUN = int(os.getenv("ETENDERS_BACKFILL_PAGES_PER_RUN", "10"))
+BACKFILL_PAGES_PER_RUN = int(os.getenv("ETENDERS_BACKFILL_PAGES_PER_RUN", "2"))
 BACKFILL_START_PAGE_DEFAULT = int(os.getenv("ETENDERS_BACKFILL_START_PAGE_DEFAULT", "1"))
 DEFAULT_USER_AGENT = os.getenv(
     "ETENDERS_USER_AGENT",
