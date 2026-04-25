@@ -13,7 +13,7 @@ from models import IngestRun, SystemSetting, TenderCache
 
 # Hardened defaults baked into code
 DEFAULT_TIMEOUT = int(os.getenv("ETENDERS_HTTP_TIMEOUT", "90"))
-DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "5"))
+DEFAULT_PAGE_SIZE = int(os.getenv("ETENDERS_PAGE_SIZE", "10"))
 DEFAULT_BASE_URL = os.getenv(
     "ETENDERS_OCDS_URL",
     "https://ocds-api.etenders.gov.za/api/OCDSReleases",
@@ -22,7 +22,11 @@ DEFAULT_BASE_URL = os.getenv(
 MAINTENANCE_DAYS_BACK = int(os.getenv("ETENDERS_MAINTENANCE_DAYS_BACK", "14"))
 MAINTENANCE_MAX_PAGES = int(os.getenv("ETENDERS_MAINTENANCE_MAX_PAGES", "1"))
 
-BACKFILL_DAYS_BACK = int(os.getenv("ETENDERS_BACKFILL_DAYS_BACK", "365"))
+# Backfill is bucketed instead of relying on one broad range
+DEFAULT_BACKFILL_BUCKETS = os.getenv(
+    "ETENDERS_BACKFILL_BUCKETS",
+    "0-14,15-45,46-90,91-180,181-365",
+)
 BACKFILL_PAGES_PER_RUN = int(os.getenv("ETENDERS_BACKFILL_PAGES_PER_RUN", "2"))
 BACKFILL_START_PAGE_DEFAULT = int(os.getenv("ETENDERS_BACKFILL_START_PAGE_DEFAULT", "1"))
 
@@ -33,7 +37,8 @@ DEFAULT_USER_AGENT = os.getenv(
 DEFAULT_RETRIES = int(os.getenv("ETENDERS_RETRIES", "4"))
 DEFAULT_RETRY_SLEEP = float(os.getenv("ETENDERS_RETRY_SLEEP", "3"))
 
-BACKFILL_CURSOR_KEY = "etenders_backfill_next_page"
+BACKFILL_CURSOR_PAGE_KEY = "etenders_backfill_next_page"
+BACKFILL_CURSOR_BUCKET_KEY = "etenders_backfill_bucket_index"
 
 
 def _today() -> date:
@@ -69,6 +74,32 @@ def _parse_date(value: Any) -> Optional[date]:
         except Exception:
             continue
     return None
+
+
+def _parse_bucket_spec(spec: str) -> List[Tuple[int, int]]:
+    buckets: List[Tuple[int, int]] = []
+    for part in (spec or "").split(","):
+        item = part.strip()
+        if not item or "-" not in item:
+            continue
+        left, right = item.split("-", 1)
+        try:
+            start = int(left.strip())
+            end = int(right.strip())
+        except Exception:
+            continue
+        if start < 0 or end < start:
+            continue
+        buckets.append((start, end))
+    if not buckets:
+        buckets = [(0, 14), (15, 45), (46, 90), (91, 180), (181, 365)]
+    return buckets
+
+
+def _bucket_window(today: date, start_days_ago: int, end_days_ago: int) -> Tuple[str, str]:
+    date_from = (today - timedelta(days=end_days_ago)).isoformat()
+    date_to = (today - timedelta(days=start_days_ago)).isoformat()
+    return date_from, date_to
 
 
 def _extract_release_list(payload: Any) -> List[Dict[str, Any]]:
@@ -366,6 +397,8 @@ def _run_window(
     seen_uids: set[str],
 ) -> Dict[str, Any]:
     stats = {
+        "date_from": date_from,
+        "date_to": date_to,
         "start_page": start_page,
         "pages_requested": pages_to_run,
         "pages_attempted": 0,
@@ -418,16 +451,27 @@ def _run_window(
     return stats
 
 
-def run_ingest(session, page_size: int = DEFAULT_PAGE_SIZE, timeout: int = DEFAULT_TIMEOUT, base_url: str = DEFAULT_BASE_URL) -> Dict[str, Any]:
+def run_ingest(
+    session,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    timeout: int = DEFAULT_TIMEOUT,
+    base_url: str = DEFAULT_BASE_URL,
+) -> Dict[str, Any]:
     today = _today()
+    buckets = _parse_bucket_spec(DEFAULT_BACKFILL_BUCKETS)
 
     maintenance_date_from = (today - timedelta(days=MAINTENANCE_DAYS_BACK)).isoformat()
     maintenance_date_to = today.isoformat()
 
-    backfill_date_from = (today - timedelta(days=BACKFILL_DAYS_BACK)).isoformat()
-    backfill_date_to = today.isoformat()
+    bucket_index = int(_get_setting(session, BACKFILL_CURSOR_BUCKET_KEY, "0"))
+    if bucket_index < 0 or bucket_index >= len(buckets):
+        bucket_index = 0
 
-    next_backfill_page = int(_get_setting(session, BACKFILL_CURSOR_KEY, str(BACKFILL_START_PAGE_DEFAULT)))
+    next_backfill_page = int(_get_setting(session, BACKFILL_CURSOR_PAGE_KEY, str(BACKFILL_START_PAGE_DEFAULT)))
+
+    bucket_start_days, bucket_end_days = buckets[bucket_index]
+    backfill_date_from, backfill_date_to = _bucket_window(today, bucket_start_days, bucket_end_days)
+
     seen_uids: set[str] = set()
 
     stats: Dict[str, Any] = {
@@ -436,9 +480,11 @@ def run_ingest(session, page_size: int = DEFAULT_PAGE_SIZE, timeout: int = DEFAU
         "page_size": page_size,
         "maintenance": {},
         "backfill": {},
-        "expired_marked_not_live": 0,
+        "backfill_bucket_index_before": bucket_index,
+        "backfill_bucket_index_after": bucket_index,
         "backfill_cursor_before": next_backfill_page,
         "backfill_cursor_after": next_backfill_page,
+        "expired_marked_not_live": 0,
         "error": None,
     }
 
@@ -471,8 +517,17 @@ def run_ingest(session, page_size: int = DEFAULT_PAGE_SIZE, timeout: int = DEFAU
         )
         stats["backfill"] = backfill_stats
 
-        _set_setting(session, BACKFILL_CURSOR_KEY, str(backfill_stats["next_page"]))
-        stats["backfill_cursor_after"] = backfill_stats["next_page"]
+        next_bucket_index = bucket_index
+        if backfill_stats["hit_end"]:
+            next_bucket_index = (bucket_index + 1) % len(buckets)
+            _set_setting(session, BACKFILL_CURSOR_PAGE_KEY, str(BACKFILL_START_PAGE_DEFAULT))
+        else:
+            _set_setting(session, BACKFILL_CURSOR_PAGE_KEY, str(backfill_stats["next_page"]))
+
+        _set_setting(session, BACKFILL_CURSOR_BUCKET_KEY, str(next_bucket_index))
+
+        stats["backfill_cursor_after"] = int(_get_setting(session, BACKFILL_CURSOR_PAGE_KEY, str(BACKFILL_START_PAGE_DEFAULT)))
+        stats["backfill_bucket_index_after"] = next_bucket_index
 
         stats["expired_marked_not_live"] = _mark_expired_tenders_not_live(session)
 
