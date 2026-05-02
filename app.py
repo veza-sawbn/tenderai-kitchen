@@ -5,7 +5,6 @@ import tempfile
 from datetime import date, datetime, timezone
 from functools import wraps
 
-import requests
 from flask import (
     Flask,
     flash,
@@ -37,7 +36,7 @@ from models import (
     User,
     UserTenderDecision,
 )
-from services.document_fetch import fetch_documents_for_live_tenders
+from services.document_fetcher import fetch_documents_for_tenders
 from services.etenders_ingest import ingest_tenders
 
 load_dotenv()
@@ -884,15 +883,43 @@ def api_run_ingest():
 @app.post("/api/admin/fetch-documents")
 def api_fetch_documents():
     with get_db_session() as session_db:
-        limit = int(request.args.get("limit", 10))
+        limit = max(1, min(int(request.args.get("limit", 10)), 100))
         force_retry_failed = str(request.args.get("force_retry_failed", "false")).lower() in {"1", "true", "yes"}
+
         try:
-            result = fetch_documents_for_live_tenders(
-                session_db,
-                limit=limit,
-                force_retry_failed=force_retry_failed,
-            )
-            return jsonify(result)
+            tenders = session_db.execute(
+                select(TenderCache)
+                .where(
+                    TenderCache.is_live.is_(True),
+                    TenderCache.document_url.is_not(None),
+                )
+                .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
+                .limit(limit)
+            ).scalars().all()
+
+            if force_retry_failed:
+                for tender in tenders:
+                    latest_doc = session_db.execute(
+                        select(TenderDocumentCache)
+                        .where(TenderDocumentCache.tender_id == tender.id)
+                        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
+                        .limit(1)
+                    ).scalars().first()
+                    if latest_doc and latest_doc.fetch_status == "failed":
+                        latest_doc.fetch_status = "pending"
+
+            result_items = fetch_documents_for_tenders(session_db, tenders)
+
+            summary = {
+                "ok": True,
+                "limit": limit,
+                "candidates": len(tenders),
+                "processed": len(result_items),
+                "fetched": sum(1 for item in result_items if item.get("ok")),
+                "fetch_failed": sum(1 for item in result_items if not item.get("ok")),
+                "items": result_items,
+            }
+            return jsonify(summary)
         except Exception as exc:
             session_db.rollback()
             return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
