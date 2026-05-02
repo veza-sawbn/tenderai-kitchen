@@ -36,6 +36,13 @@ from models import (
     User,
     UserTenderDecision,
 )
+from services.analysis_engine import (
+    analyze_tender_for_profile,
+    extract_scope_summary,
+    fit_band_from_score,
+    keyword_overlap_score,
+    latest_analysis_for,
+)
 from services.document_fetcher import fetch_documents_for_tenders
 from services.etenders_ingest import ingest_tenders
 
@@ -222,64 +229,6 @@ def serialize_profile(profile: Profile):
     }
 
 
-def keyword_overlap_score(profile: Profile | None, tender: TenderCache):
-    if not profile:
-        return None
-
-    capabilities = [c.strip() for c in (profile.capabilities_text or "").split(",") if c.strip()]
-    locations = [c.strip() for c in (profile.locations_text or "").split(",") if c.strip()]
-    score = 22.0
-
-    blob = " ".join([
-        tender.title or "",
-        tender.description or "",
-        tender.industry or "",
-        tender.tender_type or "",
-        tender.province or "",
-        tender.buyer_name or "",
-    ]).lower()
-
-    if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
-        score += 26.0
-    elif profile.industry and profile.industry.lower() in blob:
-        score += 12.0
-
-    matches = 0
-    for capability in capabilities:
-        if capability.lower() in blob:
-            matches += 1
-    score += min(matches * 7.0, 35.0)
-
-    if tender.province and any(loc.lower() == tender.province.lower() for loc in locations):
-        score += 8.0
-
-    try:
-        if tender.closing_date:
-            days = (tender.closing_date - date.today()).days
-            if days >= 0:
-                score += 2.0 if days <= 7 else 6.0
-    except Exception:
-        pass
-
-    return max(0.0, min(score, 100.0))
-
-
-def fit_band_from_score(score):
-    if score is None:
-        return None
-    if score >= 80:
-        return "high_potential"
-    if score >= 55:
-        return "possible_fit"
-    return "low_fit"
-
-
-def extract_scope_summary(tender: TenderCache):
-    text = tender.description or tender.title or "Scope of work summary not available."
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:260]
-
-
 def current_document_status(session_db, tender_id: int):
     doc = session_db.execute(
         select(TenderDocumentCache)
@@ -295,31 +244,7 @@ def current_document_status(session_db, tender_id: int):
         "content_type": doc.content_type,
         "fetched_at": doc.fetched_at.isoformat() if doc.fetched_at else None,
         "error_message": doc.error_message,
-    }
-
-
-def latest_analysis_for(session_db, user_id: int, tender_id: int):
-    job = session_db.execute(
-        select(AnalysisJob)
-        .where(AnalysisJob.user_id == user_id, AnalysisJob.tender_id == tender_id)
-        .order_by(desc(AnalysisJob.updated_at))
-        .limit(1)
-    ).scalars().first()
-    if not job:
-        return None
-    raw = safe_loads(job.raw_result_json, {})
-    return {
-        "id": job.id,
-        "status": job.status,
-        "score": job.score,
-        "summary": job.summary,
-        "document_match": raw.get("document_match"),
-        "document_match_reason": raw.get("document_match_reason"),
-        "briefing_date": raw.get("briefing_date"),
-        "contact_email": raw.get("contact_email"),
-        "contact_phone": raw.get("contact_phone"),
-        "proposal_required": raw.get("proposal_required"),
-        "scope_summary": raw.get("scope_summary"),
+        "has_text": bool((doc.extracted_text or "").strip()),
     }
 
 
@@ -342,25 +267,6 @@ def find_running_analysis(session_db, user_id: int, tender_id: int):
         .order_by(desc(AnalysisJob.updated_at))
         .limit(1)
     ).scalars().first()
-
-
-def build_minimal_analysis(tender: TenderCache, profile: Profile, extracted_text: str):
-    email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", extracted_text or "")
-    phone_match = re.search(r"(\+?\d[\d\s\-()]{7,}\d)", extracted_text or "")
-    briefing_match = re.search(r"(?:brief(?:ing)?(?: session)?)[^0-9]{0,20}(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})", extracted_text or "", re.I)
-
-    score = keyword_overlap_score(profile, tender) or 0
-    return {
-        "document_match": True if extracted_text.strip() else False,
-        "document_match_reason": "Readable tender document text was found." if extracted_text.strip() else "No readable document text was found.",
-        "score": score,
-        "summary": "Tender analyzed successfully." if extracted_text.strip() else "Tender document could not be read well enough.",
-        "scope_summary": extract_scope_summary(tender),
-        "briefing_date": briefing_match.group(1).replace("/", "-") if briefing_match else None,
-        "contact_email": email_match.group(1) if email_match else None,
-        "contact_phone": phone_match.group(1) if phone_match else None,
-        "proposal_required": bool(re.search(r"\bproposal\b", extracted_text or "", re.I)),
-    }
 
 
 @app.context_processor
@@ -665,11 +571,16 @@ def tender_detail(tender_id: int):
         document_status = current_document_status(session_db, tender_id)
         running_job = find_running_analysis(session_db, user.id, tender_id) if user else None
 
+        scope_summary = (
+            (latest_analysis or {}).get("scope_summary")
+            or extract_scope_summary(tender, "")
+        )
+
         return render_template(
             "tender_detail.html",
             tender=tender,
             alignment_score=score,
-            scope_summary=(latest_analysis or {}).get("scope_summary") or extract_scope_summary(tender),
+            scope_summary=scope_summary,
             fit_band=fit_band_from_score(score) if score is not None else None,
             can_analyze=bool(active_profile),
             analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id),
@@ -712,19 +623,14 @@ def analyze_tender_page(tender_id: int):
         session_db.add(job)
         session_db.flush()
 
-        doc = session_db.execute(
-            select(TenderDocumentCache)
-            .where(TenderDocumentCache.tender_id == tender_id)
-            .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
-            .limit(1)
-        ).scalars().first()
-
-        extracted_text = (doc.extracted_text or "").strip() if doc else ""
-        analysis = build_minimal_analysis(tender, active_profile, extracted_text)
+        analysis = analyze_tender_for_profile(session_db, tender, active_profile)
 
         job.status = "completed"
         job.score = float(analysis.get("score") or 0)
         job.summary = analysis.get("summary")
+        job.strengths_text = "\n".join(analysis.get("strengths") or [])
+        job.risks_text = "\n".join(analysis.get("risks") or [])
+        job.recommendations_text = "\n".join(analysis.get("recommendations") or [])
         job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
         job.error_message = None
 
