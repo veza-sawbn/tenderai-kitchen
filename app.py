@@ -26,11 +26,6 @@ except ImportError:
     def load_dotenv(*args, **kwargs):
         return False
 
-try:
-    from docx import Document as DocxDocument
-except ImportError:
-    DocxDocument = None
-
 from database import get_db_session, init_db
 from models import (
     AnalysisJob,
@@ -42,6 +37,7 @@ from models import (
     User,
     UserTenderDecision,
 )
+from services.document_fetch import fetch_documents_for_live_tenders
 from services.etenders_ingest import ingest_tenders
 
 load_dotenv()
@@ -94,30 +90,6 @@ def extract_pdf_text(file_or_path) -> str:
                 os.unlink(temp_path)
             except Exception:
                 pass
-
-
-def extract_docx_text(path: str) -> str:
-    if DocxDocument is None:
-        return ""
-    try:
-        doc = DocxDocument(path)
-        parts = []
-        for p in doc.paragraphs:
-            text = (p.text or "").strip()
-            if text:
-                parts.append(text)
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = []
-                for cell in row.cells:
-                    cell_text = (cell.text or "").strip()
-                    if cell_text:
-                        row_text.append(cell_text)
-                if row_text:
-                    parts.append(" | ".join(row_text))
-        return "\n".join(parts).strip()
-    except Exception:
-        return ""
 
 
 def normalize_keywords(text: str):
@@ -392,68 +364,6 @@ def build_minimal_analysis(tender: TenderCache, profile: Profile, extracted_text
     }
 
 
-def fetch_tender_document(session_db, tender: TenderCache) -> dict:
-    document_url = tender.document_url or tender.source_url
-    if not document_url:
-        return {"ok": False, "error": "No tender document URL available."}
-
-    doc = session_db.execute(
-        select(TenderDocumentCache)
-        .where(TenderDocumentCache.tender_id == tender.id, TenderDocumentCache.document_url == document_url)
-        .limit(1)
-    ).scalars().first()
-
-    if not doc:
-        doc = TenderDocumentCache(tender_id=tender.id, document_url=document_url)
-        session_db.add(doc)
-        session_db.flush()
-
-    try:
-        response = requests.get(document_url, timeout=60, allow_redirects=True)
-        response.raise_for_status()
-
-        content_type = (response.headers.get("Content-Type") or "").lower()
-        filename = document_url.split("/")[-1][:255] if "/" in document_url else None
-        lower_name = (filename or "").lower()
-        lower_url = (document_url or "").lower()
-
-        is_pdf = "pdf" in content_type or lower_name.endswith(".pdf") or lower_url.endswith(".pdf")
-        is_docx = "wordprocessingml" in content_type or lower_name.endswith(".docx") or lower_url.endswith(".docx")
-
-        suffix = ".pdf" if is_pdf else ".docx" if is_docx else ""
-        extracted_text = ""
-
-        if suffix:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(response.content)
-                temp_path = tmp.name
-            try:
-                if suffix == ".pdf":
-                    extracted_text = extract_pdf_text(temp_path)
-                elif suffix == ".docx":
-                    extracted_text = extract_docx_text(temp_path)
-            finally:
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-
-        doc.filename = filename
-        doc.content_type = content_type[:100] if content_type else None
-        doc.binary_content = response.content
-        doc.extracted_text = extracted_text or ""
-        doc.fetch_status = "fetched" if extracted_text or suffix else "fetched_unparsed"
-        doc.error_message = None if extracted_text or suffix else "Unsupported document type for parsing."
-        doc.fetched_at = utcnow()
-
-        return {"ok": True, "parsed": bool(extracted_text), "fetch_status": doc.fetch_status}
-    except Exception as exc:
-        doc.fetch_status = "fetch_failed"
-        doc.error_message = str(exc)
-        doc.fetched_at = utcnow()
-        return {"ok": False, "error": str(exc)}
-
-
 @app.context_processor
 def inject_globals():
     with get_db_session() as session_db:
@@ -470,9 +380,14 @@ def inject_globals():
 
         current_user_data = None
         if user:
-            current_user_data = {"id": user.id, "email": user.email, "full_name": user.full_name}
+            current_user_data = {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+            }
 
         active_profile_data = serialize_profile(active_profile) if active_profile else None
+
         latest_ingest_data = None
         if latest_ingest:
             latest_ingest_data = {
@@ -480,7 +395,11 @@ def inject_globals():
                 "started_at": latest_ingest.started_at.isoformat() if latest_ingest.started_at else None,
             }
 
-        return {"current_user": current_user_data, "active_profile": active_profile_data, "latest_ingest": latest_ingest_data}
+        return {
+            "current_user": current_user_data,
+            "active_profile": active_profile_data,
+            "latest_ingest": latest_ingest_data,
+        }
 
 
 @app.template_filter("days_left")
@@ -507,18 +426,26 @@ def signup_post():
     email = (request.form.get("email") or "").strip().lower()
     password = request.form.get("password") or ""
     full_name = (request.form.get("full_name") or "").strip()
+
     if not email or not password:
         flash("Email and password are required.", "error")
         return redirect(url_for("signup"))
+
     with get_db_session() as session_db:
         existing = session_db.execute(select(User).where(User.email == email).limit(1)).scalars().first()
         if existing:
             flash("That email is already registered.", "warning")
             return redirect(url_for("login"))
-        user = User(email=email, password_hash=generate_password_hash(password), full_name=full_name or None)
+
+        user = User(
+            email=email,
+            password_hash=generate_password_hash(password),
+            full_name=full_name or None,
+        )
         session_db.add(user)
         session_db.flush()
         session["user_id"] = user.id
+
     flash("Account created successfully.", "success")
     return redirect(url_for("profiles"))
 
@@ -534,12 +461,15 @@ def login():
 def login_post():
     email = (request.form.get("email") or "").strip().lower()
     password = request.form.get("password") or ""
+
     with get_db_session() as session_db:
         user = session_db.execute(select(User).where(User.email == email).limit(1)).scalars().first()
         if not user or not check_password_hash(user.password_hash, password):
             flash("Invalid email or password.", "error")
             return redirect(url_for("login"))
+
         session["user_id"] = user.id
+
     flash("Welcome back.", "success")
     next_url = request.args.get("next") or url_for("home")
     return redirect(next_url)
@@ -567,16 +497,40 @@ def home():
             if not active_profile
             else "Your profile is active, but some readiness gaps remain."
         )
-        total_live = session_db.execute(select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))).scalar_one()
-        tenders = session_db.execute(select(TenderCache).where(TenderCache.is_live.is_(True)).order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(100)).scalars().all()
+
+        total_live = session_db.execute(
+            select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))
+        ).scalar_one()
+
+        tenders = session_db.execute(
+            select(TenderCache)
+            .where(TenderCache.is_live.is_(True))
+            .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
+            .limit(100)
+        ).scalars().all()
+
         featured = []
         for tender in tenders:
             score = keyword_overlap_score(active_profile, tender) if active_profile else None
             if score is None:
                 continue
-            featured.append({"tender": tender, "score": score, "fit_band": fit_band_from_score(score), "scope_summary": extract_scope_summary(tender)})
+            featured.append({
+                "tender": tender,
+                "score": score,
+                "fit_band": fit_band_from_score(score),
+                "scope_summary": extract_scope_summary(tender),
+            })
+
         featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
-        return render_template("home.html", total_live=total_live, featured=featured[:8], readiness_band=readiness_band, readiness_note=readiness_note, profile_gap_summary=gap_summary)
+
+        return render_template(
+            "home.html",
+            total_live=total_live,
+            featured=featured[:8],
+            readiness_band=readiness_band,
+            readiness_note=readiness_note,
+            profile_gap_summary=gap_summary,
+        )
 
 
 @app.get("/tenders")
@@ -587,6 +541,7 @@ def tenders():
         active_profile = get_active_profile(session_db, user.id)
         gap_summary = build_profile_gap_summary(active_profile)
         readiness_band = "ready" if active_profile and gap_summary["pending_count"] == 0 else "watchlist" if active_profile else "no_profile"
+
         province = (request.args.get("province") or "").strip()
         tender_type = (request.args.get("tender_type") or "").strip()
         industry = (request.args.get("industry") or "").strip()
@@ -595,6 +550,7 @@ def tenders():
         fit_band_filter = (request.args.get("fit_band") or "").strip()
 
         query = select(TenderCache).where(TenderCache.is_live.is_(True))
+
         if province:
             query = query.where(TenderCache.province == province)
         if tender_type:
@@ -609,8 +565,18 @@ def tenders():
                 pass
         if search_text:
             like_term = f"%{search_text.lower()}%"
-            query = query.where(or_(func.lower(TenderCache.title).like(like_term), func.lower(func.coalesce(TenderCache.description, "")).like(like_term), func.lower(func.coalesce(TenderCache.buyer_name, "")).like(like_term), func.lower(func.coalesce(TenderCache.industry, "")).like(like_term)))
-        items = session_db.execute(query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)).scalars().all()
+            query = query.where(
+                or_(
+                    func.lower(TenderCache.title).like(like_term),
+                    func.lower(func.coalesce(TenderCache.description, "")).like(like_term),
+                    func.lower(func.coalesce(TenderCache.buyer_name, "")).like(like_term),
+                    func.lower(func.coalesce(TenderCache.industry, "")).like(like_term),
+                )
+            )
+
+        items = session_db.execute(
+            query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)
+        ).scalars().all()
 
         ranked = []
         for tender in items:
@@ -618,19 +584,60 @@ def tenders():
             fit_band = fit_band_from_score(score) if score is not None else None
             if fit_band_filter and fit_band != fit_band_filter:
                 continue
-            ranked.append({"tender": tender, "score": score, "fit_band": fit_band, "scope_summary": extract_scope_summary(tender)})
+            ranked.append({
+                "tender": tender,
+                "score": score,
+                "fit_band": fit_band,
+                "scope_summary": extract_scope_summary(tender),
+            })
+
         if active_profile:
             ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
 
-        provinces = session_db.execute(select(TenderCache.province).where(TenderCache.is_live.is_(True), TenderCache.province.is_not(None)).distinct().order_by(TenderCache.province)).scalars().all()
-        tender_types = session_db.execute(select(TenderCache.tender_type).where(TenderCache.is_live.is_(True), TenderCache.tender_type.is_not(None)).distinct().order_by(TenderCache.tender_type)).scalars().all()
-        industries = session_db.execute(select(TenderCache.industry).where(TenderCache.is_live.is_(True), TenderCache.industry.is_not(None)).distinct().order_by(TenderCache.industry)).scalars().all()
+        provinces = session_db.execute(
+            select(TenderCache.province)
+            .where(TenderCache.is_live.is_(True), TenderCache.province.is_not(None))
+            .distinct()
+            .order_by(TenderCache.province)
+        ).scalars().all()
+
+        tender_types = session_db.execute(
+            select(TenderCache.tender_type)
+            .where(TenderCache.is_live.is_(True), TenderCache.tender_type.is_not(None))
+            .distinct()
+            .order_by(TenderCache.tender_type)
+        ).scalars().all()
+
+        industries = session_db.execute(
+            select(TenderCache.industry)
+            .where(TenderCache.is_live.is_(True), TenderCache.industry.is_not(None))
+            .distinct()
+            .order_by(TenderCache.industry)
+        ).scalars().all()
+
         band_counts = {"high_potential": 0, "possible_fit": 0, "low_fit": 0}
         for item in ranked:
             if item["fit_band"] in band_counts:
                 band_counts[item["fit_band"]] += 1
 
-        return render_template("feed.html", ranked_tenders=ranked, provinces=provinces, tender_types=tender_types, industries=industries, filters={"province": province, "tender_type": tender_type, "industry": industry, "issued_from": issued_from, "q": search_text, "fit_band": fit_band_filter}, readiness_band=readiness_band, profile_gap_summary=gap_summary, band_counts=band_counts)
+        return render_template(
+            "feed.html",
+            ranked_tenders=ranked,
+            provinces=provinces,
+            tender_types=tender_types,
+            industries=industries,
+            filters={
+                "province": province,
+                "tender_type": tender_type,
+                "industry": industry,
+                "issued_from": issued_from,
+                "q": search_text,
+                "fit_band": fit_band_filter,
+            },
+            readiness_band=readiness_band,
+            profile_gap_summary=gap_summary,
+            band_counts=band_counts,
+        )
 
 
 @app.get("/tender/<int:tender_id>")
@@ -641,16 +648,40 @@ def tender_detail(tender_id: int):
         tender = session_db.get(TenderCache, tender_id)
         if not tender:
             return render_template("404.html"), 404
+
         active_profile = get_active_profile(session_db, user.id)
         gap_summary = build_profile_gap_summary(active_profile)
         readiness_band = "ready" if active_profile and gap_summary["pending_count"] == 0 else "watchlist" if active_profile else "no_profile"
-        readiness_note = ("Your active profile is ready for tender matching." if active_profile and gap_summary["pending_count"] == 0 else "Upload and activate a profile to unlock matching." if not active_profile else "Your profile is active, but some readiness gaps remain.")
+        readiness_note = (
+            "Your active profile is ready for tender matching."
+            if active_profile and gap_summary["pending_count"] == 0
+            else "Upload and activate a profile to unlock matching."
+            if not active_profile
+            else "Your profile is active, but some readiness gaps remain."
+        )
+
         score = keyword_overlap_score(active_profile, tender) if active_profile else None
         latest_analysis = latest_analysis_for(session_db, user.id, tender_id)
         decision = get_user_decision(session_db, user.id, tender_id)
         document_status = current_document_status(session_db, tender_id)
         running_job = find_running_analysis(session_db, user.id, tender_id) if user else None
-        return render_template("tender_detail.html", tender=tender, alignment_score=score, scope_summary=(latest_analysis or {}).get("scope_summary") or extract_scope_summary(tender), fit_band=fit_band_from_score(score) if score is not None else None, can_analyze=bool(active_profile), analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id), latest_analysis=latest_analysis, decision=decision, readiness_band=readiness_band, readiness_note=readiness_note, profile_gap_summary=gap_summary, document_status=document_status, running_job=running_job)
+
+        return render_template(
+            "tender_detail.html",
+            tender=tender,
+            alignment_score=score,
+            scope_summary=(latest_analysis or {}).get("scope_summary") or extract_scope_summary(tender),
+            fit_band=fit_band_from_score(score) if score is not None else None,
+            can_analyze=bool(active_profile),
+            analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id),
+            latest_analysis=latest_analysis,
+            decision=decision,
+            readiness_band=readiness_band,
+            readiness_note=readiness_note,
+            profile_gap_summary=gap_summary,
+            document_status=document_status,
+            running_job=running_job,
+        )
 
 
 @app.post("/tender/<int:tender_id>/analyze")
@@ -662,27 +693,42 @@ def analyze_tender_page(tender_id: int):
         if not tender:
             flash("Tender not found.", "error")
             return redirect(url_for("tenders"))
+
         active_profile = get_active_profile(session_db, user.id)
         if not active_profile:
             flash("Please upload and activate a business profile first.", "error")
             return redirect(url_for("profiles"))
+
         existing_running = find_running_analysis(session_db, user.id, tender_id)
         if existing_running:
             flash("An analysis is already running for this tender.", "warning")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
-        job = AnalysisJob(user_id=user.id, profile_id=active_profile.id, tender_id=tender_id, status="running")
+        job = AnalysisJob(
+            user_id=user.id,
+            profile_id=active_profile.id,
+            tender_id=tender_id,
+            status="running",
+        )
         session_db.add(job)
         session_db.flush()
 
-        doc = session_db.execute(select(TenderDocumentCache).where(TenderDocumentCache.tender_id == tender_id).order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id)).limit(1)).scalars().first()
+        doc = session_db.execute(
+            select(TenderDocumentCache)
+            .where(TenderDocumentCache.tender_id == tender_id)
+            .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
+            .limit(1)
+        ).scalars().first()
+
         extracted_text = (doc.extracted_text or "").strip() if doc else ""
         analysis = build_minimal_analysis(tender, active_profile, extracted_text)
+
         job.status = "completed"
         job.score = float(analysis.get("score") or 0)
         job.summary = analysis.get("summary")
         job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
         job.error_message = None
+
         flash("Tender analysis completed.", "success")
         return redirect(url_for("tender_detail", tender_id=tender_id))
 
@@ -696,14 +742,17 @@ def save_decision(tender_id: int):
         if not tender:
             flash("Tender not found.", "error")
             return redirect(url_for("tenders"))
+
         decision = get_user_decision(session_db, user.id, tender_id)
         if not decision:
             decision = UserTenderDecision(user_id=user.id, tender_id=tender_id)
             session_db.add(decision)
+
         decision.pursuit_status = (request.form.get("pursuit_status") or "not_decided").strip()
         decision.owner = (request.form.get("owner") or "").strip() or None
         decision.next_action = (request.form.get("next_action") or "").strip() or None
         decision.notes = (request.form.get("notes") or "").strip() or None
+
         flash("Decision saved.", "success")
         return redirect(url_for("tender_detail", tender_id=tender_id))
 
@@ -713,7 +762,11 @@ def save_decision(tender_id: int):
 def profiles():
     with get_db_session() as session_db:
         user = get_current_user(session_db)
-        profiles_list = session_db.execute(select(Profile).where(Profile.user_id == user.id).order_by(desc(Profile.updated_at))).scalars().all()
+        profiles_list = session_db.execute(
+            select(Profile)
+            .where(Profile.user_id == user.id)
+            .order_by(desc(Profile.updated_at))
+        ).scalars().all()
         return render_template("profiles.html", profiles=[serialize_profile(p) for p in profiles_list])
 
 
@@ -724,20 +777,50 @@ def upload_profile():
     if not uploaded or not uploaded.filename.lower().endswith(".pdf"):
         flash("Please upload a PDF profile.", "error")
         return redirect(url_for("profiles"))
+
     try:
         text = extract_pdf_text(uploaded)
     except Exception as exc:
         flash(f"Could not read PDF: {exc}", "error")
         return redirect(url_for("profiles"))
+
     parsed = parse_profile_text(text, uploaded.filename)
+
     with get_db_session() as session_db:
         user = get_current_user(session_db)
-        session_db.execute(Profile.__table__.update().where(Profile.user_id == user.id).values(is_active=False))
-        profile = Profile(user_id=user.id, name=parsed.get("company_name") or os.path.splitext(uploaded.filename)[0], company_name=parsed.get("company_name"), original_filename=uploaded.filename, industry=parsed.get("industry"), capabilities_text=", ".join(parsed.get("capabilities") or []), locations_text=", ".join(parsed.get("locations") or []), extracted_text=text[:200000], parsed_json=json.dumps(parsed, ensure_ascii=False, default=str), is_active=True)
+        session_db.execute(
+            Profile.__table__.update()
+            .where(Profile.user_id == user.id)
+            .values(is_active=False)
+        )
+
+        profile = Profile(
+            user_id=user.id,
+            name=parsed.get("company_name") or os.path.splitext(uploaded.filename)[0],
+            company_name=parsed.get("company_name"),
+            original_filename=uploaded.filename,
+            industry=parsed.get("industry"),
+            capabilities_text=", ".join(parsed.get("capabilities") or []),
+            locations_text=", ".join(parsed.get("locations") or []),
+            extracted_text=text[:200000],
+            parsed_json=json.dumps(parsed, ensure_ascii=False, default=str),
+            is_active=True,
+        )
         session_db.add(profile)
         session_db.flush()
+
         for issue in parsed.get("issues") or []:
-            session_db.add(ProfileIssue(profile_id=profile.id, issue_type="profile_gap", title=issue.get("title") or "Profile issue", detail=issue.get("detail"), penalty_weight=float(issue.get("penalty_weight") or 5), status="pending"))
+            session_db.add(
+                ProfileIssue(
+                    profile_id=profile.id,
+                    issue_type="profile_gap",
+                    title=issue.get("title") or "Profile issue",
+                    detail=issue.get("detail"),
+                    penalty_weight=float(issue.get("penalty_weight") or 5),
+                    status="pending",
+                )
+            )
+
     flash("Profile uploaded and set as active.", "success")
     return redirect(url_for("profiles"))
 
@@ -751,7 +834,12 @@ def activate_profile(profile_id: int):
         if not profile or profile.user_id != user.id:
             flash("Profile not found.", "error")
             return redirect(url_for("profiles"))
-        session_db.execute(Profile.__table__.update().where(Profile.user_id == user.id).values(is_active=False))
+
+        session_db.execute(
+            Profile.__table__.update()
+            .where(Profile.user_id == user.id)
+            .values(is_active=False)
+        )
         profile.is_active = True
         flash("Active profile updated.", "success")
         return redirect(url_for("profiles"))
@@ -764,6 +852,7 @@ def update_issue_status(issue_id: int):
     if status not in {"pending", "fixed"}:
         flash("Invalid issue status.", "error")
         return redirect(url_for("profiles"))
+
     with get_db_session() as session_db:
         user = get_current_user(session_db)
         issue = session_db.get(ProfileIssue, issue_id)
@@ -779,12 +868,12 @@ def update_issue_status(issue_id: int):
 @app.post("/api/admin/run-ingest")
 def api_run_ingest():
     with get_db_session() as session_db:
-        page_size = int(request.args.get("page_size", os.getenv("ETENDERS_PAGE_SIZE", "25")))
-        max_pages = int(request.args.get("max_pages", os.getenv("INGEST_MAX_PAGES", "5")))
-        date_from = request.args.get("date_from")
-        date_to = request.args.get("date_to")
+        page_size = int(request.args.get("page_size", os.getenv("ETENDERS_PAGE_SIZE", "10")))
         try:
-            result = ingest_tenders(session=session_db, page_size=page_size, max_pages=max_pages, date_from=date_from, date_to=date_to)
+            result = ingest_tenders(
+                session=session_db,
+                page_size=page_size,
+            )
             return jsonify(result)
         except Exception as exc:
             session_db.rollback()
@@ -795,23 +884,18 @@ def api_run_ingest():
 @app.post("/api/admin/fetch-documents")
 def api_fetch_documents():
     with get_db_session() as session_db:
-        limit = max(1, min(int(request.args.get("limit", 10)), 50))
-        tenders = session_db.execute(select(TenderCache).where(TenderCache.is_live.is_(True), TenderCache.document_url.is_not(None)).order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(limit)).scalars().all()
-        fetched = 0
-        parsed = 0
-        errors = []
-        for tender in tenders:
-            existing_success = session_db.execute(select(TenderDocumentCache).where(TenderDocumentCache.tender_id == tender.id, TenderDocumentCache.fetch_status.in_(["fetched", "fetched_unparsed"])).limit(1)).scalars().first()
-            if existing_success:
-                continue
-            result = fetch_tender_document(session_db, tender)
-            if result.get("ok"):
-                fetched += 1
-                if result.get("parsed"):
-                    parsed += 1
-            else:
-                errors.append({"tender_id": tender.id, "error": result.get("error")})
-        return jsonify({"ok": True, "fetched": fetched, "parsed": parsed, "errors": errors})
+        limit = int(request.args.get("limit", 10))
+        force_retry_failed = str(request.args.get("force_retry_failed", "false")).lower() in {"1", "true", "yes"}
+        try:
+            result = fetch_documents_for_live_tenders(
+                session_db,
+                limit=limit,
+                force_retry_failed=force_retry_failed,
+            )
+            return jsonify(result)
+        except Exception as exc:
+            session_db.rollback()
+            return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
 
 
 @app.get("/health")
