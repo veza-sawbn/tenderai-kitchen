@@ -356,6 +356,12 @@ def latest_analysis_for(session_db, user_id: int, tender_id: int):
         "recommendations": raw.get("recommendations") or [],
         "document_fetch_status": raw.get("document_fetch_status"),
         "analysis_source": raw.get("analysis_source"),
+        "document_text_chars": raw.get("document_text_chars"),
+        "document_text_words": raw.get("document_text_words"),
+        "document_usable": raw.get("document_usable"),
+        "document_attempted": raw.get("document_attempted"),
+        "document_fetch_error": raw.get("document_fetch_error"),
+        "analysis_source_error": raw.get("analysis_source_error"),
         "bid_decision": raw.get("bid_decision"),
         "opportunity_type": raw.get("opportunity_type"),
         "why_this_matters": raw.get("why_this_matters"),
@@ -381,8 +387,7 @@ def find_running_analysis(session_db, user_id: int, tender_id: int):
 
 
 def heuristic_analysis_for_profile(session_db, tender: TenderCache, profile: Profile):
-    doc = get_latest_document(session_db, tender.id)
-    document_text = (doc.extracted_text or "").strip() if doc else ""
+    document_text, doc, doc_meta = ensure_tender_document_text(session_db, tender)
     score = keyword_overlap_score(profile, tender, document_text) or 0
     fit_band = fit_band_from_score(score)
 
@@ -450,6 +455,10 @@ def heuristic_analysis_for_profile(session_db, tender: TenderCache, profile: Pro
         "risks": risks[:5],
         "recommendations": recommendations[:5],
         "document_fetch_status": doc.fetch_status if doc else None,
+        "document_text_chars": doc_meta.get("document_text_chars"),
+        "document_text_words": doc_meta.get("document_text_words"),
+        "document_usable": doc_meta.get("document_usable"),
+        "document_attempted": doc_meta.get("document_attempted"),
         "analysis_source": "heuristic_fallback",
     }
 
@@ -457,6 +466,71 @@ def heuristic_analysis_for_profile(session_db, tender: TenderCache, profile: Pro
 def truncate_for_model(text: str, max_chars: int):
     text = (text or "").strip()
     return text[:max_chars]
+
+
+def document_text_quality(document_text: str) -> dict:
+    text = (document_text or "").strip()
+    words = re.findall(r"[A-Za-z0-9]{3,}", text)
+    unique_words = set(w.lower() for w in words)
+    return {
+        "chars": len(text),
+        "words": len(words),
+        "unique_words": len(unique_words),
+        "usable": len(text) >= 1200 and len(unique_words) >= 80,
+    }
+
+
+def ensure_tender_document_text(session_db, tender: TenderCache) -> tuple[str, TenderDocumentCache | None, dict]:
+    """
+    Analysis must be grounded in tender documents whenever possible.
+    This function makes the analyzer fetch the document on-demand if no usable cached text exists.
+    """
+    doc = get_latest_document(session_db, tender.id)
+    text = (doc.extracted_text or "").strip() if doc else ""
+    quality = document_text_quality(text)
+
+    if quality["usable"]:
+        return text, doc, {
+            "document_attempted": False,
+            "document_status": doc.fetch_status if doc else None,
+            "document_text_chars": quality["chars"],
+            "document_text_words": quality["words"],
+            "document_usable": True,
+        }
+
+    # If there is a URL, try fetching once immediately before analysis.
+    if tender.document_url or tender.source_url:
+        try:
+            fetch_documents_for_tenders(session_db, [tender])
+            session_db.flush()
+            doc = get_latest_document(session_db, tender.id)
+            text = (doc.extracted_text or "").strip() if doc else ""
+            quality = document_text_quality(text)
+            return text, doc, {
+                "document_attempted": True,
+                "document_status": doc.fetch_status if doc else None,
+                "document_text_chars": quality["chars"],
+                "document_text_words": quality["words"],
+                "document_usable": quality["usable"],
+            }
+        except Exception as exc:
+            return text, doc, {
+                "document_attempted": True,
+                "document_status": doc.fetch_status if doc else None,
+                "document_text_chars": quality["chars"],
+                "document_text_words": quality["words"],
+                "document_usable": False,
+                "document_fetch_error": str(exc),
+            }
+
+    return text, doc, {
+        "document_attempted": False,
+        "document_status": doc.fetch_status if doc else None,
+        "document_text_chars": quality["chars"],
+        "document_text_words": quality["words"],
+        "document_usable": quality["usable"],
+        "document_fetch_error": "No document_url or source_url available on tender.",
+    }
 
 
 def _extract_json_object(text: str):
@@ -530,8 +604,7 @@ def openai_analysis_for_profile(session_db, tender: TenderCache, profile: Profil
     if client is None:
         raise RuntimeError("OpenAI client is not configured. Check OPENAI_API_KEY and openai package availability.")
 
-    doc = get_latest_document(session_db, tender.id)
-    document_text = (doc.extracted_text or "").strip() if doc else ""
+    document_text, doc, doc_meta = ensure_tender_document_text(session_db, tender)
 
     days_left = None
     if tender.closing_date:
@@ -550,7 +623,7 @@ def openai_analysis_for_profile(session_db, tender: TenderCache, profile: Profil
             {"title": i.title, "detail": i.detail, "status": i.status}
             for i in (profile.issues or [])
         ],
-        "profile_excerpt": truncate_for_model(profile.extracted_text or "", 5000),
+        "profile_excerpt": truncate_for_model(profile.extracted_text or "", 7000),
     }
 
     tender_payload = {
@@ -568,53 +641,57 @@ def openai_analysis_for_profile(session_db, tender: TenderCache, profile: Profil
         "document_url": tender.document_url,
         "document_fetch_status": doc.fetch_status if doc else None,
         "document_has_text": bool(document_text),
+        "document_text_chars": doc_meta.get("document_text_chars"),
+        "document_text_words": doc_meta.get("document_text_words"),
+        "document_usable": doc_meta.get("document_usable"),
     }
 
     system_prompt = """
-You are TenderAI, a practical South African procurement analyst for SMEs.
+You are TenderAI, a South African tender analyst. Your value is practical bid/no-bid intelligence, not generic summarisation.
 
-Your job is not to write a generic tender summary. Your job is to give the user a bid/no-bid intelligence brief grounded in the actual tender and supplier profile.
+You must analyse the actual tender and supplier profile. Use the tender document text as primary evidence. If the tender document is missing or weak, say that clearly and rely only on metadata.
 
-Rules:
-1. Use tender document text as the primary source. Use metadata only when the document text is weak or unavailable.
-2. Be specific. Do not use generic phrases unless supported by the tender/profile data.
-3. Extract concrete requirements, submission traps, compliance needs, and execution risks.
-4. Compare the tender requirements against the supplier profile directly.
-5. If evidence is missing, say exactly what is missing.
-6. Score must reflect commercial realism, not optimism.
-7. Return only valid JSON. No markdown. No prose outside JSON.
+Hard rules:
+1. Do not give generic advice such as "review the requirements" unless you name the exact requirement or missing evidence.
+2. Every strength, gap, risk, and recommendation must reference a specific tender detail, supplier capability, date, document, compliance item, location, buyer, or scope item.
+3. If document_text is usable, quote or paraphrase specific evidence in evidence_notes.
+4. Identify mandatory requirements, compliance documents, submission traps, execution risks, and commercial effort.
+5. Make a clear bid decision: pursue, review_first, or do_not_prioritise.
+6. Be stricter when the document is missing, unreadable, or the profile lacks proof.
+7. Return only valid JSON.
 
-Return this exact JSON object:
+JSON schema:
 {
   "score": number,
   "fit_band": "high_potential" | "possible_fit" | "low_fit",
   "bid_decision": "pursue" | "review_first" | "do_not_prioritise",
-  "summary": "2-4 sentence specific analyst view",
-  "opportunity_type": "short label describing the actual opportunity",
-  "scope_summary": "specific scope of work in plain English",
-  "why_this_matters": "commercial reason this opportunity matters or does not matter",
+  "summary": "specific 2-4 sentence analyst view",
+  "opportunity_type": "short specific label",
+  "scope_summary": "specific scope in plain English",
+  "why_this_matters": "specific commercial reason",
   "document_match": boolean,
-  "document_match_reason": "specific explanation of document evidence available",
-  "mandatory_requirements": ["specific mandatory requirement or unknown if not visible"],
-  "compliance_documents": ["specific document/certificate/form likely required"],
-  "key_dates": ["briefing/closing/submission dates found"],
+  "document_match_reason": "specific document evidence status",
+  "mandatory_requirements": ["specific mandatory requirement"],
+  "compliance_documents": ["specific document/certificate/form"],
+  "key_dates": ["specific dates found"],
   "briefing_date": string|null,
   "contact_email": string|null,
   "contact_phone": string|null,
   "proposal_required": boolean,
-  "strengths": ["specific fit strength grounded in profile/tender"],
+  "strengths": ["specific fit strength"],
   "gaps": ["specific missing proof/capability/compliance gap"],
-  "risks": ["specific risk that could weaken the bid"],
-  "questions_to_clarify": ["specific question to ask the buyer or internally"],
-  "recommendations": ["specific next action, not generic advice"],
-  "evidence_notes": ["short references to words/phrases found in the tender/profile text"]
+  "risks": ["specific risk"],
+  "questions_to_clarify": ["specific buyer/internal question"],
+  "recommendations": ["specific next action"],
+  "evidence_notes": ["specific tender/profile evidence used"]
 }
 """.strip()
 
     payload = {
         "supplier_profile": profile_payload,
         "tender": tender_payload,
-        "tender_document_text": truncate_for_model(document_text, 24000),
+        "document_pipeline": doc_meta,
+        "tender_document_text": truncate_for_model(document_text, 30000),
     }
 
     parsed = _openai_json_response(client, system_prompt, payload)
@@ -635,13 +712,18 @@ Return this exact JSON object:
     parsed["recommendations"] = _coerce_list(parsed.get("recommendations"), 6)
     parsed["evidence_notes"] = _coerce_list(parsed.get("evidence_notes"), 8)
     parsed["document_fetch_status"] = doc.fetch_status if doc else None
+    parsed["document_text_chars"] = doc_meta.get("document_text_chars")
+    parsed["document_text_words"] = doc_meta.get("document_text_words")
+    parsed["document_usable"] = doc_meta.get("document_usable")
+    parsed["document_attempted"] = doc_meta.get("document_attempted")
+    if doc_meta.get("document_fetch_error"):
+        parsed["document_fetch_error"] = doc_meta.get("document_fetch_error")
     parsed["analysis_source"] = "openai"
 
-    # Backfill useful fields if the model omitted them.
     if not parsed.get("scope_summary"):
         parsed["scope_summary"] = extract_scope_summary(tender, document_text)
     if not parsed.get("summary"):
-        parsed["summary"] = "TenderAI completed a document-grounded fit assessment for this opportunity."
+        parsed["summary"] = "TenderAI completed a document-grounded bid/no-bid assessment for this opportunity."
     if not parsed.get("document_match_reason"):
         parsed["document_match_reason"] = "Readable tender document text was available." if document_text else "No readable tender document text was available."
 
@@ -989,6 +1071,35 @@ def api_fetch_documents():
         except Exception as exc:
             session_db.rollback()
             return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
+
+
+
+@app.get("/api/admin/tender-document-debug/<int:tender_id>")
+def api_tender_document_debug(tender_id: int):
+    with get_db_session() as session_db:
+        tender = session_db.get(TenderCache, tender_id)
+        if not tender:
+            return jsonify({"ok": False, "error": "tender_not_found"}), 404
+
+        doc = get_latest_document(session_db, tender_id)
+        text = (doc.extracted_text or "") if doc else ""
+        quality = document_text_quality(text)
+
+        return jsonify({
+            "ok": True,
+            "tender_id": tender_id,
+            "title": tender.title,
+            "document_url": tender.document_url,
+            "source_url": tender.source_url,
+            "has_document_row": bool(doc),
+            "fetch_status": doc.fetch_status if doc else None,
+            "filename": doc.filename if doc else None,
+            "content_type": doc.content_type if doc else None,
+            "fetched_at": doc.fetched_at.isoformat() if doc and doc.fetched_at else None,
+            "text_quality": quality,
+            "text_preview": text[:1000],
+            "error_message": doc.error_message if doc else None,
+        })
 
 
 @app.get("/health")
