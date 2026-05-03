@@ -356,6 +356,15 @@ def latest_analysis_for(session_db, user_id: int, tender_id: int):
         "recommendations": raw.get("recommendations") or [],
         "document_fetch_status": raw.get("document_fetch_status"),
         "analysis_source": raw.get("analysis_source"),
+        "bid_decision": raw.get("bid_decision"),
+        "opportunity_type": raw.get("opportunity_type"),
+        "why_this_matters": raw.get("why_this_matters"),
+        "mandatory_requirements": raw.get("mandatory_requirements") or [],
+        "compliance_documents": raw.get("compliance_documents") or [],
+        "key_dates": raw.get("key_dates") or [],
+        "gaps": raw.get("gaps") or [],
+        "questions_to_clarify": raw.get("questions_to_clarify") or [],
+        "evidence_notes": raw.get("evidence_notes") or [],
     }
 
 
@@ -450,79 +459,194 @@ def truncate_for_model(text: str, max_chars: int):
     return text[:max_chars]
 
 
+def _extract_json_object(text: str):
+    if not text:
+        raise ValueError("OpenAI returned an empty response.")
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text.strip(), flags=re.I).strip()
+        text = re.sub(r"```$", "", text.strip()).strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+def _openai_json_response(client, system_prompt: str, payload: dict):
+    user_content = json.dumps(payload, ensure_ascii=False)
+
+    # Prefer Chat Completions JSON mode because it is widely supported by the OpenAI Python SDK.
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        return _extract_json_object(response.choices[0].message.content or "")
+    except Exception as chat_exc:
+        # Fallback to Responses API if this deployment uses it.
+        try:
+            response = client.responses.create(
+                model=OPENAI_MODEL,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.2,
+            )
+            output_text = response.output_text if getattr(response, "output_text", None) else str(response)
+            return _extract_json_object(output_text)
+        except Exception as responses_exc:
+            raise RuntimeError(f"OpenAI analysis failed. chat_error={chat_exc}; responses_error={responses_exc}")
+
+
+def _coerce_list(value, limit=8):
+    if not value:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    output = []
+    for item in value:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            output.append(text)
+    return output[:limit]
+
+
 def openai_analysis_for_profile(session_db, tender: TenderCache, profile: Profile):
     client = get_openai_client()
     if client is None:
-        raise RuntimeError("OpenAI client is not configured.")
+        raise RuntimeError("OpenAI client is not configured. Check OPENAI_API_KEY and openai package availability.")
 
     doc = get_latest_document(session_db, tender.id)
     document_text = (doc.extracted_text or "").strip() if doc else ""
 
-    payload = {
-        "supplier_profile": {
-            "company_name": profile.company_name,
-            "profile_name": profile.name,
-            "industry": profile.industry,
-            "capabilities": normalize_list_text(profile.capabilities_text),
-            "locations": normalize_list_text(profile.locations_text),
-            "known_profile_gaps": [{"title": i.title, "detail": i.detail, "status": i.status} for i in (profile.issues or [])],
-        },
-        "tender": {
-            "id": tender.id,
-            "title": tender.title,
-            "description": tender.description,
-            "buyer_name": tender.buyer_name,
-            "province": tender.province,
-            "industry": tender.industry,
-            "tender_type": tender.tender_type,
-            "issued_date": tender.issued_date.isoformat() if tender.issued_date else None,
-            "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
-            "source_url": tender.source_url,
-            "document_url": tender.document_url,
-            "document_fetch_status": doc.fetch_status if doc else None,
-        },
-        "tender_document_text": truncate_for_model(document_text, 18000),
+    days_left = None
+    if tender.closing_date:
+        try:
+            days_left = (tender.closing_date - date.today()).days
+        except Exception:
+            days_left = None
+
+    profile_payload = {
+        "company_name": profile.company_name,
+        "profile_name": profile.name,
+        "industry": profile.industry,
+        "capabilities": normalize_list_text(profile.capabilities_text),
+        "locations": normalize_list_text(profile.locations_text),
+        "known_profile_gaps": [
+            {"title": i.title, "detail": i.detail, "status": i.status}
+            for i in (profile.issues or [])
+        ],
+        "profile_excerpt": truncate_for_model(profile.extracted_text or "", 5000),
     }
 
-    system_prompt = (
-        "You are an expert South African tender analyst. "
-        "Assess whether a business profile is a good fit for a tender. "
-        "Return only valid JSON with this exact schema: "
-        "{\"score\": number 0-100, "
-        "\"fit_band\": \"high_potential\" | \"possible_fit\" | \"low_fit\", "
-        "\"summary\": string, "
-        "\"document_match\": boolean, "
-        "\"document_match_reason\": string, "
-        "\"scope_summary\": string, "
-        "\"briefing_date\": string|null, "
-        "\"contact_email\": string|null, "
-        "\"contact_phone\": string|null, "
-        "\"proposal_required\": boolean, "
-        "\"strengths\": string[], "
-        "\"risks\": string[], "
-        "\"recommendations\": string[]}. "
-        "Keep each list to a maximum of 5 items. Be commercially realistic and concise."
-    )
+    tender_payload = {
+        "id": tender.id,
+        "title": tender.title,
+        "description": tender.description,
+        "buyer_name": tender.buyer_name,
+        "province": tender.province,
+        "industry": tender.industry,
+        "tender_type": tender.tender_type,
+        "issued_date": tender.issued_date.isoformat() if tender.issued_date else None,
+        "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
+        "days_left": days_left,
+        "source_url": tender.source_url,
+        "document_url": tender.document_url,
+        "document_fetch_status": doc.fetch_status if doc else None,
+        "document_has_text": bool(document_text),
+    }
 
-    response = client.responses.create(
-        model=OPENAI_MODEL,
-        input=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-    )
-    text = response.output_text if getattr(response, "output_text", None) else str(response)
-    parsed = json.loads(text)
-    parsed["score"] = max(0.0, min(float(parsed.get("score", 0)), 100.0))
-    parsed["fit_band"] = parsed.get("fit_band") or fit_band_from_score(parsed["score"]) or "low_fit"
+    system_prompt = """
+You are TenderAI, a practical South African procurement analyst for SMEs.
+
+Your job is not to write a generic tender summary. Your job is to give the user a bid/no-bid intelligence brief grounded in the actual tender and supplier profile.
+
+Rules:
+1. Use tender document text as the primary source. Use metadata only when the document text is weak or unavailable.
+2. Be specific. Do not use generic phrases unless supported by the tender/profile data.
+3. Extract concrete requirements, submission traps, compliance needs, and execution risks.
+4. Compare the tender requirements against the supplier profile directly.
+5. If evidence is missing, say exactly what is missing.
+6. Score must reflect commercial realism, not optimism.
+7. Return only valid JSON. No markdown. No prose outside JSON.
+
+Return this exact JSON object:
+{
+  "score": number,
+  "fit_band": "high_potential" | "possible_fit" | "low_fit",
+  "bid_decision": "pursue" | "review_first" | "do_not_prioritise",
+  "summary": "2-4 sentence specific analyst view",
+  "opportunity_type": "short label describing the actual opportunity",
+  "scope_summary": "specific scope of work in plain English",
+  "why_this_matters": "commercial reason this opportunity matters or does not matter",
+  "document_match": boolean,
+  "document_match_reason": "specific explanation of document evidence available",
+  "mandatory_requirements": ["specific mandatory requirement or unknown if not visible"],
+  "compliance_documents": ["specific document/certificate/form likely required"],
+  "key_dates": ["briefing/closing/submission dates found"],
+  "briefing_date": string|null,
+  "contact_email": string|null,
+  "contact_phone": string|null,
+  "proposal_required": boolean,
+  "strengths": ["specific fit strength grounded in profile/tender"],
+  "gaps": ["specific missing proof/capability/compliance gap"],
+  "risks": ["specific risk that could weaken the bid"],
+  "questions_to_clarify": ["specific question to ask the buyer or internally"],
+  "recommendations": ["specific next action, not generic advice"],
+  "evidence_notes": ["short references to words/phrases found in the tender/profile text"]
+}
+""".strip()
+
+    payload = {
+        "supplier_profile": profile_payload,
+        "tender": tender_payload,
+        "tender_document_text": truncate_for_model(document_text, 24000),
+    }
+
+    parsed = _openai_json_response(client, system_prompt, payload)
+
+    score = max(0.0, min(float(parsed.get("score", 0) or 0), 100.0))
+    parsed["score"] = score
+    parsed["fit_band"] = parsed.get("fit_band") or fit_band_from_score(score) or "low_fit"
+    parsed["bid_decision"] = parsed.get("bid_decision") or ("pursue" if score >= 80 else "review_first" if score >= 55 else "do_not_prioritise")
     parsed["document_match"] = bool(parsed.get("document_match"))
     parsed["proposal_required"] = bool(parsed.get("proposal_required"))
-    parsed["strengths"] = list(parsed.get("strengths") or [])[:5]
-    parsed["risks"] = list(parsed.get("risks") or [])[:5]
-    parsed["recommendations"] = list(parsed.get("recommendations") or [])[:5]
+    parsed["mandatory_requirements"] = _coerce_list(parsed.get("mandatory_requirements"), 8)
+    parsed["compliance_documents"] = _coerce_list(parsed.get("compliance_documents"), 8)
+    parsed["key_dates"] = _coerce_list(parsed.get("key_dates"), 8)
+    parsed["strengths"] = _coerce_list(parsed.get("strengths"), 6)
+    parsed["gaps"] = _coerce_list(parsed.get("gaps"), 6)
+    parsed["risks"] = _coerce_list(parsed.get("risks"), 6)
+    parsed["questions_to_clarify"] = _coerce_list(parsed.get("questions_to_clarify"), 6)
+    parsed["recommendations"] = _coerce_list(parsed.get("recommendations"), 6)
+    parsed["evidence_notes"] = _coerce_list(parsed.get("evidence_notes"), 8)
     parsed["document_fetch_status"] = doc.fetch_status if doc else None
     parsed["analysis_source"] = "openai"
+
+    # Backfill useful fields if the model omitted them.
+    if not parsed.get("scope_summary"):
+        parsed["scope_summary"] = extract_scope_summary(tender, document_text)
+    if not parsed.get("summary"):
+        parsed["summary"] = "TenderAI completed a document-grounded fit assessment for this opportunity."
+    if not parsed.get("document_match_reason"):
+        parsed["document_match_reason"] = "Readable tender document text was available." if document_text else "No readable tender document text was available."
+
     return parsed
+
 
 
 def analyze_tender_for_profile(session_db, tender: TenderCache, profile: Profile):
