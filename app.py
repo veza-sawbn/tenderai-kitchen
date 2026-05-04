@@ -51,30 +51,12 @@ app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-fallback-
 
 init_db()
 
-EMAIL_RE = re.compile(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
-PHONE_RE = re.compile(r"(\+?\d[\d\s\-()]{7,}\d)")
-BRIEFING_RE = re.compile(
-    r"(?:brief(?:ing)?(?: session)?|compulsory briefing|non-?compulsory briefing)"
-    r"[^0-9]{0,30}(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})",
-    re.I,
-)
-
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "90"))
 
 
 def utcnow():
     return datetime.now(timezone.utc)
-
-
-def get_openai_client():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key or OpenAI is None:
-        return None
-    try:
-        return OpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT_SECONDS)
-    except Exception:
-        return None
 
 
 def safe_loads(value, fallback=None):
@@ -131,23 +113,6 @@ def normalize_keywords(text: str):
     return out[:20]
 
 
-def normalize_list_text(value: str | None):
-    if not value:
-        return []
-    parts = []
-    seen = set()
-    for chunk in re.split(r"[,;\n|]+", value):
-        item = " ".join(chunk.strip().split())
-        if len(item) < 2:
-            continue
-        low = item.lower()
-        if low in seen:
-            continue
-        seen.add(low)
-        parts.append(item)
-    return parts
-
-
 def parse_profile_text(text: str, filename: str | None = None) -> dict:
     lower = text.lower()
     industry = None
@@ -182,9 +147,17 @@ def parse_profile_text(text: str, filename: str | None = None) -> dict:
 
     issues = []
     if not industry:
-        issues.append({"title": "Industry focus is unclear", "detail": "The profile does not strongly indicate its primary industry.", "penalty_weight": 5})
+        issues.append({
+            "title": "Industry focus is unclear",
+            "detail": "The profile does not strongly indicate its primary industry.",
+            "penalty_weight": 5,
+        })
     if not capabilities:
-        issues.append({"title": "Capabilities are unclear", "detail": "The profile does not clearly list capabilities.", "penalty_weight": 6})
+        issues.append({
+            "title": "Capabilities are unclear",
+            "detail": "The profile does not clearly list capabilities.",
+            "penalty_weight": 6,
+        })
 
     return {
         "company_name": company_name,
@@ -228,7 +201,10 @@ def login_required(view):
 
 def get_active_profile(session_db, user_id: int):
     return session_db.execute(
-        select(Profile).where(Profile.user_id == user_id, Profile.is_active.is_(True)).order_by(desc(Profile.updated_at)).limit(1)
+        select(Profile)
+        .where(Profile.user_id == user_id, Profile.is_active.is_(True))
+        .order_by(desc(Profile.updated_at))
+        .limit(1)
     ).scalars().first()
 
 
@@ -242,25 +218,36 @@ def serialize_profile(profile: Profile):
         "locations_text": profile.locations_text,
         "original_filename": profile.original_filename,
         "is_active": profile.is_active,
-        "issues": [{"id": issue.id, "title": issue.title, "detail": issue.detail, "status": issue.status} for issue in (profile.issues or [])],
+        "issues": [
+            {
+                "id": issue.id,
+                "title": issue.title,
+                "detail": issue.detail,
+                "status": issue.status,
+            }
+            for issue in (profile.issues or [])
+        ],
     }
 
 
-def get_latest_document(session_db, tender_id: int):
-    return session_db.execute(
-        select(TenderDocumentCache).where(TenderDocumentCache.tender_id == tender_id).order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id)).limit(1)
-    ).scalars().first()
-
-
-def keyword_overlap_score(profile: Profile | None, tender: TenderCache, document_text: str = ""):
+def keyword_overlap_score(profile: Profile | None, tender: TenderCache):
     if not profile:
         return None
-    capabilities = normalize_list_text(profile.capabilities_text)
-    locations = normalize_list_text(profile.locations_text)
-    score = 18.0
-    blob = " ".join([tender.title or "", tender.description or "", tender.industry or "", tender.tender_type or "", tender.province or "", tender.buyer_name or "", document_text or ""]).lower()
 
-    if profile.industry and tender.industry and profile.industry.lower() == (tender.industry or "").lower():
+    capabilities = [c.strip() for c in (profile.capabilities_text or "").split(",") if c.strip()]
+    locations = [c.strip() for c in (profile.locations_text or "").split(",") if c.strip()]
+    score = 22.0
+
+    blob = " ".join([
+        tender.title or "",
+        tender.description or "",
+        tender.industry or "",
+        tender.tender_type or "",
+        tender.province or "",
+        tender.buyer_name or "",
+    ]).lower()
+
+    if profile.industry and tender.industry and profile.industry.lower() == tender.industry.lower():
         score += 26.0
     elif profile.industry and profile.industry.lower() in blob:
         score += 12.0
@@ -269,27 +256,18 @@ def keyword_overlap_score(profile: Profile | None, tender: TenderCache, document
     for capability in capabilities:
         if capability.lower() in blob:
             matches += 1
-    score += min(matches * 7.0, 36.0)
+    score += min(matches * 7.0, 35.0)
 
-    if tender.province and any(loc.lower() == (tender.province or "").lower() for loc in locations):
+    if tender.province and any(loc.lower() == tender.province.lower() for loc in locations):
         score += 8.0
 
     try:
         if tender.closing_date:
             days = (tender.closing_date - date.today()).days
-            if days < 0:
-                score -= 20.0
-            elif days <= 3:
-                score += 1.0
-            elif days <= 14:
-                score += 4.0
-            else:
-                score += 6.0
+            if days >= 0:
+                score += 2.0 if days <= 7 else 6.0
     except Exception:
         pass
-
-    if bool(re.search(r"\b(proposal|rfp|request for proposal)\b", document_text or "", re.I)):
-        score += 4.0
 
     return max(0.0, min(score, 100.0))
 
@@ -304,22 +282,19 @@ def fit_band_from_score(score):
     return "low_fit"
 
 
-def extract_scope_summary(tender: TenderCache, document_text: str = ""):
-    doc_text = re.sub(r"\s+", " ", (document_text or "")).strip()
-    if doc_text:
-        for marker in ["scope of work", "description of the work", "description", "terms of reference", "specification", "project scope"]:
-            idx = doc_text.lower().find(marker)
-            if idx >= 0:
-                snippet = doc_text[idx: idx + 420].strip()
-                if len(snippet) > 80:
-                    return snippet[:280]
-        return doc_text[:280]
-    text = re.sub(r"\s+", " ", (tender.description or tender.title or "")).strip()
-    return text[:280] or "Scope summary not available."
+def extract_scope_summary(tender: TenderCache):
+    text = tender.description or tender.title or "Scope of work summary not available."
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:260]
 
 
 def current_document_status(session_db, tender_id: int):
-    doc = get_latest_document(session_db, tender_id)
+    doc = session_db.execute(
+        select(TenderDocumentCache)
+        .where(TenderDocumentCache.tender_id == tender_id)
+        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
+        .limit(1)
+    ).scalars().first()
     if not doc:
         return None
     return {
@@ -328,16 +303,19 @@ def current_document_status(session_db, tender_id: int):
         "content_type": doc.content_type,
         "fetched_at": doc.fetched_at.isoformat() if doc.fetched_at else None,
         "error_message": doc.error_message,
-        "has_text": bool((doc.extracted_text or "").strip()),
     }
 
 
 def latest_analysis_for(session_db, user_id: int, tender_id: int):
     job = session_db.execute(
-        select(AnalysisJob).where(AnalysisJob.user_id == user_id, AnalysisJob.tender_id == tender_id).order_by(desc(AnalysisJob.updated_at)).limit(1)
+        select(AnalysisJob)
+        .where(AnalysisJob.user_id == user_id, AnalysisJob.tender_id == tender_id)
+        .order_by(desc(AnalysisJob.updated_at))
+        .limit(1)
     ).scalars().first()
     if not job:
         return None
+
     raw = safe_loads(job.raw_result_json, {})
     return {
         "id": job.id,
@@ -351,279 +329,125 @@ def latest_analysis_for(session_db, user_id: int, tender_id: int):
         "contact_phone": raw.get("contact_phone"),
         "proposal_required": raw.get("proposal_required"),
         "scope_summary": raw.get("scope_summary"),
-        "strengths": raw.get("strengths") or [],
-        "risks": raw.get("risks") or [],
-        "recommendations": raw.get("recommendations") or [],
-        "document_fetch_status": raw.get("document_fetch_status"),
-        "analysis_source": raw.get("analysis_source"),
-        "document_text_chars": raw.get("document_text_chars"),
-        "document_text_words": raw.get("document_text_words"),
-        "document_usable": raw.get("document_usable"),
-        "document_attempted": raw.get("document_attempted"),
-        "document_fetch_error": raw.get("document_fetch_error"),
-        "analysis_source_error": raw.get("analysis_source_error"),
         "bid_decision": raw.get("bid_decision"),
-        "opportunity_type": raw.get("opportunity_type"),
-        "why_this_matters": raw.get("why_this_matters"),
         "mandatory_requirements": raw.get("mandatory_requirements") or [],
         "compliance_documents": raw.get("compliance_documents") or [],
         "key_dates": raw.get("key_dates") or [],
+        "strengths": raw.get("strengths") or [],
         "gaps": raw.get("gaps") or [],
-        "questions_to_clarify": raw.get("questions_to_clarify") or [],
+        "risks": raw.get("risks") or [],
+        "recommendations": raw.get("recommendations") or [],
         "evidence_notes": raw.get("evidence_notes") or [],
+        "analysis_source": raw.get("analysis_source"),
+        "analysis_source_error": raw.get("analysis_source_error"),
+        "document_fetch_status": raw.get("document_fetch_status"),
+        "document_text_chars": raw.get("document_text_chars"),
     }
 
 
 def get_user_decision(session_db, user_id: int, tender_id: int):
     return session_db.execute(
-        select(UserTenderDecision).where(UserTenderDecision.user_id == user_id, UserTenderDecision.tender_id == tender_id).limit(1)
+        select(UserTenderDecision)
+        .where(UserTenderDecision.user_id == user_id, UserTenderDecision.tender_id == tender_id)
+        .limit(1)
     ).scalars().first()
 
 
 def find_running_analysis(session_db, user_id: int, tender_id: int):
     return session_db.execute(
-        select(AnalysisJob).where(AnalysisJob.user_id == user_id, AnalysisJob.tender_id == tender_id, AnalysisJob.status == "running").order_by(desc(AnalysisJob.updated_at)).limit(1)
+        select(AnalysisJob)
+        .where(
+            AnalysisJob.user_id == user_id,
+            AnalysisJob.tender_id == tender_id,
+            AnalysisJob.status == "running",
+        )
+        .order_by(desc(AnalysisJob.updated_at))
+        .limit(1)
     ).scalars().first()
 
 
-def heuristic_analysis_for_profile(session_db, tender: TenderCache, profile: Profile):
-    document_text, doc, doc_meta = ensure_tender_document_text(session_db, tender)
-    score = keyword_overlap_score(profile, tender, document_text) or 0
-    fit_band = fit_band_from_score(score)
 
-    capabilities = normalize_list_text(profile.capabilities_text)
-    locations = normalize_list_text(profile.locations_text)
-    tender_blob = " ".join([tender.title or "", tender.description or "", tender.industry or "", tender.tender_type or "", tender.province or "", tender.buyer_name or "", document_text or ""]).lower()
-    matched_capabilities = [cap for cap in capabilities if cap.lower() in tender_blob][:6]
-
-    strengths, risks, recommendations = [], [], []
-    if profile.industry and (((tender.industry or "") and profile.industry.lower() == (tender.industry or "").lower()) or profile.industry.lower() in tender_blob):
-        strengths.append(f"Industry alignment detected around {profile.industry}.")
-    if matched_capabilities:
-        strengths.append("Capability overlap found: " + ", ".join(matched_capabilities[:4]) + ".")
-    if tender.province and any(loc.lower() == (tender.province or "").lower() for loc in locations):
-        strengths.append(f"Location alignment found in {tender.province}.")
-    if doc and doc.fetch_status in {"fetched", "fetched_no_text"}:
-        strengths.append("Tender document is cached for this opportunity.")
-
-    if not matched_capabilities:
-        risks.append("No strong capability matches were detected from the active profile.")
-    if not doc:
-        risks.append("No tender document has been cached yet, so analysis relies on listing metadata.")
-    elif doc.fetch_status not in {"fetched", "fetched_no_text"} and not document_text:
-        risks.append(f"Document fetch status is {doc.fetch_status}, limiting confidence.")
-    elif doc.fetch_status == "fetched_no_text":
-        risks.append("A document was fetched but readable text extraction was limited.")
-    if tender.closing_date:
-        try:
-            days_left = (tender.closing_date - date.today()).days
-            if days_left < 0:
-                risks.append("This tender appears to be closed already.")
-            elif days_left <= 3:
-                risks.append("Very little time remains before closing.")
-        except Exception:
-            pass
-
-    if fit_band == "high_potential":
-        recommendations.append("Proceed with a bid/no-bid review and assign an owner immediately.")
-    elif fit_band == "possible_fit":
-        recommendations.append("Review scope against your strongest delivery examples before deciding.")
-    else:
-        recommendations.append("Treat this as low priority unless strategic or relationship value exists.")
-    if not doc:
-        recommendations.append("Fetch the tender document before making a final pursuit decision.")
-    if EMAIL_RE.search(document_text or "") or PHONE_RE.search(document_text or ""):
-        recommendations.append("Use extracted contact details to clarify requirements if needed.")
-
-    summary = "Strong fit based on profile alignment and available tender information." if fit_band == "high_potential" else "Possible fit, but a focused commercial and capability check is recommended." if fit_band == "possible_fit" else "Low fit based on current profile alignment and available tender evidence."
-    email_match = EMAIL_RE.search(document_text or "")
-    phone_match = PHONE_RE.search(document_text or "")
-    briefing_match = BRIEFING_RE.search(document_text or "")
-
-    return {
-        "score": score,
-        "fit_band": fit_band,
-        "summary": summary,
-        "document_match": bool(document_text),
-        "document_match_reason": "Readable tender document text was found and included in the analysis." if document_text else "No readable tender document text was available, so the analysis relied mostly on listing metadata.",
-        "scope_summary": extract_scope_summary(tender, document_text),
-        "briefing_date": briefing_match.group(1).replace("/", "-") if briefing_match else None,
-        "contact_email": email_match.group(1) if email_match else None,
-        "contact_phone": phone_match.group(1) if phone_match else None,
-        "proposal_required": bool(re.search(r"\b(proposal|rfp|request for proposal)\b", document_text or "", re.I)),
-        "strengths": strengths[:5],
-        "risks": risks[:5],
-        "recommendations": recommendations[:5],
-        "document_fetch_status": doc.fetch_status if doc else None,
-        "document_text_chars": doc_meta.get("document_text_chars"),
-        "document_text_words": doc_meta.get("document_text_words"),
-        "document_usable": doc_meta.get("document_usable"),
-        "document_attempted": doc_meta.get("document_attempted"),
-        "analysis_source": "heuristic_fallback",
-    }
+def get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set.")
+    if OpenAI is None:
+        raise RuntimeError("The openai Python package is not available in this deployment.")
+    return OpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT_SECONDS)
 
 
-def truncate_for_model(text: str, max_chars: int):
-    text = (text or "").strip()
-    return text[:max_chars]
-
-
-def document_text_quality(document_text: str) -> dict:
-    text = (document_text or "").strip()
-    words = re.findall(r"[A-Za-z0-9]{3,}", text)
-    unique_words = set(w.lower() for w in words)
-    return {
-        "chars": len(text),
-        "words": len(words),
-        "unique_words": len(unique_words),
-        "usable": len(text) >= 1200 and len(unique_words) >= 80,
-    }
-
-
-def ensure_tender_document_text(session_db, tender: TenderCache) -> tuple[str, TenderDocumentCache | None, dict]:
-    """
-    Analysis must be grounded in tender documents whenever possible.
-    This function makes the analyzer fetch the document on-demand if no usable cached text exists.
-    """
-    doc = get_latest_document(session_db, tender.id)
-    text = (doc.extracted_text or "").strip() if doc else ""
-    quality = document_text_quality(text)
-
-    if quality["usable"]:
-        return text, doc, {
-            "document_attempted": False,
-            "document_status": doc.fetch_status if doc else None,
-            "document_text_chars": quality["chars"],
-            "document_text_words": quality["words"],
-            "document_usable": True,
-        }
-
-    # If there is a URL, try fetching once immediately before analysis.
-    if tender.document_url or tender.source_url:
-        try:
-            fetch_documents_for_tenders(session_db, [tender])
-            session_db.flush()
-            doc = get_latest_document(session_db, tender.id)
-            text = (doc.extracted_text or "").strip() if doc else ""
-            quality = document_text_quality(text)
-            return text, doc, {
-                "document_attempted": True,
-                "document_status": doc.fetch_status if doc else None,
-                "document_text_chars": quality["chars"],
-                "document_text_words": quality["words"],
-                "document_usable": quality["usable"],
-            }
-        except Exception as exc:
-            return text, doc, {
-                "document_attempted": True,
-                "document_status": doc.fetch_status if doc else None,
-                "document_text_chars": quality["chars"],
-                "document_text_words": quality["words"],
-                "document_usable": False,
-                "document_fetch_error": str(exc),
-            }
-
-    return text, doc, {
-        "document_attempted": False,
-        "document_status": doc.fetch_status if doc else None,
-        "document_text_chars": quality["chars"],
-        "document_text_words": quality["words"],
-        "document_usable": quality["usable"],
-        "document_fetch_error": "No document_url or source_url available on tender.",
-    }
-
-
-def _extract_json_object(text: str):
-    if not text:
+def extract_json_object(text_value: str):
+    if not text_value:
         raise ValueError("OpenAI returned an empty response.")
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text.strip(), flags=re.I).strip()
-        text = re.sub(r"```$", "", text.strip()).strip()
+    text_value = text_value.strip()
+    if text_value.startswith("```"):
+        text_value = re.sub(r"^```(?:json)?", "", text_value, flags=re.I).strip()
+        text_value = re.sub(r"```$", "", text_value).strip()
     try:
-        return json.loads(text)
+        return json.loads(text_value)
     except Exception:
-        start = text.find("{")
-        end = text.rfind("}")
+        start = text_value.find("{")
+        end = text_value.rfind("}")
         if start >= 0 and end > start:
-            return json.loads(text[start:end + 1])
+            return json.loads(text_value[start:end + 1])
         raise
 
 
-def _openai_json_response(client, system_prompt: str, payload: dict):
-    user_content = json.dumps(payload, ensure_ascii=False)
-
-    # Prefer Chat Completions JSON mode because it is widely supported by the OpenAI Python SDK.
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-        )
-        return _extract_json_object(response.choices[0].message.content or "")
-    except Exception as chat_exc:
-        # Fallback to Responses API if this deployment uses it.
-        try:
-            response = client.responses.create(
-                model=OPENAI_MODEL,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                temperature=0.2,
-            )
-            output_text = response.output_text if getattr(response, "output_text", None) else str(response)
-            return _extract_json_object(output_text)
-        except Exception as responses_exc:
-            raise RuntimeError(f"OpenAI analysis failed. chat_error={chat_exc}; responses_error={responses_exc}")
-
-
-def _coerce_list(value, limit=8):
+def as_list(value, limit=6):
     if not value:
         return []
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
         return []
-    output = []
+    out = []
     for item in value:
-        if item is None:
-            continue
-        text = str(item).strip()
-        if text:
-            output.append(text)
-    return output[:limit]
+        item = str(item).strip()
+        if item:
+            out.append(item)
+    return out[:limit]
 
 
-def openai_analysis_for_profile(session_db, tender: TenderCache, profile: Profile):
+def get_cached_document_text(session_db, tender_id: int):
+    doc = session_db.execute(
+        select(TenderDocumentCache)
+        .where(TenderDocumentCache.tender_id == tender_id)
+        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
+        .limit(1)
+    ).scalars().first()
+
+    text_value = (doc.extracted_text or "").strip() if doc else ""
+    return doc, text_value
+
+
+def compact_text(value: str, max_chars: int):
+    value = re.sub(r"\\s+", " ", (value or "")).strip()
+    return value[:max_chars]
+
+
+def openai_tender_analysis(session_db, tender: TenderCache, profile: Profile):
     client = get_openai_client()
-    if client is None:
-        raise RuntimeError("OpenAI client is not configured. Check OPENAI_API_KEY and openai package availability.")
+    doc, document_text = get_cached_document_text(session_db, tender.id)
 
-    document_text, doc, doc_meta = ensure_tender_document_text(session_db, tender)
-
-    days_left = None
-    if tender.closing_date:
-        try:
-            days_left = (tender.closing_date - date.today()).days
-        except Exception:
-            days_left = None
+    # Do not silently pretend to read documents.
+    document_quality = {
+        "has_cached_document": bool(doc),
+        "fetch_status": doc.fetch_status if doc else None,
+        "text_chars": len(document_text),
+        "usable_text": len(document_text) >= 600,
+    }
 
     profile_payload = {
         "company_name": profile.company_name,
         "profile_name": profile.name,
         "industry": profile.industry,
-        "capabilities": normalize_list_text(profile.capabilities_text),
-        "locations": normalize_list_text(profile.locations_text),
-        "known_profile_gaps": [
-            {"title": i.title, "detail": i.detail, "status": i.status}
-            for i in (profile.issues or [])
+        "capabilities": normalize_keywords(profile.capabilities_text or ""),
+        "locations": normalize_keywords(profile.locations_text or ""),
+        "profile_text_excerpt": compact_text(profile.extracted_text or "", 6000),
+        "profile_gaps": [
+            {"title": issue.title, "detail": issue.detail, "status": issue.status}
+            for issue in (profile.issues or [])
         ],
-        "profile_excerpt": truncate_for_model(profile.extracted_text or "", 7000),
     }
 
     tender_payload = {
@@ -636,108 +460,115 @@ def openai_analysis_for_profile(session_db, tender: TenderCache, profile: Profil
         "tender_type": tender.tender_type,
         "issued_date": tender.issued_date.isoformat() if tender.issued_date else None,
         "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
-        "days_left": days_left,
-        "source_url": tender.source_url,
         "document_url": tender.document_url,
-        "document_fetch_status": doc.fetch_status if doc else None,
-        "document_has_text": bool(document_text),
-        "document_text_chars": doc_meta.get("document_text_chars"),
-        "document_text_words": doc_meta.get("document_text_words"),
-        "document_usable": doc_meta.get("document_usable"),
+        "source_url": tender.source_url,
+        "document_quality": document_quality,
     }
 
     system_prompt = """
-You are TenderAI, a South African tender analyst. Your value is practical bid/no-bid intelligence, not generic summarisation.
+You are TenderAI, a South African tender analyst for SMEs.
 
-You must analyse the actual tender and supplier profile. Use the tender document text as primary evidence. If the tender document is missing or weak, say that clearly and rely only on metadata.
+Produce a practical bid/no-bid analysis. This is not a generic summary.
+Use the tender document text as primary evidence when available.
+If the document text is weak or missing, clearly say so and only use tender metadata.
 
-Hard rules:
-1. Do not give generic advice such as "review the requirements" unless you name the exact requirement or missing evidence.
-2. Every strength, gap, risk, and recommendation must reference a specific tender detail, supplier capability, date, document, compliance item, location, buyer, or scope item.
-3. If document_text is usable, quote or paraphrase specific evidence in evidence_notes.
-4. Identify mandatory requirements, compliance documents, submission traps, execution risks, and commercial effort.
-5. Make a clear bid decision: pursue, review_first, or do_not_prioritise.
-6. Be stricter when the document is missing, unreadable, or the profile lacks proof.
-7. Return only valid JSON.
+Rules:
+- Be specific to this tender and this supplier profile.
+- Do not say "review the requirements" unless you name the exact requirement.
+- Identify concrete scope, mandatory requirements, compliance documents, risks, profile gaps, and next actions.
+- Score realistically from 0 to 100.
+- Return only valid JSON.
 
-JSON schema:
+Return this JSON object:
 {
   "score": number,
   "fit_band": "high_potential" | "possible_fit" | "low_fit",
   "bid_decision": "pursue" | "review_first" | "do_not_prioritise",
   "summary": "specific 2-4 sentence analyst view",
-  "opportunity_type": "short specific label",
-  "scope_summary": "specific scope in plain English",
-  "why_this_matters": "specific commercial reason",
+  "scope_summary": "specific scope of work",
   "document_match": boolean,
-  "document_match_reason": "specific document evidence status",
-  "mandatory_requirements": ["specific mandatory requirement"],
+  "document_match_reason": "explain what document text was or was not used",
+  "mandatory_requirements": ["specific requirement"],
   "compliance_documents": ["specific document/certificate/form"],
-  "key_dates": ["specific dates found"],
+  "key_dates": ["specific date"],
   "briefing_date": string|null,
   "contact_email": string|null,
   "contact_phone": string|null,
   "proposal_required": boolean,
-  "strengths": ["specific fit strength"],
-  "gaps": ["specific missing proof/capability/compliance gap"],
-  "risks": ["specific risk"],
-  "questions_to_clarify": ["specific buyer/internal question"],
+  "strengths": ["specific supplier advantage"],
+  "gaps": ["specific missing proof/capability/compliance issue"],
+  "risks": ["specific bid or delivery risk"],
   "recommendations": ["specific next action"],
-  "evidence_notes": ["specific tender/profile evidence used"]
+  "evidence_notes": ["short evidence phrase from tender/profile"]
 }
 """.strip()
 
-    payload = {
+    user_payload = {
         "supplier_profile": profile_payload,
         "tender": tender_payload,
-        "document_pipeline": doc_meta,
-        "tender_document_text": truncate_for_model(document_text, 30000),
+        "tender_document_text": compact_text(document_text, 30000),
     }
 
-    parsed = _openai_json_response(client, system_prompt, payload)
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+    )
 
-    score = max(0.0, min(float(parsed.get("score", 0) or 0), 100.0))
+    content = response.choices[0].message.content or ""
+    parsed = extract_json_object(content)
+
+    score = float(parsed.get("score") or 0)
+    score = max(0.0, min(score, 100.0))
     parsed["score"] = score
     parsed["fit_band"] = parsed.get("fit_band") or fit_band_from_score(score) or "low_fit"
     parsed["bid_decision"] = parsed.get("bid_decision") or ("pursue" if score >= 80 else "review_first" if score >= 55 else "do_not_prioritise")
     parsed["document_match"] = bool(parsed.get("document_match"))
     parsed["proposal_required"] = bool(parsed.get("proposal_required"))
-    parsed["mandatory_requirements"] = _coerce_list(parsed.get("mandatory_requirements"), 8)
-    parsed["compliance_documents"] = _coerce_list(parsed.get("compliance_documents"), 8)
-    parsed["key_dates"] = _coerce_list(parsed.get("key_dates"), 8)
-    parsed["strengths"] = _coerce_list(parsed.get("strengths"), 6)
-    parsed["gaps"] = _coerce_list(parsed.get("gaps"), 6)
-    parsed["risks"] = _coerce_list(parsed.get("risks"), 6)
-    parsed["questions_to_clarify"] = _coerce_list(parsed.get("questions_to_clarify"), 6)
-    parsed["recommendations"] = _coerce_list(parsed.get("recommendations"), 6)
-    parsed["evidence_notes"] = _coerce_list(parsed.get("evidence_notes"), 8)
+
+    parsed["mandatory_requirements"] = as_list(parsed.get("mandatory_requirements"), 8)
+    parsed["compliance_documents"] = as_list(parsed.get("compliance_documents"), 8)
+    parsed["key_dates"] = as_list(parsed.get("key_dates"), 8)
+    parsed["strengths"] = as_list(parsed.get("strengths"), 6)
+    parsed["gaps"] = as_list(parsed.get("gaps"), 6)
+    parsed["risks"] = as_list(parsed.get("risks"), 6)
+    parsed["recommendations"] = as_list(parsed.get("recommendations"), 6)
+    parsed["evidence_notes"] = as_list(parsed.get("evidence_notes"), 8)
+
     parsed["document_fetch_status"] = doc.fetch_status if doc else None
-    parsed["document_text_chars"] = doc_meta.get("document_text_chars")
-    parsed["document_text_words"] = doc_meta.get("document_text_words")
-    parsed["document_usable"] = doc_meta.get("document_usable")
-    parsed["document_attempted"] = doc_meta.get("document_attempted")
-    if doc_meta.get("document_fetch_error"):
-        parsed["document_fetch_error"] = doc_meta.get("document_fetch_error")
+    parsed["document_text_chars"] = len(document_text)
     parsed["analysis_source"] = "openai"
 
     if not parsed.get("scope_summary"):
-        parsed["scope_summary"] = extract_scope_summary(tender, document_text)
+        parsed["scope_summary"] = extract_scope_summary(tender)
     if not parsed.get("summary"):
-        parsed["summary"] = "TenderAI completed a document-grounded bid/no-bid assessment for this opportunity."
-    if not parsed.get("document_match_reason"):
-        parsed["document_match_reason"] = "Readable tender document text was available." if document_text else "No readable tender document text was available."
+        parsed["summary"] = "TenderAI completed an OpenAI bid/no-bid analysis."
 
     return parsed
 
 
 
-def analyze_tender_for_profile(session_db, tender: TenderCache, profile: Profile):
-    try:
-        return openai_analysis_for_profile(session_db, tender, profile)
-    except Exception as exc:
-        result = heuristic_analysis_for_profile(session_db, tender, profile)
-        result["analysis_source_error"] = str(exc)
-        return result
+def build_minimal_analysis(tender: TenderCache, profile: Profile, extracted_text: str):
+    email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", extracted_text or "")
+    phone_match = re.search(r"(\+?\d[\d\s\-()]{7,}\d)", extracted_text or "")
+    briefing_match = re.search(r"(?:brief(?:ing)?(?: session)?)[^0-9]{0,20}(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})", extracted_text or "", re.I)
+
+    score = keyword_overlap_score(profile, tender) or 0
+    return {
+        "document_match": True if extracted_text.strip() else False,
+        "document_match_reason": "Readable tender document text was found." if extracted_text.strip() else "No readable document text was found.",
+        "score": score,
+        "summary": "Tender analyzed successfully." if extracted_text.strip() else "Tender document could not be read well enough.",
+        "scope_summary": extract_scope_summary(tender),
+        "briefing_date": briefing_match.group(1).replace("/", "-") if briefing_match else None,
+        "contact_email": email_match.group(1) if email_match else None,
+        "contact_phone": phone_match.group(1) if phone_match else None,
+        "proposal_required": bool(re.search(r"\bproposal\b", extracted_text or "", re.I)),
+    }
 
 
 @app.context_processor
@@ -746,14 +577,36 @@ def inject_globals():
         user = get_current_user(session_db)
         active_profile = get_active_profile(session_db, user.id) if user else None
         latest_ingest = None
+
         try:
-            latest_ingest = session_db.execute(select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)).scalars().first()
+            latest_ingest = session_db.execute(
+                select(IngestRun).order_by(desc(IngestRun.started_at), desc(IngestRun.id)).limit(1)
+            ).scalars().first()
         except Exception:
             latest_ingest = None
-        current_user_data = {"id": user.id, "email": user.email, "full_name": user.full_name} if user else None
+
+        current_user_data = None
+        if user:
+            current_user_data = {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+            }
+
         active_profile_data = serialize_profile(active_profile) if active_profile else None
-        latest_ingest_data = {"status": latest_ingest.status, "started_at": latest_ingest.started_at.isoformat() if latest_ingest and latest_ingest.started_at else None} if latest_ingest else None
-        return {"current_user": current_user_data, "active_profile": active_profile_data, "latest_ingest": latest_ingest_data}
+
+        latest_ingest_data = None
+        if latest_ingest:
+            latest_ingest_data = {
+                "status": latest_ingest.status,
+                "started_at": latest_ingest.started_at.isoformat() if latest_ingest.started_at else None,
+            }
+
+        return {
+            "current_user": current_user_data,
+            "active_profile": active_profile_data,
+            "latest_ingest": latest_ingest_data,
+        }
 
 
 @app.template_filter("days_left")
@@ -780,18 +633,26 @@ def signup_post():
     email = (request.form.get("email") or "").strip().lower()
     password = request.form.get("password") or ""
     full_name = (request.form.get("full_name") or "").strip()
+
     if not email or not password:
         flash("Email and password are required.", "error")
         return redirect(url_for("signup"))
+
     with get_db_session() as session_db:
         existing = session_db.execute(select(User).where(User.email == email).limit(1)).scalars().first()
         if existing:
             flash("That email is already registered.", "warning")
             return redirect(url_for("login"))
-        user = User(email=email, password_hash=generate_password_hash(password), full_name=full_name or None)
+
+        user = User(
+            email=email,
+            password_hash=generate_password_hash(password),
+            full_name=full_name or None,
+        )
         session_db.add(user)
         session_db.flush()
         session["user_id"] = user.id
+
     flash("Account created successfully.", "success")
     return redirect(url_for("profiles"))
 
@@ -807,12 +668,15 @@ def login():
 def login_post():
     email = (request.form.get("email") or "").strip().lower()
     password = request.form.get("password") or ""
+
     with get_db_session() as session_db:
         user = session_db.execute(select(User).where(User.email == email).limit(1)).scalars().first()
         if not user or not check_password_hash(user.password_hash, password):
             flash("Invalid email or password.", "error")
             return redirect(url_for("login"))
+
         session["user_id"] = user.id
+
     flash("Welcome back.", "success")
     next_url = request.args.get("next") or url_for("home")
     return redirect(next_url)
@@ -833,17 +697,47 @@ def home():
         active_profile = get_active_profile(session_db, user.id)
         gap_summary = build_profile_gap_summary(active_profile)
         readiness_band = "ready" if active_profile and gap_summary["pending_count"] == 0 else "watchlist" if active_profile else "no_profile"
-        readiness_note = "Your active profile is ready for tender matching." if active_profile and gap_summary["pending_count"] == 0 else "Upload and activate a profile to unlock matching." if not active_profile else "Your profile is active, but some readiness gaps remain."
-        total_live = session_db.execute(select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))).scalar_one()
-        tenders = session_db.execute(select(TenderCache).where(TenderCache.is_live.is_(True)).order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(100)).scalars().all()
+        readiness_note = (
+            "Your active profile is ready for tender matching."
+            if active_profile and gap_summary["pending_count"] == 0
+            else "Upload and activate a profile to unlock matching."
+            if not active_profile
+            else "Your profile is active, but some readiness gaps remain."
+        )
+
+        total_live = session_db.execute(
+            select(func.count()).select_from(TenderCache).where(TenderCache.is_live.is_(True))
+        ).scalar_one()
+
+        tenders = session_db.execute(
+            select(TenderCache)
+            .where(TenderCache.is_live.is_(True))
+            .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
+            .limit(100)
+        ).scalars().all()
+
         featured = []
         for tender in tenders:
             score = keyword_overlap_score(active_profile, tender) if active_profile else None
             if score is None:
                 continue
-            featured.append({"tender": tender, "score": score, "fit_band": fit_band_from_score(score), "scope_summary": extract_scope_summary(tender)})
+            featured.append({
+                "tender": tender,
+                "score": score,
+                "fit_band": fit_band_from_score(score),
+                "scope_summary": extract_scope_summary(tender),
+            })
+
         featured.sort(key=lambda x: (x["score"] or 0), reverse=True)
-        return render_template("home.html", total_live=total_live, featured=featured[:8], readiness_band=readiness_band, readiness_note=readiness_note, profile_gap_summary=gap_summary)
+
+        return render_template(
+            "home.html",
+            total_live=total_live,
+            featured=featured[:8],
+            readiness_band=readiness_band,
+            readiness_note=readiness_note,
+            profile_gap_summary=gap_summary,
+        )
 
 
 @app.get("/tenders")
@@ -854,13 +748,16 @@ def tenders():
         active_profile = get_active_profile(session_db, user.id)
         gap_summary = build_profile_gap_summary(active_profile)
         readiness_band = "ready" if active_profile and gap_summary["pending_count"] == 0 else "watchlist" if active_profile else "no_profile"
+
         province = (request.args.get("province") or "").strip()
         tender_type = (request.args.get("tender_type") or "").strip()
         industry = (request.args.get("industry") or "").strip()
         issued_from = (request.args.get("issued_from") or "").strip()
         search_text = (request.args.get("q") or "").strip()
         fit_band_filter = (request.args.get("fit_band") or "").strip()
+
         query = select(TenderCache).where(TenderCache.is_live.is_(True))
+
         if province:
             query = query.where(TenderCache.province == province)
         if tender_type:
@@ -875,25 +772,79 @@ def tenders():
                 pass
         if search_text:
             like_term = f"%{search_text.lower()}%"
-            query = query.where(or_(func.lower(TenderCache.title).like(like_term), func.lower(func.coalesce(TenderCache.description, "")).like(like_term), func.lower(func.coalesce(TenderCache.buyer_name, "")).like(like_term), func.lower(func.coalesce(TenderCache.industry, "")).like(like_term)))
-        items = session_db.execute(query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)).scalars().all()
+            query = query.where(
+                or_(
+                    func.lower(TenderCache.title).like(like_term),
+                    func.lower(func.coalesce(TenderCache.description, "")).like(like_term),
+                    func.lower(func.coalesce(TenderCache.buyer_name, "")).like(like_term),
+                    func.lower(func.coalesce(TenderCache.industry, "")).like(like_term),
+                )
+            )
+
+        items = session_db.execute(
+            query.order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(200)
+        ).scalars().all()
+
         ranked = []
         for tender in items:
             score = keyword_overlap_score(active_profile, tender) if active_profile else None
             fit_band = fit_band_from_score(score) if score is not None else None
             if fit_band_filter and fit_band != fit_band_filter:
                 continue
-            ranked.append({"tender": tender, "score": score, "fit_band": fit_band, "scope_summary": extract_scope_summary(tender)})
+            ranked.append({
+                "tender": tender,
+                "score": score,
+                "fit_band": fit_band,
+                "scope_summary": extract_scope_summary(tender),
+            })
+
         if active_profile:
             ranked.sort(key=lambda x: (x["score"] or 0), reverse=True)
-        provinces = session_db.execute(select(TenderCache.province).where(TenderCache.is_live.is_(True), TenderCache.province.is_not(None)).distinct().order_by(TenderCache.province)).scalars().all()
-        tender_types = session_db.execute(select(TenderCache.tender_type).where(TenderCache.is_live.is_(True), TenderCache.tender_type.is_not(None)).distinct().order_by(TenderCache.tender_type)).scalars().all()
-        industries = session_db.execute(select(TenderCache.industry).where(TenderCache.is_live.is_(True), TenderCache.industry.is_not(None)).distinct().order_by(TenderCache.industry)).scalars().all()
+
+        provinces = session_db.execute(
+            select(TenderCache.province)
+            .where(TenderCache.is_live.is_(True), TenderCache.province.is_not(None))
+            .distinct()
+            .order_by(TenderCache.province)
+        ).scalars().all()
+
+        tender_types = session_db.execute(
+            select(TenderCache.tender_type)
+            .where(TenderCache.is_live.is_(True), TenderCache.tender_type.is_not(None))
+            .distinct()
+            .order_by(TenderCache.tender_type)
+        ).scalars().all()
+
+        industries = session_db.execute(
+            select(TenderCache.industry)
+            .where(TenderCache.is_live.is_(True), TenderCache.industry.is_not(None))
+            .distinct()
+            .order_by(TenderCache.industry)
+        ).scalars().all()
+
         band_counts = {"high_potential": 0, "possible_fit": 0, "low_fit": 0}
         for item in ranked:
             if item["fit_band"] in band_counts:
                 band_counts[item["fit_band"]] += 1
-        return render_template("feed.html", ranked_tenders=ranked, provinces=provinces, tender_types=tender_types, industries=industries, filters={"province": province, "tender_type": tender_type, "industry": industry, "issued_from": issued_from, "q": search_text, "fit_band": fit_band_filter}, readiness_band=readiness_band, profile_gap_summary=gap_summary, band_counts=band_counts)
+
+        return render_template(
+            "feed.html",
+            ranked_tenders=ranked,
+            provinces=provinces,
+            tender_types=tender_types,
+            industries=industries,
+            filters={
+                "province": province,
+                "tender_type": tender_type,
+                "industry": industry,
+                "issued_from": issued_from,
+                "q": search_text,
+                "fit_band": fit_band_filter,
+            },
+            readiness_band=readiness_band,
+            profile_gap_summary=gap_summary,
+            band_counts=band_counts,
+        )
 
 
 @app.get("/tender/<int:tender_id>")
@@ -904,18 +855,40 @@ def tender_detail(tender_id: int):
         tender = session_db.get(TenderCache, tender_id)
         if not tender:
             return render_template("404.html"), 404
+
         active_profile = get_active_profile(session_db, user.id)
         gap_summary = build_profile_gap_summary(active_profile)
         readiness_band = "ready" if active_profile and gap_summary["pending_count"] == 0 else "watchlist" if active_profile else "no_profile"
-        readiness_note = "Your active profile is ready for tender matching." if active_profile and gap_summary["pending_count"] == 0 else "Upload and activate a profile to unlock matching." if not active_profile else "Your profile is active, but some readiness gaps remain."
-        latest_doc = get_latest_document(session_db, tender_id)
-        score = keyword_overlap_score(active_profile, tender, (latest_doc.extracted_text if latest_doc else "") or "") if active_profile else None
+        readiness_note = (
+            "Your active profile is ready for tender matching."
+            if active_profile and gap_summary["pending_count"] == 0
+            else "Upload and activate a profile to unlock matching."
+            if not active_profile
+            else "Your profile is active, but some readiness gaps remain."
+        )
+
+        score = keyword_overlap_score(active_profile, tender) if active_profile else None
         latest_analysis = latest_analysis_for(session_db, user.id, tender_id)
         decision = get_user_decision(session_db, user.id, tender_id)
         document_status = current_document_status(session_db, tender_id)
         running_job = find_running_analysis(session_db, user.id, tender_id) if user else None
-        scope_summary = (latest_analysis or {}).get("scope_summary") or extract_scope_summary(tender, (latest_doc.extracted_text if latest_doc else "") or "")
-        return render_template("tender_detail.html", tender=tender, alignment_score=score, scope_summary=scope_summary, fit_band=fit_band_from_score(score) if score is not None else None, can_analyze=bool(active_profile), analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id), latest_analysis=latest_analysis, decision=decision, readiness_band=readiness_band, readiness_note=readiness_note, profile_gap_summary=gap_summary, document_status=document_status, running_job=running_job)
+
+        return render_template(
+            "tender_detail.html",
+            tender=tender,
+            alignment_score=score,
+            scope_summary=(latest_analysis or {}).get("scope_summary") or extract_scope_summary(tender),
+            fit_band=fit_band_from_score(score) if score is not None else None,
+            can_analyze=bool(active_profile),
+            analyze_action_url=url_for("analyze_tender_page", tender_id=tender_id),
+            latest_analysis=latest_analysis,
+            decision=decision,
+            readiness_band=readiness_band,
+            readiness_note=readiness_note,
+            profile_gap_summary=gap_summary,
+            document_status=document_status,
+            running_job=running_job,
+        )
 
 
 @app.post("/tender/<int:tender_id>/analyze")
@@ -927,28 +900,51 @@ def analyze_tender_page(tender_id: int):
         if not tender:
             flash("Tender not found.", "error")
             return redirect(url_for("tenders"))
+
         active_profile = get_active_profile(session_db, user.id)
         if not active_profile:
             flash("Please upload and activate a business profile first.", "error")
             return redirect(url_for("profiles"))
+
         existing_running = find_running_analysis(session_db, user.id, tender_id)
         if existing_running:
             flash("An analysis is already running for this tender.", "warning")
             return redirect(url_for("tender_detail", tender_id=tender_id))
-        job = AnalysisJob(user_id=user.id, profile_id=active_profile.id, tender_id=tender_id, status="running")
+
+        job = AnalysisJob(
+            user_id=user.id,
+            profile_id=active_profile.id,
+            tender_id=tender_id,
+            status="running",
+        )
         session_db.add(job)
         session_db.flush()
-        analysis = analyze_tender_for_profile(session_db, tender, active_profile)
-        job.status = "completed"
-        job.score = float(analysis.get("score") or 0)
-        job.summary = analysis.get("summary")
-        job.strengths_text = "\n".join(analysis.get("strengths") or [])
-        job.risks_text = "\n".join(analysis.get("risks") or [])
-        job.recommendations_text = "\n".join(analysis.get("recommendations") or [])
-        job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
-        job.error_message = None
-        flash("Tender analysis completed.", "success")
-        return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        try:
+            analysis = openai_tender_analysis(session_db, tender, active_profile)
+
+            job.status = "completed"
+            job.score = float(analysis.get("score") or 0)
+            job.summary = analysis.get("summary")
+            job.strengths_text = "\n".join(analysis.get("strengths") or [])
+            job.risks_text = "\n".join((analysis.get("risks") or []) + (analysis.get("gaps") or []))
+            job.recommendations_text = "\n".join(analysis.get("recommendations") or [])
+            job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
+            job.error_message = None
+
+            flash("OpenAI tender analysis completed.", "success")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        except Exception as exc:
+            # Do not hide OpenAI failure behind generic heuristic output.
+            job.status = "failed"
+            job.error_message = str(exc)
+            job.raw_result_json = json.dumps({
+                "analysis_source": "openai_failed",
+                "analysis_source_error": str(exc),
+            }, ensure_ascii=False)
+            flash(f"OpenAI analysis failed: {exc}", "error")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
 
 
 @app.post("/tender/<int:tender_id>/decision")
@@ -960,14 +956,17 @@ def save_decision(tender_id: int):
         if not tender:
             flash("Tender not found.", "error")
             return redirect(url_for("tenders"))
+
         decision = get_user_decision(session_db, user.id, tender_id)
         if not decision:
             decision = UserTenderDecision(user_id=user.id, tender_id=tender_id)
             session_db.add(decision)
+
         decision.pursuit_status = (request.form.get("pursuit_status") or "not_decided").strip()
         decision.owner = (request.form.get("owner") or "").strip() or None
         decision.next_action = (request.form.get("next_action") or "").strip() or None
         decision.notes = (request.form.get("notes") or "").strip() or None
+
         flash("Decision saved.", "success")
         return redirect(url_for("tender_detail", tender_id=tender_id))
 
@@ -977,7 +976,11 @@ def save_decision(tender_id: int):
 def profiles():
     with get_db_session() as session_db:
         user = get_current_user(session_db)
-        profiles_list = session_db.execute(select(Profile).where(Profile.user_id == user.id).order_by(desc(Profile.updated_at))).scalars().all()
+        profiles_list = session_db.execute(
+            select(Profile)
+            .where(Profile.user_id == user.id)
+            .order_by(desc(Profile.updated_at))
+        ).scalars().all()
         return render_template("profiles.html", profiles=[serialize_profile(p) for p in profiles_list])
 
 
@@ -988,20 +991,50 @@ def upload_profile():
     if not uploaded or not uploaded.filename.lower().endswith(".pdf"):
         flash("Please upload a PDF profile.", "error")
         return redirect(url_for("profiles"))
+
     try:
         text = extract_pdf_text(uploaded)
     except Exception as exc:
         flash(f"Could not read PDF: {exc}", "error")
         return redirect(url_for("profiles"))
+
     parsed = parse_profile_text(text, uploaded.filename)
+
     with get_db_session() as session_db:
         user = get_current_user(session_db)
-        session_db.execute(Profile.__table__.update().where(Profile.user_id == user.id).values(is_active=False))
-        profile = Profile(user_id=user.id, name=parsed.get("company_name") or os.path.splitext(uploaded.filename)[0], company_name=parsed.get("company_name"), original_filename=uploaded.filename, industry=parsed.get("industry"), capabilities_text=", ".join(parsed.get("capabilities") or []), locations_text=", ".join(parsed.get("locations") or []), extracted_text=text[:200000], parsed_json=json.dumps(parsed, ensure_ascii=False, default=str), is_active=True)
+        session_db.execute(
+            Profile.__table__.update()
+            .where(Profile.user_id == user.id)
+            .values(is_active=False)
+        )
+
+        profile = Profile(
+            user_id=user.id,
+            name=parsed.get("company_name") or os.path.splitext(uploaded.filename)[0],
+            company_name=parsed.get("company_name"),
+            original_filename=uploaded.filename,
+            industry=parsed.get("industry"),
+            capabilities_text=", ".join(parsed.get("capabilities") or []),
+            locations_text=", ".join(parsed.get("locations") or []),
+            extracted_text=text[:200000],
+            parsed_json=json.dumps(parsed, ensure_ascii=False, default=str),
+            is_active=True,
+        )
         session_db.add(profile)
         session_db.flush()
+
         for issue in parsed.get("issues") or []:
-            session_db.add(ProfileIssue(profile_id=profile.id, issue_type="profile_gap", title=issue.get("title") or "Profile issue", detail=issue.get("detail"), penalty_weight=float(issue.get("penalty_weight") or 5), status="pending"))
+            session_db.add(
+                ProfileIssue(
+                    profile_id=profile.id,
+                    issue_type="profile_gap",
+                    title=issue.get("title") or "Profile issue",
+                    detail=issue.get("detail"),
+                    penalty_weight=float(issue.get("penalty_weight") or 5),
+                    status="pending",
+                )
+            )
+
     flash("Profile uploaded and set as active.", "success")
     return redirect(url_for("profiles"))
 
@@ -1015,7 +1048,12 @@ def activate_profile(profile_id: int):
         if not profile or profile.user_id != user.id:
             flash("Profile not found.", "error")
             return redirect(url_for("profiles"))
-        session_db.execute(Profile.__table__.update().where(Profile.user_id == user.id).values(is_active=False))
+
+        session_db.execute(
+            Profile.__table__.update()
+            .where(Profile.user_id == user.id)
+            .values(is_active=False)
+        )
         profile.is_active = True
         flash("Active profile updated.", "success")
         return redirect(url_for("profiles"))
@@ -1028,6 +1066,7 @@ def update_issue_status(issue_id: int):
     if status not in {"pending", "fixed"}:
         flash("Invalid issue status.", "error")
         return redirect(url_for("profiles"))
+
     with get_db_session() as session_db:
         user = get_current_user(session_db)
         issue = session_db.get(ProfileIssue, issue_id)
@@ -1045,7 +1084,10 @@ def api_run_ingest():
     with get_db_session() as session_db:
         page_size = int(request.args.get("page_size", os.getenv("ETENDERS_PAGE_SIZE", "10")))
         try:
-            result = ingest_tenders(session=session_db, page_size=page_size)
+            result = ingest_tenders(
+                session=session_db,
+                page_size=page_size,
+            )
             return jsonify(result)
         except Exception as exc:
             session_db.rollback()
@@ -1058,15 +1100,40 @@ def api_fetch_documents():
     with get_db_session() as session_db:
         limit = max(1, min(int(request.args.get("limit", 10)), 100))
         force_retry_failed = str(request.args.get("force_retry_failed", "false")).lower() in {"1", "true", "yes"}
+
         try:
-            tenders = session_db.execute(select(TenderCache).where(TenderCache.is_live.is_(True), TenderCache.document_url.is_not(None)).order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at)).limit(limit)).scalars().all()
+            tenders = session_db.execute(
+                select(TenderCache)
+                .where(
+                    TenderCache.is_live.is_(True),
+                    TenderCache.document_url.is_not(None),
+                )
+                .order_by(TenderCache.closing_date.asc().nulls_last(), desc(TenderCache.updated_at))
+                .limit(limit)
+            ).scalars().all()
+
             if force_retry_failed:
                 for tender in tenders:
-                    latest_doc = session_db.execute(select(TenderDocumentCache).where(TenderDocumentCache.tender_id == tender.id).order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id)).limit(1)).scalars().first()
+                    latest_doc = session_db.execute(
+                        select(TenderDocumentCache)
+                        .where(TenderDocumentCache.tender_id == tender.id)
+                        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
+                        .limit(1)
+                    ).scalars().first()
                     if latest_doc and latest_doc.fetch_status == "failed":
                         latest_doc.fetch_status = "pending"
+
             result_items = fetch_documents_for_tenders(session_db, tenders)
-            summary = {"ok": True, "limit": limit, "candidates": len(tenders), "processed": len(result_items), "fetched": sum(1 for item in result_items if item.get("ok")), "fetch_failed": sum(1 for item in result_items if not item.get("ok")), "items": result_items}
+
+            summary = {
+                "ok": True,
+                "limit": limit,
+                "candidates": len(tenders),
+                "processed": len(result_items),
+                "fetched": sum(1 for item in result_items if item.get("ok")),
+                "fetch_failed": sum(1 for item in result_items if not item.get("ok")),
+                "items": result_items,
+            }
             return jsonify(summary)
         except Exception as exc:
             session_db.rollback()
@@ -1074,32 +1141,36 @@ def api_fetch_documents():
 
 
 
-@app.get("/api/admin/tender-document-debug/<int:tender_id>")
-def api_tender_document_debug(tender_id: int):
+@app.get("/api/admin/openai-analysis-debug/<int:tender_id>")
+@login_required
+def api_openai_analysis_debug(tender_id: int):
     with get_db_session() as session_db:
+        user = get_current_user(session_db)
         tender = session_db.get(TenderCache, tender_id)
         if not tender:
             return jsonify({"ok": False, "error": "tender_not_found"}), 404
 
-        doc = get_latest_document(session_db, tender_id)
-        text = (doc.extracted_text or "") if doc else ""
-        quality = document_text_quality(text)
+        profile = get_active_profile(session_db, user.id)
+        if not profile:
+            return jsonify({"ok": False, "error": "no_active_profile"}), 400
 
+        doc, document_text = get_cached_document_text(session_db, tender_id)
         return jsonify({
             "ok": True,
+            "openai_key_present": bool(os.getenv("OPENAI_API_KEY")),
+            "openai_package_available": OpenAI is not None,
+            "model": OPENAI_MODEL,
             "tender_id": tender_id,
             "title": tender.title,
             "document_url": tender.document_url,
-            "source_url": tender.source_url,
-            "has_document_row": bool(doc),
-            "fetch_status": doc.fetch_status if doc else None,
-            "filename": doc.filename if doc else None,
-            "content_type": doc.content_type if doc else None,
-            "fetched_at": doc.fetched_at.isoformat() if doc and doc.fetched_at else None,
-            "text_quality": quality,
-            "text_preview": text[:1000],
-            "error_message": doc.error_message if doc else None,
+            "has_cached_document": bool(doc),
+            "document_fetch_status": doc.fetch_status if doc else None,
+            "document_text_chars": len(document_text),
+            "document_text_preview": document_text[:1200],
+            "active_profile_id": profile.id,
+            "profile_company": profile.company_name,
         })
+
 
 
 @app.get("/health")
