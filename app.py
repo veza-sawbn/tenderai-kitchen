@@ -52,7 +52,7 @@ app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-fallback-
 init_db()
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "90"))
+OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
 
 
 def utcnow():
@@ -438,28 +438,19 @@ def compact_text(value: str, max_chars: int):
 
 def openai_tender_analysis(session_db, tender: TenderCache, profile: Profile):
     """
-    TenderAI analysis flow:
-    1. Read cached tender document text.
-    2. Send tender document + tender metadata + active CSD/supplier profile to OpenAI.
-    3. Ask OpenAI to determine:
-       - scope of work
-       - requirements and criteria
-       - supplier fit
-       - probability of winning/acquiring the opportunity
-       - measures to improve chances
-       - estimated delivery costs
-       - estimated revenue/contract value
-    4. Store the structured result in analysis_jobs.raw_result_json.
+    Fast, bounded OpenAI analysis.
+
+    The previous version was too heavy for a synchronous web request and could trigger 502s.
+    This version keeps the same product purpose but limits prompt size and response size so the
+    app returns before the platform times out.
     """
     client = get_openai_client()
     doc, document_text = get_cached_document_text(session_db, tender.id)
 
-    document_quality = {
-        "has_cached_document": bool(doc),
-        "fetch_status": doc.fetch_status if doc else None,
-        "text_chars": len(document_text),
-        "usable_text": len(document_text) >= 600,
-    }
+    document_text = compact_text(document_text or "", 9000)
+    has_document_text = len(document_text) >= 300
+
+    profile_text = compact_text(profile.extracted_text or "", 4000)
 
     profile_payload = {
         "company_name": profile.company_name,
@@ -467,11 +458,11 @@ def openai_tender_analysis(session_db, tender: TenderCache, profile: Profile):
         "industry": profile.industry,
         "capabilities": normalize_keywords(profile.capabilities_text or ""),
         "locations": normalize_keywords(profile.locations_text or ""),
-        "profile_text_excerpt": compact_text(profile.extracted_text or "", 8000),
+        "profile_text_excerpt": profile_text,
         "profile_gaps": [
             {"title": issue.title, "detail": issue.detail, "status": issue.status}
             for issue in (profile.issues or [])
-        ],
+        ][:10],
     }
 
     tender_payload = {
@@ -486,108 +477,97 @@ def openai_tender_analysis(session_db, tender: TenderCache, profile: Profile):
         "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
         "document_url": tender.document_url,
         "source_url": tender.source_url,
-        "document_quality": document_quality,
+        "document_fetch_status": doc.fetch_status if doc else None,
+        "document_text_chars_sent": len(document_text),
+        "has_document_text": has_document_text,
     }
 
     system_prompt = """
-You are TenderAI, a South African procurement and tender strategy analyst.
+You are TenderAI, a South African procurement analyst.
 
-Your job is to read the tender document like a bid manager, not to produce a generic summary.
+Read the tender text and active supplier/CSD profile. Produce a practical bid/no-bid assessment.
 
-You must use:
-1. The tender document text as primary evidence.
-2. The tender metadata as supporting evidence.
-3. The active supplier/CSD profile as the comparison profile.
+Do not be generic. Every output must relate to this tender, this buyer, this scope, this location, this profile, or the available tender text.
 
-Analyse this opportunity in the following order:
-A. Determine the real scope of work.
-B. Extract requirements, eligibility conditions, evaluation criteria, submission criteria and compliance documents.
-C. Compare the opportunity to the active CSD/supplier profile.
-D. Estimate the user's chance of acquiring/winning the opportunity.
-E. Recommend measures to improve the user's chances.
-F. Estimate project delivery costs and likely revenue/contract value where possible.
+You must determine:
+1. Scope of work.
+2. Requirements, compliance documents, submission criteria and evaluation criteria.
+3. Fit against the active supplier/CSD profile.
+4. Possibility of acquiring/winning the opportunity.
+5. Measures to improve chance of winning.
+6. Estimated cost to execute and estimated revenue/contract value.
 
-Rules:
-- Be specific to the tender and profile.
-- Do not give generic advice.
-- If the document does not provide pricing, quantities, duration or contract value, produce a conservative estimate and clearly mark assumptions.
-- Costs must be practical categories such as labour, materials, subcontractors, compliance/admin, transport/logistics, equipment, insurance, contingency and overhead.
-- Revenue must be estimated as likely contract value or billing potential, with low/base/high values where possible.
-- Probability must be realistic and linked to fit, compliance, competition and evidence in the profile.
-- If the tender document text is weak or unreadable, say that clearly and reduce confidence.
-- Return only valid JSON.
+If exact costs or revenue are not in the document, estimate using clear assumptions and mark them as estimates.
 
-Return this exact JSON object:
+Return only valid JSON with this exact structure:
 {
-  "score": number,
-  "probability_of_acquisition": number,
-  "fit_band": "high_potential" | "possible_fit" | "low_fit",
-  "bid_decision": "pursue" | "review_first" | "do_not_prioritise",
-  "executive_assessment": "specific 3-5 sentence analyst judgement",
-  "scope_of_work": {
-    "summary": "clear scope in plain English",
-    "deliverables": ["specific deliverable"],
-    "location": "specific location or unknown",
-    "buyer": "buyer name or unknown",
-    "duration_or_timeline": "duration/timeline or unknown"
-  },
-  "requirements_and_criteria": {
-    "mandatory_requirements": ["specific requirement"],
-    "evaluation_criteria": ["specific scoring/evaluation criterion"],
-    "submission_requirements": ["specific submission instruction"],
-    "compliance_documents": ["specific document/certificate/form"],
-    "briefing_requirements": ["briefing/site inspection requirement"]
-  },
-  "profile_fit": {
-    "matching_capabilities": ["profile strength matching tender"],
-    "weaknesses_or_gaps": ["missing proof/capability/compliance issue"],
-    "geographic_fit": "specific view",
-    "capacity_fit": "specific view",
-    "track_record_fit": "specific view"
-  },
-  "measures_to_improve_chances": ["specific action to improve probability"],
-  "estimated_project_costs": {
-    "currency": "ZAR",
-    "low": number|null,
-    "base": number|null,
-    "high": number|null,
-    "cost_breakdown": [
-      {"category": "category", "estimate": number|null, "basis": "assumption/evidence"}
-    ],
-    "cost_assumptions": ["specific assumption"]
-  },
-  "estimated_revenue": {
-    "currency": "ZAR",
-    "low": number|null,
-    "base": number|null,
-    "high": number|null,
-    "revenue_basis": "how revenue/contract value was estimated",
-    "gross_margin_comment": "plain English margin view"
-  },
-  "commercial_view": {
-    "pricing_strategy": "how the user should think about pricing",
-    "margin_risks": ["specific margin risk"],
-    "cashflow_risks": ["specific cashflow risk"]
-  },
-  "key_dates": ["specific date"],
-  "briefing_date": string|null,
-  "contact_email": string|null,
-  "contact_phone": string|null,
-  "proposal_required": boolean,
-  "document_match": boolean,
-  "document_match_reason": "what document evidence was used or missing",
-  "risks": ["specific risk"],
-  "questions_to_clarify": ["specific question"],
-  "recommended_next_steps": ["specific next action"],
-  "evidence_notes": ["short evidence phrase from tender/profile"],
-  "confidence_level": "high" | "medium" | "low"
+ "score": number,
+ "probability_of_acquisition": number,
+ "fit_band": "high_potential" | "possible_fit" | "low_fit",
+ "bid_decision": "pursue" | "review_first" | "do_not_prioritise",
+ "executive_assessment": string,
+ "scope_of_work": {
+   "summary": string,
+   "deliverables": [string],
+   "location": string,
+   "buyer": string,
+   "duration_or_timeline": string
+ },
+ "requirements_and_criteria": {
+   "mandatory_requirements": [string],
+   "evaluation_criteria": [string],
+   "submission_requirements": [string],
+   "compliance_documents": [string],
+   "briefing_requirements": [string]
+ },
+ "profile_fit": {
+   "matching_capabilities": [string],
+   "weaknesses_or_gaps": [string],
+   "geographic_fit": string,
+   "capacity_fit": string,
+   "track_record_fit": string
+ },
+ "measures_to_improve_chances": [string],
+ "estimated_project_costs": {
+   "currency": "ZAR",
+   "low": number|null,
+   "base": number|null,
+   "high": number|null,
+   "cost_breakdown": [{"category": string, "estimate": number|null, "basis": string}],
+   "cost_assumptions": [string]
+ },
+ "estimated_revenue": {
+   "currency": "ZAR",
+   "low": number|null,
+   "base": number|null,
+   "high": number|null,
+   "revenue_basis": string,
+   "gross_margin_comment": string
+ },
+ "commercial_view": {
+   "pricing_strategy": string,
+   "margin_risks": [string],
+   "cashflow_risks": [string]
+ },
+ "key_dates": [string],
+ "briefing_date": string|null,
+ "contact_email": string|null,
+ "contact_phone": string|null,
+ "proposal_required": boolean,
+ "document_match": boolean,
+ "document_match_reason": string,
+ "risks": [string],
+ "questions_to_clarify": [string],
+ "recommended_next_steps": [string],
+ "evidence_notes": [string],
+ "confidence_level": "high" | "medium" | "low"
 }
 """.strip()
 
     user_payload = {
         "supplier_csd_profile": profile_payload,
         "tender": tender_payload,
-        "tender_document_text": compact_text(document_text, 35000),
+        "tender_document_text": document_text,
     }
 
     response = client.chat.completions.create(
@@ -597,61 +577,53 @@ Return this exact JSON object:
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ],
         response_format={"type": "json_object"},
-        temperature=0.15,
+        temperature=0.1,
+        max_tokens=1400,
     )
 
     content = response.choices[0].message.content or ""
     parsed = extract_json_object(content)
 
-    score = float(parsed.get("score") or 0)
-    score = max(0.0, min(score, 100.0))
-    probability = float(parsed.get("probability_of_acquisition") or score)
-    probability = max(0.0, min(probability, 100.0))
+    score = max(0.0, min(float(parsed.get("score") or 0), 100.0))
+    probability = max(0.0, min(float(parsed.get("probability_of_acquisition") or score), 100.0))
 
-    scope = parsed.get("scope_of_work") or {}
-    requirements = parsed.get("requirements_and_criteria") or {}
-    fit = parsed.get("profile_fit") or {}
-    costs = parsed.get("estimated_project_costs") or {}
-    revenue = parsed.get("estimated_revenue") or {}
-    commercial = parsed.get("commercial_view") or {}
+    scope = parsed.get("scope_of_work") if isinstance(parsed.get("scope_of_work"), dict) else {}
+    requirements = parsed.get("requirements_and_criteria") if isinstance(parsed.get("requirements_and_criteria"), dict) else {}
+    fit = parsed.get("profile_fit") if isinstance(parsed.get("profile_fit"), dict) else {}
+    costs = parsed.get("estimated_project_costs") if isinstance(parsed.get("estimated_project_costs"), dict) else {}
+    revenue = parsed.get("estimated_revenue") if isinstance(parsed.get("estimated_revenue"), dict) else {}
+    commercial = parsed.get("commercial_view") if isinstance(parsed.get("commercial_view"), dict) else {}
 
     parsed["score"] = score
     parsed["probability_of_acquisition"] = probability
     parsed["fit_band"] = parsed.get("fit_band") or fit_band_from_score(score) or "low_fit"
     parsed["bid_decision"] = parsed.get("bid_decision") or ("pursue" if probability >= 70 else "review_first" if probability >= 45 else "do_not_prioritise")
     parsed["proposal_required"] = bool(parsed.get("proposal_required"))
-    parsed["document_match"] = bool(parsed.get("document_match"))
+    parsed["document_match"] = bool(parsed.get("document_match")) and has_document_text
 
     parsed["scope_of_work"] = {
-        "summary": scope.get("summary") or extract_scope_summary(tender),
-        "deliverables": as_list(scope.get("deliverables"), 10),
+        "summary": scope.get("summary") or extract_scope_summary(tender, document_text),
+        "deliverables": as_list(scope.get("deliverables"), 8),
         "location": scope.get("location") or tender.province or "unknown",
         "buyer": scope.get("buyer") or tender.buyer_name or "unknown",
         "duration_or_timeline": scope.get("duration_or_timeline") or "unknown",
     }
 
     parsed["requirements_and_criteria"] = {
-        "mandatory_requirements": as_list(requirements.get("mandatory_requirements"), 12),
-        "evaluation_criteria": as_list(requirements.get("evaluation_criteria"), 12),
-        "submission_requirements": as_list(requirements.get("submission_requirements"), 12),
-        "compliance_documents": as_list(requirements.get("compliance_documents"), 12),
-        "briefing_requirements": as_list(requirements.get("briefing_requirements"), 8),
+        "mandatory_requirements": as_list(requirements.get("mandatory_requirements"), 10),
+        "evaluation_criteria": as_list(requirements.get("evaluation_criteria"), 10),
+        "submission_requirements": as_list(requirements.get("submission_requirements"), 10),
+        "compliance_documents": as_list(requirements.get("compliance_documents"), 10),
+        "briefing_requirements": as_list(requirements.get("briefing_requirements"), 6),
     }
 
     parsed["profile_fit"] = {
-        "matching_capabilities": as_list(fit.get("matching_capabilities"), 10),
-        "weaknesses_or_gaps": as_list(fit.get("weaknesses_or_gaps"), 10),
+        "matching_capabilities": as_list(fit.get("matching_capabilities"), 8),
+        "weaknesses_or_gaps": as_list(fit.get("weaknesses_or_gaps"), 8),
         "geographic_fit": fit.get("geographic_fit") or "unknown",
         "capacity_fit": fit.get("capacity_fit") or "unknown",
         "track_record_fit": fit.get("track_record_fit") or "unknown",
     }
-
-    parsed["measures_to_improve_chances"] = as_list(parsed.get("measures_to_improve_chances"), 10)
-    parsed["key_dates"] = as_list(parsed.get("key_dates"), 10)
-    parsed["risks"] = as_list(parsed.get("risks"), 10)
-    parsed["questions_to_clarify"] = as_list(parsed.get("questions_to_clarify"), 10)
-    parsed["recommended_next_steps"] = as_list(parsed.get("recommended_next_steps"), 10)
-    parsed["evidence_notes"] = as_list(parsed.get("evidence_notes"), 10)
 
     parsed["estimated_project_costs"] = {
         "currency": costs.get("currency") or "ZAR",
@@ -659,7 +631,7 @@ Return this exact JSON object:
         "base": costs.get("base"),
         "high": costs.get("high"),
         "cost_breakdown": costs.get("cost_breakdown") if isinstance(costs.get("cost_breakdown"), list) else [],
-        "cost_assumptions": as_list(costs.get("cost_assumptions"), 10),
+        "cost_assumptions": as_list(costs.get("cost_assumptions"), 8),
     }
 
     parsed["estimated_revenue"] = {
@@ -667,17 +639,24 @@ Return this exact JSON object:
         "low": revenue.get("low"),
         "base": revenue.get("base"),
         "high": revenue.get("high"),
-        "revenue_basis": revenue.get("revenue_basis") or "No clear contract value found in the available text.",
-        "gross_margin_comment": revenue.get("gross_margin_comment") or "Margin cannot be confirmed without pricing schedule and supplier cost inputs.",
+        "revenue_basis": revenue.get("revenue_basis") or "No clear contract value found in the available tender text.",
+        "gross_margin_comment": revenue.get("gross_margin_comment") or "Margin depends on final pricing schedule, delivery model, and supplier cost inputs.",
     }
 
     parsed["commercial_view"] = {
-        "pricing_strategy": commercial.get("pricing_strategy") or "Price only after confirming full scope, compulsory requirements, and delivery resources.",
-        "margin_risks": as_list(commercial.get("margin_risks"), 8),
-        "cashflow_risks": as_list(commercial.get("cashflow_risks"), 8),
+        "pricing_strategy": commercial.get("pricing_strategy") or "Confirm scope and pricing schedule before final bid pricing.",
+        "margin_risks": as_list(commercial.get("margin_risks"), 6),
+        "cashflow_risks": as_list(commercial.get("cashflow_risks"), 6),
     }
 
-    # Compatibility fields for existing templates.
+    parsed["measures_to_improve_chances"] = as_list(parsed.get("measures_to_improve_chances"), 8)
+    parsed["key_dates"] = as_list(parsed.get("key_dates"), 8)
+    parsed["risks"] = as_list(parsed.get("risks"), 8)
+    parsed["questions_to_clarify"] = as_list(parsed.get("questions_to_clarify"), 8)
+    parsed["recommended_next_steps"] = as_list(parsed.get("recommended_next_steps"), 8)
+    parsed["evidence_notes"] = as_list(parsed.get("evidence_notes"), 8)
+
+    # Existing-template compatibility fields.
     parsed["summary"] = parsed.get("executive_assessment") or parsed["scope_of_work"]["summary"]
     parsed["scope_summary"] = parsed["scope_of_work"]["summary"]
     parsed["mandatory_requirements"] = parsed["requirements_and_criteria"]["mandatory_requirements"]
@@ -690,7 +669,7 @@ Return this exact JSON object:
     parsed["analysis_source"] = "openai"
 
     if not parsed.get("document_match_reason"):
-        parsed["document_match_reason"] = "Readable tender document text was available." if document_text else "No readable tender document text was available."
+        parsed["document_match_reason"] = "Readable tender document text was sent to OpenAI." if has_document_text else "No usable tender document text was available; analysis used metadata only."
 
     return parsed
 
