@@ -17,13 +17,13 @@ except Exception:
 from models import TenderCache, TenderDocumentCache
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
+OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "25"))
 
 # Keep each request small enough for App Runner / browser-triggered calls.
-PARSE_CHUNK_CHARS = int(os.getenv("TENDER_PARSE_CHUNK_CHARS", "2500"))
-PARSE_MAX_CHUNKS = int(os.getenv("TENDER_PARSE_MAX_CHUNKS", "8"))
-PARSE_CHUNK_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CHUNK_MAX_TOKENS", "1000"))
-PARSE_CONSOLIDATE_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CONSOLIDATE_MAX_TOKENS", "1300"))
+PARSE_CHUNK_CHARS = int(os.getenv("TENDER_PARSE_CHUNK_CHARS", "1800"))
+PARSE_MAX_CHUNKS = int(os.getenv("TENDER_PARSE_MAX_CHUNKS", "10"))
+PARSE_CHUNK_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CHUNK_MAX_TOKENS", "700"))
+PARSE_CONSOLIDATE_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CONSOLIDATE_MAX_TOKENS", "900"))
 
 
 def utcnow():
@@ -273,25 +273,82 @@ def create_parse_row(session, tender: TenderCache, doc: TenderDocumentCache, sou
     return int(row["id"])
 
 
+
+def regex_fallback_parse_chunk(chunk: str) -> Dict[str, Any]:
+    """
+    Last-resort local parser. This prevents the route from crashing if OpenAI times out
+    or returns malformed output. It is not the primary parser, but it keeps progress moving.
+    """
+    text_value = re.sub(r"\s+", " ", (chunk or "")).strip()
+
+    emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text_value)
+    phones = re.findall(r"\+?\d[\d\s\-()]{7,}\d", text_value)
+    dates = re.findall(r"\b(?:\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})\b", text_value)
+
+    sentences = re.split(r"(?<=[.!?])\s+", text_value)
+    scope_items = []
+    requirements = []
+    compliance = []
+    evaluation = []
+    submission = []
+    commercial = []
+    risks = []
+
+    for sentence in sentences[:80]:
+        s = sentence.strip()
+        low = s.lower()
+        if not s or len(s) < 20:
+            continue
+        if any(k in low for k in ["scope", "supply", "deliver", "provide", "appointment", "service provider", "works"]):
+            scope_items.append(s[:240])
+        if any(k in low for k in ["must", "required", "shall", "compulsory", "mandatory"]):
+            requirements.append(s[:240])
+        if any(k in low for k in ["tax clearance", "csd", "b-bbee", "bbbee", "cidb", "certificate", "declaration", "sbd"]):
+            compliance.append(s[:240])
+        if any(k in low for k in ["evaluation", "functionality", "points", "price", "preference", "scoring"]):
+            evaluation.append(s[:240])
+        if any(k in low for k in ["submit", "submission", "closing", "tender box", "email"]):
+            submission.append(s[:240])
+        if any(k in low for k in ["pricing", "price", "amount", "rate", "bill", "boq", "quotation"]):
+            commercial.append(s[:240])
+        if any(k in low for k in ["disqual", "non-responsive", "invalid", "late", "failure"]):
+            risks.append(s[:240])
+
+    return {
+        "scope_items": as_list(scope_items, 5),
+        "requirements": as_list(requirements, 5),
+        "compliance_documents": as_list(compliance, 5),
+        "evaluation_criteria": as_list(evaluation, 5),
+        "submission_requirements": as_list(submission, 5),
+        "key_dates": as_list(dates, 5),
+        "contacts": {
+            "emails": as_list(emails, 5),
+            "phones": as_list(phones, 5),
+        },
+        "commercial_clues": as_list(commercial, 5),
+        "risks": as_list(risks, 5),
+        "evidence_notes": as_list(sentences[:5], 5),
+        "_parser": "regex_fallback",
+    }
+
+
+
 def parse_chunk(client, tender: TenderCache, chunk: str, chunk_index: int, total_chunks: int) -> Dict[str, Any]:
     system_prompt = """
 You are parsing one chunk of a South African tender document.
 
 Extract only facts visible in this chunk. Do not guess.
-Return valid JSON only:
+Return valid JSON only. Keep each list short, max 5 items:
 {
  "scope_items": [string],
- "deliverables": [string],
- "mandatory_requirements": [string],
+ "requirements": [string],
+ "compliance_documents": [string],
  "evaluation_criteria": [string],
  "submission_requirements": [string],
- "compliance_documents": [string],
- "briefing_requirements": [string],
  "key_dates": [string],
- "contacts": {"emails": [string], "phones": [string], "names": [string]},
- "pricing_or_value_clues": [string],
- "quantities_or_volumes": [string],
- "risks_or_disqualifiers": [string],
+ "contacts": {"emails": [string], "phones": [string]},
+ "commercial_clues": [string],
+ "risks": [string],
  "evidence_notes": [string]
 }
 """.strip()
@@ -333,6 +390,7 @@ def combine_locally(parsed_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         combined["scope_items"] += as_list(item.get("scope_items"), 30)
         combined["deliverables"] += as_list(item.get("deliverables"), 30)
         combined["mandatory_requirements"] += as_list(item.get("mandatory_requirements"), 30)
+        combined["mandatory_requirements"] += as_list(item.get("requirements"), 30)
         combined["evaluation_criteria"] += as_list(item.get("evaluation_criteria"), 30)
         combined["submission_requirements"] += as_list(item.get("submission_requirements"), 30)
         combined["compliance_documents"] += as_list(item.get("compliance_documents"), 30)
@@ -346,8 +404,10 @@ def combine_locally(parsed_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
             combined["contact_names"] += as_list(contacts.get("names"), 20)
 
         combined["pricing_or_value_clues"] += as_list(item.get("pricing_or_value_clues"), 30)
+        combined["pricing_or_value_clues"] += as_list(item.get("commercial_clues"), 30)
         combined["quantities_or_volumes"] += as_list(item.get("quantities_or_volumes"), 30)
         combined["risks_or_disqualifiers"] += as_list(item.get("risks_or_disqualifiers"), 30)
+        combined["risks_or_disqualifiers"] += as_list(item.get("risks"), 30)
         combined["evidence_notes"] += as_list(item.get("evidence_notes"), 40)
 
     for key in list(combined.keys()):
@@ -506,17 +566,9 @@ def parse_tender_document(session, tender: TenderCache, force: bool = False) -> 
         try:
             chunk_result = parse_chunk(client, tender, chunks[current_index], current_index, total_chunks)
         except Exception as exc:
-            session.execute(text("""
-                UPDATE tender_document_parsed_cache
-                SET parse_status = 'failed',
-                    error_message = :error_message,
-                    updated_at = NOW()
-                WHERE id = :id
-            """), {
-                "id": parsed_id,
-                "error_message": f"Chunk {current_index + 1}/{total_chunks} parse failed: {str(exc)}"[:5000],
-            })
-            raise
+            # Do not crash the web request. Store a local fallback chunk and continue.
+            chunk_result = regex_fallback_parse_chunk(chunks[current_index])
+            chunk_result["_openai_error"] = str(exc)[:1000]
 
         parsed_chunks.append(chunk_result)
 
@@ -552,10 +604,39 @@ def parse_tender_document(session, tender: TenderCache, force: bool = False) -> 
             "next_action": f"/api/admin/parse-document/{tender.id}",
         }
 
-    # All chunks are done. Consolidate once.
-    client = get_openai_client()
+    # All chunks are done. Consolidate once. If OpenAI consolidation fails,
+    # still save a useful local intelligence record instead of crashing.
     combined = combine_locally(parsed_chunks)
-    final_parse = consolidate_parse(client, tender, combined)
+    try:
+        client = get_openai_client()
+        final_parse = consolidate_parse(client, tender, combined)
+    except Exception as exc:
+        final_parse = {
+            "scope_summary": "; ".join(as_list(combined.get("scope_items"), 5)) or tender.description or tender.title,
+            "deliverables": as_list(combined.get("deliverables"), 20),
+            "requirements_and_criteria": {
+                "mandatory_requirements": as_list(combined.get("mandatory_requirements"), 20),
+                "evaluation_criteria": as_list(combined.get("evaluation_criteria"), 20),
+                "submission_requirements": as_list(combined.get("submission_requirements"), 20),
+                "compliance_documents": as_list(combined.get("compliance_documents"), 20),
+                "briefing_requirements": as_list(combined.get("briefing_requirements"), 12),
+            },
+            "commercial_clues": {
+                "pricing_or_value_clues": as_list(combined.get("pricing_or_value_clues"), 20),
+                "quantities_or_volumes": as_list(combined.get("quantities_or_volumes"), 20),
+                "estimated_contract_value_visible": None,
+            },
+            "key_dates": as_list(combined.get("key_dates"), 20),
+            "contact_email": (as_list(combined.get("emails"), 1) or [None])[0],
+            "contact_phone": (as_list(combined.get("phones"), 1) or [None])[0],
+            "contact_names": as_list(combined.get("contact_names"), 12),
+            "location": tender.province,
+            "risks_or_disqualifiers": as_list(combined.get("risks_or_disqualifiers"), 20),
+            "evidence_notes": as_list(combined.get("evidence_notes"), 30),
+            "parse_confidence": "medium",
+            "_consolidation_fallback": True,
+            "_consolidation_error": str(exc)[:1000],
+        }
 
     final_parse["_parse_meta"] = {
         "tender_id": tender.id,
