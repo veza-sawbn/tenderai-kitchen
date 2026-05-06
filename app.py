@@ -25,11 +25,6 @@ except ImportError:
     def load_dotenv(*args, **kwargs):
         return False
 
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
-
 from database import get_db_session, init_db
 from models import (
     AnalysisJob,
@@ -42,6 +37,8 @@ from models import (
     UserTenderDecision,
 )
 from services.document_fetcher import fetch_documents_for_tenders
+from services.tender_document_parser import parse_tender_document, parse_live_tender_documents, get_latest_parsed_document
+from services.tender_ai_analysis import analyze_tender_against_profile
 from services.etenders_ingest import ingest_tenders
 
 load_dotenv()
@@ -50,9 +47,6 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "tenderai-dev-fallback-secret")
 
 init_db()
-
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
 
 
 def utcnow():
@@ -315,7 +309,6 @@ def latest_analysis_for(session_db, user_id: int, tender_id: int):
     ).scalars().first()
     if not job:
         return None
-
     raw = safe_loads(job.raw_result_json, {})
     return {
         "id": job.id,
@@ -332,8 +325,6 @@ def latest_analysis_for(session_db, user_id: int, tender_id: int):
         "bid_decision": raw.get("bid_decision"),
         "probability_of_acquisition": raw.get("probability_of_acquisition"),
         "executive_assessment": raw.get("executive_assessment"),
-        "scope_of_work": raw.get("scope_of_work") or {},
-        "requirements_and_criteria": raw.get("requirements_and_criteria") or {},
         "profile_fit": raw.get("profile_fit") or {},
         "estimated_project_costs": raw.get("estimated_project_costs") or {},
         "estimated_revenue": raw.get("estimated_revenue") or {},
@@ -350,9 +341,8 @@ def latest_analysis_for(session_db, user_id: int, tender_id: int):
         "evidence_notes": raw.get("evidence_notes") or [],
         "analysis_source": raw.get("analysis_source"),
         "analysis_source_error": raw.get("analysis_source_error"),
-        "document_fetch_status": raw.get("document_fetch_status"),
-        "document_text_chars": raw.get("document_text_chars"),
-        "confidence_level": raw.get("confidence_level"),
+        "parsed_document_id": raw.get("parsed_document_id"),
+        "parse_confidence": raw.get("parse_confidence"),
     }
 
 
@@ -377,301 +367,23 @@ def find_running_analysis(session_db, user_id: int, tender_id: int):
     ).scalars().first()
 
 
+def build_minimal_analysis(tender: TenderCache, profile: Profile, extracted_text: str):
+    email_match = re.search(r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", extracted_text or "")
+    phone_match = re.search(r"(\+?\d[\d\s\-()]{7,}\d)", extracted_text or "")
+    briefing_match = re.search(r"(?:brief(?:ing)?(?: session)?)[^0-9]{0,20}(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})", extracted_text or "", re.I)
 
-def get_openai_client():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set.")
-    if OpenAI is None:
-        raise RuntimeError("The openai Python package is not available in this deployment.")
-    return OpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT_SECONDS)
-
-
-def extract_json_object(text_value: str):
-    if not text_value:
-        raise ValueError("OpenAI returned an empty response.")
-    text_value = text_value.strip()
-    if text_value.startswith("```"):
-        text_value = re.sub(r"^```(?:json)?", "", text_value, flags=re.I).strip()
-        text_value = re.sub(r"```$", "", text_value).strip()
-    try:
-        return json.loads(text_value)
-    except Exception:
-        start = text_value.find("{")
-        end = text_value.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(text_value[start:end + 1])
-        raise
-
-
-def as_list(value, limit=6):
-    if not value:
-        return []
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, list):
-        return []
-    out = []
-    for item in value:
-        item = str(item).strip()
-        if item:
-            out.append(item)
-    return out[:limit]
-
-
-def get_cached_document_text(session_db, tender_id: int):
-    doc = session_db.execute(
-        select(TenderDocumentCache)
-        .where(TenderDocumentCache.tender_id == tender_id)
-        .order_by(desc(TenderDocumentCache.fetched_at), desc(TenderDocumentCache.id))
-        .limit(1)
-    ).scalars().first()
-
-    text_value = (doc.extracted_text or "").strip() if doc else ""
-    return doc, text_value
-
-
-def compact_text(value: str, max_chars: int):
-    value = re.sub(r"\\s+", " ", (value or "")).strip()
-    return value[:max_chars]
-
-
-def openai_tender_analysis(session_db, tender: TenderCache, profile: Profile):
-    """
-    Fast, bounded OpenAI analysis.
-
-    The previous version was too heavy for a synchronous web request and could trigger 502s.
-    This version keeps the same product purpose but limits prompt size and response size so the
-    app returns before the platform times out.
-    """
-    client = get_openai_client()
-    doc, document_text = get_cached_document_text(session_db, tender.id)
-
-    document_text = compact_text(document_text or "", 9000)
-    has_document_text = len(document_text) >= 300
-
-    profile_text = compact_text(profile.extracted_text or "", 4000)
-
-    profile_payload = {
-        "company_name": profile.company_name,
-        "profile_name": profile.name,
-        "industry": profile.industry,
-        "capabilities": normalize_keywords(profile.capabilities_text or ""),
-        "locations": normalize_keywords(profile.locations_text or ""),
-        "profile_text_excerpt": profile_text,
-        "profile_gaps": [
-            {"title": issue.title, "detail": issue.detail, "status": issue.status}
-            for issue in (profile.issues or [])
-        ][:10],
+    score = keyword_overlap_score(profile, tender) or 0
+    return {
+        "document_match": True if extracted_text.strip() else False,
+        "document_match_reason": "Readable tender document text was found." if extracted_text.strip() else "No readable document text was found.",
+        "score": score,
+        "summary": "Tender analyzed successfully." if extracted_text.strip() else "Tender document could not be read well enough.",
+        "scope_summary": extract_scope_summary(tender),
+        "briefing_date": briefing_match.group(1).replace("/", "-") if briefing_match else None,
+        "contact_email": email_match.group(1) if email_match else None,
+        "contact_phone": phone_match.group(1) if phone_match else None,
+        "proposal_required": bool(re.search(r"\bproposal\b", extracted_text or "", re.I)),
     }
-
-    tender_payload = {
-        "id": tender.id,
-        "title": tender.title,
-        "description": tender.description,
-        "buyer_name": tender.buyer_name,
-        "province": tender.province,
-        "industry": tender.industry,
-        "tender_type": tender.tender_type,
-        "issued_date": tender.issued_date.isoformat() if tender.issued_date else None,
-        "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
-        "document_url": tender.document_url,
-        "source_url": tender.source_url,
-        "document_fetch_status": doc.fetch_status if doc else None,
-        "document_text_chars_sent": len(document_text),
-        "has_document_text": has_document_text,
-    }
-
-    system_prompt = """
-You are TenderAI, a South African procurement analyst.
-
-Read the tender text and active supplier/CSD profile. Produce a practical bid/no-bid assessment.
-
-Do not be generic. Every output must relate to this tender, this buyer, this scope, this location, this profile, or the available tender text.
-
-You must determine:
-1. Scope of work.
-2. Requirements, compliance documents, submission criteria and evaluation criteria.
-3. Fit against the active supplier/CSD profile.
-4. Possibility of acquiring/winning the opportunity.
-5. Measures to improve chance of winning.
-6. Estimated cost to execute and estimated revenue/contract value.
-
-If exact costs or revenue are not in the document, estimate using clear assumptions and mark them as estimates.
-
-Return only valid JSON with this exact structure:
-{
- "score": number,
- "probability_of_acquisition": number,
- "fit_band": "high_potential" | "possible_fit" | "low_fit",
- "bid_decision": "pursue" | "review_first" | "do_not_prioritise",
- "executive_assessment": string,
- "scope_of_work": {
-   "summary": string,
-   "deliverables": [string],
-   "location": string,
-   "buyer": string,
-   "duration_or_timeline": string
- },
- "requirements_and_criteria": {
-   "mandatory_requirements": [string],
-   "evaluation_criteria": [string],
-   "submission_requirements": [string],
-   "compliance_documents": [string],
-   "briefing_requirements": [string]
- },
- "profile_fit": {
-   "matching_capabilities": [string],
-   "weaknesses_or_gaps": [string],
-   "geographic_fit": string,
-   "capacity_fit": string,
-   "track_record_fit": string
- },
- "measures_to_improve_chances": [string],
- "estimated_project_costs": {
-   "currency": "ZAR",
-   "low": number|null,
-   "base": number|null,
-   "high": number|null,
-   "cost_breakdown": [{"category": string, "estimate": number|null, "basis": string}],
-   "cost_assumptions": [string]
- },
- "estimated_revenue": {
-   "currency": "ZAR",
-   "low": number|null,
-   "base": number|null,
-   "high": number|null,
-   "revenue_basis": string,
-   "gross_margin_comment": string
- },
- "commercial_view": {
-   "pricing_strategy": string,
-   "margin_risks": [string],
-   "cashflow_risks": [string]
- },
- "key_dates": [string],
- "briefing_date": string|null,
- "contact_email": string|null,
- "contact_phone": string|null,
- "proposal_required": boolean,
- "document_match": boolean,
- "document_match_reason": string,
- "risks": [string],
- "questions_to_clarify": [string],
- "recommended_next_steps": [string],
- "evidence_notes": [string],
- "confidence_level": "high" | "medium" | "low"
-}
-""".strip()
-
-    user_payload = {
-        "supplier_csd_profile": profile_payload,
-        "tender": tender_payload,
-        "tender_document_text": document_text,
-    }
-
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.1,
-        max_tokens=1400,
-    )
-
-    content = response.choices[0].message.content or ""
-    parsed = extract_json_object(content)
-
-    score = max(0.0, min(float(parsed.get("score") or 0), 100.0))
-    probability = max(0.0, min(float(parsed.get("probability_of_acquisition") or score), 100.0))
-
-    scope = parsed.get("scope_of_work") if isinstance(parsed.get("scope_of_work"), dict) else {}
-    requirements = parsed.get("requirements_and_criteria") if isinstance(parsed.get("requirements_and_criteria"), dict) else {}
-    fit = parsed.get("profile_fit") if isinstance(parsed.get("profile_fit"), dict) else {}
-    costs = parsed.get("estimated_project_costs") if isinstance(parsed.get("estimated_project_costs"), dict) else {}
-    revenue = parsed.get("estimated_revenue") if isinstance(parsed.get("estimated_revenue"), dict) else {}
-    commercial = parsed.get("commercial_view") if isinstance(parsed.get("commercial_view"), dict) else {}
-
-    parsed["score"] = score
-    parsed["probability_of_acquisition"] = probability
-    parsed["fit_band"] = parsed.get("fit_band") or fit_band_from_score(score) or "low_fit"
-    parsed["bid_decision"] = parsed.get("bid_decision") or ("pursue" if probability >= 70 else "review_first" if probability >= 45 else "do_not_prioritise")
-    parsed["proposal_required"] = bool(parsed.get("proposal_required"))
-    parsed["document_match"] = bool(parsed.get("document_match")) and has_document_text
-
-    parsed["scope_of_work"] = {
-        "summary": scope.get("summary") or extract_scope_summary(tender, document_text),
-        "deliverables": as_list(scope.get("deliverables"), 8),
-        "location": scope.get("location") or tender.province or "unknown",
-        "buyer": scope.get("buyer") or tender.buyer_name or "unknown",
-        "duration_or_timeline": scope.get("duration_or_timeline") or "unknown",
-    }
-
-    parsed["requirements_and_criteria"] = {
-        "mandatory_requirements": as_list(requirements.get("mandatory_requirements"), 10),
-        "evaluation_criteria": as_list(requirements.get("evaluation_criteria"), 10),
-        "submission_requirements": as_list(requirements.get("submission_requirements"), 10),
-        "compliance_documents": as_list(requirements.get("compliance_documents"), 10),
-        "briefing_requirements": as_list(requirements.get("briefing_requirements"), 6),
-    }
-
-    parsed["profile_fit"] = {
-        "matching_capabilities": as_list(fit.get("matching_capabilities"), 8),
-        "weaknesses_or_gaps": as_list(fit.get("weaknesses_or_gaps"), 8),
-        "geographic_fit": fit.get("geographic_fit") or "unknown",
-        "capacity_fit": fit.get("capacity_fit") or "unknown",
-        "track_record_fit": fit.get("track_record_fit") or "unknown",
-    }
-
-    parsed["estimated_project_costs"] = {
-        "currency": costs.get("currency") or "ZAR",
-        "low": costs.get("low"),
-        "base": costs.get("base"),
-        "high": costs.get("high"),
-        "cost_breakdown": costs.get("cost_breakdown") if isinstance(costs.get("cost_breakdown"), list) else [],
-        "cost_assumptions": as_list(costs.get("cost_assumptions"), 8),
-    }
-
-    parsed["estimated_revenue"] = {
-        "currency": revenue.get("currency") or "ZAR",
-        "low": revenue.get("low"),
-        "base": revenue.get("base"),
-        "high": revenue.get("high"),
-        "revenue_basis": revenue.get("revenue_basis") or "No clear contract value found in the available tender text.",
-        "gross_margin_comment": revenue.get("gross_margin_comment") or "Margin depends on final pricing schedule, delivery model, and supplier cost inputs.",
-    }
-
-    parsed["commercial_view"] = {
-        "pricing_strategy": commercial.get("pricing_strategy") or "Confirm scope and pricing schedule before final bid pricing.",
-        "margin_risks": as_list(commercial.get("margin_risks"), 6),
-        "cashflow_risks": as_list(commercial.get("cashflow_risks"), 6),
-    }
-
-    parsed["measures_to_improve_chances"] = as_list(parsed.get("measures_to_improve_chances"), 8)
-    parsed["key_dates"] = as_list(parsed.get("key_dates"), 8)
-    parsed["risks"] = as_list(parsed.get("risks"), 8)
-    parsed["questions_to_clarify"] = as_list(parsed.get("questions_to_clarify"), 8)
-    parsed["recommended_next_steps"] = as_list(parsed.get("recommended_next_steps"), 8)
-    parsed["evidence_notes"] = as_list(parsed.get("evidence_notes"), 8)
-
-    # Existing-template compatibility fields.
-    parsed["summary"] = parsed.get("executive_assessment") or parsed["scope_of_work"]["summary"]
-    parsed["scope_summary"] = parsed["scope_of_work"]["summary"]
-    parsed["mandatory_requirements"] = parsed["requirements_and_criteria"]["mandatory_requirements"]
-    parsed["compliance_documents"] = parsed["requirements_and_criteria"]["compliance_documents"]
-    parsed["strengths"] = parsed["profile_fit"]["matching_capabilities"]
-    parsed["gaps"] = parsed["profile_fit"]["weaknesses_or_gaps"]
-    parsed["recommendations"] = parsed["recommended_next_steps"]
-    parsed["document_fetch_status"] = doc.fetch_status if doc else None
-    parsed["document_text_chars"] = len(document_text)
-    parsed["analysis_source"] = "openai"
-
-    if not parsed.get("document_match_reason"):
-        parsed["document_match_reason"] = "Readable tender document text was sent to OpenAI." if has_document_text else "No usable tender document text was available; analysis used metadata only."
-
-    return parsed
 
 
 @app.context_processor
@@ -1009,6 +721,11 @@ def analyze_tender_page(tender_id: int):
             flash("Please upload and activate a business profile first.", "error")
             return redirect(url_for("profiles"))
 
+        parsed_doc = get_latest_parsed_document(session_db, tender_id)
+        if not parsed_doc:
+            flash("Parse the tender document first. Analysis now uses the parsed tender intelligence record, not the raw document.", "warning")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
         existing_running = find_running_analysis(session_db, user.id, tender_id)
         if existing_running:
             flash("An analysis is already running for this tender.", "warning")
@@ -1024,7 +741,7 @@ def analyze_tender_page(tender_id: int):
         session_db.flush()
 
         try:
-            analysis = openai_tender_analysis(session_db, tender, active_profile)
+            analysis = analyze_tender_against_profile(session_db, tender, active_profile)
 
             job.status = "completed"
             job.score = float(analysis.get("score") or 0)
@@ -1039,25 +756,21 @@ def analyze_tender_page(tender_id: int):
                 + ((analysis.get("commercial_view") or {}).get("margin_risks") or [])
                 + ((analysis.get("commercial_view") or {}).get("cashflow_risks") or [])
             )
-            job.recommendations_text = "\n".join(
-                (analysis.get("recommendations") or [])
-                + (analysis.get("recommended_next_steps") or [])
-            )
+            job.recommendations_text = "\n".join(analysis.get("recommendations") or [])
             job.raw_result_json = json.dumps(analysis, ensure_ascii=False, default=str)
             job.error_message = None
 
-            flash("OpenAI tender analysis completed.", "success")
+            flash("Tender analysis completed from parsed document intelligence.", "success")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
         except Exception as exc:
-            # Do not hide OpenAI failure behind generic heuristic output.
             job.status = "failed"
             job.error_message = str(exc)
             job.raw_result_json = json.dumps({
-                "analysis_source": "openai_failed",
+                "analysis_source": "openai_from_parsed_document_failed",
                 "analysis_source_error": str(exc),
             }, ensure_ascii=False)
-            flash(f"OpenAI analysis failed: {exc}", "error")
+            flash(f"Analysis failed: {exc}", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
 
 
@@ -1208,6 +921,49 @@ def api_run_ingest():
             return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
 
 
+
+@app.get("/api/admin/parse-document/<int:tender_id>")
+@app.post("/api/admin/parse-document/<int:tender_id>")
+def api_parse_document(tender_id: int):
+    with get_db_session() as session_db:
+        tender = session_db.get(TenderCache, tender_id)
+        if not tender:
+            return jsonify({"ok": False, "error": "tender_not_found"}), 404
+
+        force = str(request.args.get("force", "false")).lower() in {"1", "true", "yes"}
+
+        try:
+            result = parse_tender_document(session_db, tender, force=force)
+            return jsonify(result)
+        except Exception as exc:
+            session_db.rollback()
+            return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
+
+
+@app.get("/api/admin/parse-documents")
+@app.post("/api/admin/parse-documents")
+def api_parse_documents():
+    with get_db_session() as session_db:
+        limit = int(request.args.get("limit", 3))
+        force = str(request.args.get("force", "false")).lower() in {"1", "true", "yes"}
+
+        try:
+            result = parse_live_tender_documents(session_db, limit=limit, force=force)
+            return jsonify(result)
+        except Exception as exc:
+            session_db.rollback()
+            return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
+
+
+@app.get("/api/admin/parsed-document/<int:tender_id>")
+def api_get_parsed_document(tender_id: int):
+    with get_db_session() as session_db:
+        parsed = get_latest_parsed_document(session_db, tender_id)
+        if not parsed:
+            return jsonify({"ok": False, "error": "no_parsed_document"}), 404
+        return jsonify({"ok": True, "parsed_document": parsed})
+
+
 @app.get("/api/admin/fetch-documents")
 @app.post("/api/admin/fetch-documents")
 def api_fetch_documents():
@@ -1252,39 +1008,6 @@ def api_fetch_documents():
         except Exception as exc:
             session_db.rollback()
             return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
-
-
-
-@app.get("/api/admin/openai-analysis-debug/<int:tender_id>")
-@login_required
-def api_openai_analysis_debug(tender_id: int):
-    with get_db_session() as session_db:
-        user = get_current_user(session_db)
-        tender = session_db.get(TenderCache, tender_id)
-        if not tender:
-            return jsonify({"ok": False, "error": "tender_not_found"}), 404
-
-        profile = get_active_profile(session_db, user.id)
-        if not profile:
-            return jsonify({"ok": False, "error": "no_active_profile"}), 400
-
-        doc, document_text = get_cached_document_text(session_db, tender_id)
-        return jsonify({
-            "ok": True,
-            "openai_key_present": bool(os.getenv("OPENAI_API_KEY")),
-            "openai_package_available": OpenAI is not None,
-            "model": OPENAI_MODEL,
-            "tender_id": tender_id,
-            "title": tender.title,
-            "document_url": tender.document_url,
-            "has_cached_document": bool(doc),
-            "document_fetch_status": doc.fetch_status if doc else None,
-            "document_text_chars": len(document_text),
-            "document_text_preview": document_text[:1200],
-            "active_profile_id": profile.id,
-            "profile_company": profile.company_name,
-        })
-
 
 
 @app.get("/health")
