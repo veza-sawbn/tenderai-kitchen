@@ -5,7 +5,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import desc, select, text
 
@@ -17,9 +17,13 @@ except Exception:
 from models import TenderCache, TenderDocumentCache
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
-PARSE_CHUNK_CHARS = int(os.getenv("TENDER_PARSE_CHUNK_CHARS", "3500"))
-PARSE_MAX_CHUNKS = int(os.getenv("TENDER_PARSE_MAX_CHUNKS", "5"))
+OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
+
+# Keep each request small enough for App Runner / browser-triggered calls.
+PARSE_CHUNK_CHARS = int(os.getenv("TENDER_PARSE_CHUNK_CHARS", "2500"))
+PARSE_MAX_CHUNKS = int(os.getenv("TENDER_PARSE_MAX_CHUNKS", "8"))
+PARSE_CHUNK_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CHUNK_MAX_TOKENS", "650"))
+PARSE_CONSOLIDATE_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CONSOLIDATE_MAX_TOKENS", "900"))
 
 
 def utcnow():
@@ -62,8 +66,17 @@ def ensure_parse_table(session):
     """))
 
 
-def compact_text(value: str, max_chars: int) -> str:
-    return re.sub(r"\s+", " ", (value or "")).strip()[:max_chars]
+def safe_json_loads(value: Any, fallback=None):
+    if fallback is None:
+        fallback = {}
+    if not value:
+        return fallback
+    if isinstance(value, dict):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
 
 
 def extract_json_object(value: str) -> Dict[str, Any]:
@@ -83,7 +96,7 @@ def extract_json_object(value: str) -> Dict[str, Any]:
         raise
 
 
-def openai_json(client, system_prompt: str, payload: Dict[str, Any], max_tokens: int = 900) -> Dict[str, Any]:
+def openai_json(client, system_prompt: str, payload: Dict[str, Any], max_tokens: int = 700) -> Dict[str, Any]:
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[
@@ -110,6 +123,50 @@ def document_hash(text_value: str) -> str:
     return hashlib.sha256((text_value or "").encode("utf-8", errors="ignore")).hexdigest()
 
 
+def split_text(text_value: str, chunk_chars: int = PARSE_CHUNK_CHARS, max_chunks: int = PARSE_MAX_CHUNKS) -> List[str]:
+    text_value = (text_value or "").strip()
+    if not text_value:
+        return []
+
+    chunks = []
+    pos = 0
+    while pos < len(text_value) and len(chunks) < max_chunks:
+        chunk = text_value[pos:pos + chunk_chars]
+        if pos + chunk_chars < len(text_value):
+            cut = max(chunk.rfind(". "), chunk.rfind("\n"), chunk.rfind("; "))
+            if cut > int(chunk_chars * 0.55):
+                chunk = chunk[:cut + 1]
+        chunk = chunk.strip()
+        if chunk:
+            chunks.append(chunk)
+        pos += max(len(chunk), chunk_chars)
+
+    return chunks
+
+
+def as_list(value: Any, limit: int = 20) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    output = []
+    seen = set()
+    for item in value:
+        if item is None:
+            continue
+        s = str(item).strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(s)
+    return output[:limit]
+
+
 def get_latest_parsed_document(session, tender_id: int) -> Optional[Dict[str, Any]]:
     ensure_parse_table(session)
     row = session.execute(text("""
@@ -124,19 +181,13 @@ def get_latest_parsed_document(session, tender_id: int) -> Optional[Dict[str, An
     if not row:
         return None
 
-    parsed_json = row.get("parsed_json")
-    try:
-        parsed = json.loads(parsed_json) if parsed_json else {}
-    except Exception:
-        parsed = {}
-
     return {
         "id": row.get("id"),
         "tender_id": row.get("tender_id"),
         "document_id": row.get("document_id"),
         "document_hash": row.get("document_hash"),
         "parse_status": row.get("parse_status"),
-        "parsed_json": parsed,
+        "parsed_json": safe_json_loads(row.get("parsed_json"), {}),
         "source_text_chars": row.get("source_text_chars"),
         "source_text_words": row.get("source_text_words"),
         "chunk_count": row.get("chunk_count"),
@@ -144,29 +195,65 @@ def get_latest_parsed_document(session, tender_id: int) -> Optional[Dict[str, An
     }
 
 
-def split_text(text_value: str, chunk_chars: int, max_chunks: int) -> List[str]:
-    text_value = (text_value or "").strip()
-    if not text_value:
-        return []
-    chunks = []
-    pos = 0
-    while pos < len(text_value) and len(chunks) < max_chunks:
-        chunk = text_value[pos:pos + chunk_chars]
-        # try to cut cleanly near a sentence or line break
-        if pos + chunk_chars < len(text_value):
-            cut = max(chunk.rfind(". "), chunk.rfind("\n"), chunk.rfind("; "))
-            if cut > int(chunk_chars * 0.55):
-                chunk = chunk[:cut + 1]
-        chunks.append(chunk.strip())
-        pos += len(chunk)
-    return [c for c in chunks if c]
+def get_active_parse_row(session, tender_id: int, document_hash_value: str):
+    return session.execute(text("""
+        SELECT *
+        FROM tender_document_parsed_cache
+        WHERE tender_id = :tender_id
+          AND document_hash = :document_hash
+          AND parse_status IN ('running', 'pending')
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+    """), {"tender_id": tender_id, "document_hash": document_hash_value}).mappings().first()
 
 
-def parse_chunk(client, tender: TenderCache, chunk: str, chunk_index: int) -> Dict[str, Any]:
+def get_ready_parse_row(session, tender_id: int, document_hash_value: str):
+    return session.execute(text("""
+        SELECT *
+        FROM tender_document_parsed_cache
+        WHERE tender_id = :tender_id
+          AND document_hash = :document_hash
+          AND parse_status = 'parsed'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+    """), {"tender_id": tender_id, "document_hash": document_hash_value}).mappings().first()
+
+
+def create_parse_row(session, tender: TenderCache, doc: TenderDocumentCache, source_text: str, chunks: List[str]) -> int:
+    initial_state = {
+        "_parse_progress": {
+            "mode": "stepwise",
+            "current_chunk_index": 0,
+            "total_chunks": len(chunks),
+            "chunks": [],
+        }
+    }
+
+    row = session.execute(text("""
+        INSERT INTO tender_document_parsed_cache
+            (tender_id, document_id, document_hash, parse_status, parsed_json, source_text_chars, source_text_words, chunk_count, created_at, updated_at)
+        VALUES
+            (:tender_id, :document_id, :document_hash, 'running', :parsed_json, :source_text_chars, :source_text_words, :chunk_count, NOW(), NOW())
+        RETURNING id
+    """), {
+        "tender_id": tender.id,
+        "document_id": doc.id,
+        "document_hash": document_hash(source_text),
+        "parsed_json": json.dumps(initial_state, ensure_ascii=False),
+        "source_text_chars": len(source_text),
+        "source_text_words": len(re.findall(r"\w+", source_text)),
+        "chunk_count": len(chunks),
+    }).mappings().first()
+
+    session.flush()
+    return int(row["id"])
+
+
+def parse_chunk(client, tender: TenderCache, chunk: str, chunk_index: int, total_chunks: int) -> Dict[str, Any]:
     system_prompt = """
-You are parsing a South African tender document chunk.
+You are parsing one chunk of a South African tender document.
 
-Extract only what is visible in this chunk. Do not guess.
+Extract only facts visible in this chunk. Do not guess.
 Return valid JSON only:
 {
  "scope_items": [string],
@@ -193,33 +280,11 @@ Return valid JSON only:
             "province": tender.province,
             "closing_date": tender.closing_date.isoformat() if tender.closing_date else None,
         },
-        "chunk_index": chunk_index,
+        "chunk_index": chunk_index + 1,
+        "total_chunks": total_chunks,
         "document_chunk": chunk,
     }
-    return openai_json(client, system_prompt, payload, max_tokens=850)
-
-
-def as_list(value: Any, limit: int = 20) -> List[str]:
-    if not value:
-        return []
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, list):
-        return []
-    output = []
-    seen = set()
-    for item in value:
-        if item is None:
-            continue
-        s = str(item).strip()
-        if not s:
-            continue
-        key = s.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(s)
-    return output[:limit]
+    return openai_json(client, system_prompt, payload, max_tokens=PARSE_CHUNK_MAX_TOKENS)
 
 
 def combine_locally(parsed_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -251,11 +316,13 @@ def combine_locally(parsed_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         combined["compliance_documents"] += as_list(item.get("compliance_documents"), 30)
         combined["briefing_requirements"] += as_list(item.get("briefing_requirements"), 30)
         combined["key_dates"] += as_list(item.get("key_dates"), 30)
+
         contacts = item.get("contacts") or {}
         if isinstance(contacts, dict):
             combined["emails"] += as_list(contacts.get("emails"), 20)
             combined["phones"] += as_list(contacts.get("phones"), 20)
             combined["contact_names"] += as_list(contacts.get("names"), 20)
+
         combined["pricing_or_value_clues"] += as_list(item.get("pricing_or_value_clues"), 30)
         combined["quantities_or_volumes"] += as_list(item.get("quantities_or_volumes"), 30)
         combined["location_clues"] += as_list(item.get("location_clues"), 30)
@@ -272,7 +339,7 @@ def consolidate_parse(client, tender: TenderCache, combined: Dict[str, Any]) -> 
     system_prompt = """
 You are consolidating extracted tender facts into a compact tender intelligence record.
 
-Use only the extracted facts. Do not invent requirements.
+Use only extracted facts. Do not invent requirements.
 Return valid JSON only:
 {
  "scope_summary": string,
@@ -310,7 +377,7 @@ Return valid JSON only:
         },
         "extracted_facts": combined,
     }
-    parsed = openai_json(client, system_prompt, payload, max_tokens=1200)
+    parsed = openai_json(client, system_prompt, payload, max_tokens=PARSE_CONSOLIDATE_MAX_TOKENS)
 
     requirements = parsed.get("requirements_and_criteria") or {}
     commercial = parsed.get("commercial_clues") or {}
@@ -342,16 +409,18 @@ Return valid JSON only:
 
 
 def parse_tender_document(session, tender: TenderCache, force: bool = False) -> Dict[str, Any]:
+    """
+    Stepwise parser.
+
+    One call parses ONE chunk only, or consolidates if all chunks are parsed.
+    This prevents browser/App Runner 502s caused by trying to parse a full document in one request.
+    Keep calling /api/admin/parse-document/<tender_id> until status='parsed'.
+    """
     ensure_parse_table(session)
 
     doc = latest_document(session, tender.id)
     if not doc:
-        return {
-            "ok": False,
-            "status": "no_document",
-            "tender_id": tender.id,
-            "error": "No fetched document found. Run fetch-documents first.",
-        }
+        return {"ok": False, "status": "no_document", "tender_id": tender.id, "error": "No fetched document found. Run fetch-documents first."}
 
     source_text = (doc.extracted_text or "").strip()
     if len(source_text) < 250:
@@ -366,95 +435,135 @@ def parse_tender_document(session, tender: TenderCache, force: bool = False) -> 
         }
 
     doc_hash = document_hash(source_text)
+    chunks = split_text(source_text)
 
-    existing = session.execute(text("""
-        SELECT *
-        FROM tender_document_parsed_cache
-        WHERE tender_id = :tender_id
-          AND document_hash = :document_hash
-          AND parse_status = 'parsed'
-        ORDER BY updated_at DESC, id DESC
-        LIMIT 1
-    """), {"tender_id": tender.id, "document_hash": doc_hash}).mappings().first()
-
-    if existing and not force:
+    ready = get_ready_parse_row(session, tender.id, doc_hash)
+    if ready and not force:
         return {
             "ok": True,
-            "status": "already_parsed",
+            "status": "parsed",
+            "message": "Document already parsed.",
             "tender_id": tender.id,
-            "parsed_id": existing["id"],
-            "source_text_chars": existing["source_text_chars"],
+            "parsed_id": ready["id"],
+            "chunk_count": ready["chunk_count"],
+            "next_action": "analysis_ready",
         }
 
-    row = session.execute(text("""
-        INSERT INTO tender_document_parsed_cache
-            (tender_id, document_id, document_hash, parse_status, source_text_chars, source_text_words, chunk_count, created_at, updated_at)
-        VALUES
-            (:tender_id, :document_id, :document_hash, 'running', :source_text_chars, :source_text_words, 0, NOW(), NOW())
-        RETURNING id
-    """), {
+    if force:
+        session.execute(text("""
+            UPDATE tender_document_parsed_cache
+            SET parse_status = 'superseded',
+                updated_at = NOW()
+            WHERE tender_id = :tender_id
+              AND document_hash = :document_hash
+              AND parse_status IN ('running', 'pending', 'parsed', 'failed')
+        """), {"tender_id": tender.id, "document_hash": doc_hash})
+        session.flush()
+
+    row = get_active_parse_row(session, tender.id, doc_hash)
+    if row:
+        parsed_id = row["id"]
+        state = safe_json_loads(row.get("parsed_json"), {})
+    else:
+        parsed_id = create_parse_row(session, tender, doc, source_text, chunks)
+        state = {
+            "_parse_progress": {
+                "mode": "stepwise",
+                "current_chunk_index": 0,
+                "total_chunks": len(chunks),
+                "chunks": [],
+            }
+        }
+
+    progress = state.get("_parse_progress") or {}
+    parsed_chunks = progress.get("chunks") or []
+    current_index = int(progress.get("current_chunk_index") or 0)
+    total_chunks = len(chunks)
+
+    if current_index < total_chunks:
+        client = get_openai_client()
+        chunk_result = parse_chunk(client, tender, chunks[current_index], current_index, total_chunks)
+        parsed_chunks.append(chunk_result)
+
+        current_index += 1
+        progress = {
+            "mode": "stepwise",
+            "current_chunk_index": current_index,
+            "total_chunks": total_chunks,
+            "chunks": parsed_chunks,
+        }
+
+        session.execute(text("""
+            UPDATE tender_document_parsed_cache
+            SET parsed_json = :parsed_json,
+                chunk_count = :chunk_count,
+                updated_at = NOW(),
+                error_message = NULL
+            WHERE id = :id
+        """), {
+            "id": parsed_id,
+            "parsed_json": json.dumps({"_parse_progress": progress}, ensure_ascii=False, default=str),
+            "chunk_count": total_chunks,
+        })
+
+        return {
+            "ok": True,
+            "status": "running",
+            "tender_id": tender.id,
+            "parsed_id": parsed_id,
+            "chunk_parsed": current_index,
+            "total_chunks": total_chunks,
+            "remaining_chunks": max(total_chunks - current_index, 0),
+            "next_action": f"/api/admin/parse-document/{tender.id}",
+        }
+
+    # All chunks are done. Consolidate once.
+    client = get_openai_client()
+    combined = combine_locally(parsed_chunks)
+    final_parse = consolidate_parse(client, tender, combined)
+
+    final_parse["_parse_meta"] = {
         "tender_id": tender.id,
         "document_id": doc.id,
         "document_hash": doc_hash,
         "source_text_chars": len(source_text),
         "source_text_words": len(re.findall(r"\w+", source_text)),
-    }).mappings().first()
-    parsed_id = row["id"]
-    session.flush()
+        "chunk_count": total_chunks,
+        "parse_model": OPENAI_MODEL,
+        "parse_mode": "stepwise",
+    }
 
-    try:
-        client = get_openai_client()
-        chunks = split_text(source_text, PARSE_CHUNK_CHARS, PARSE_MAX_CHUNKS)
-        parsed_chunks = [parse_chunk(client, tender, chunk, idx + 1) for idx, chunk in enumerate(chunks)]
-        combined = combine_locally(parsed_chunks)
-        final_parse = consolidate_parse(client, tender, combined)
+    session.execute(text("""
+        UPDATE tender_document_parsed_cache
+        SET parse_status = 'parsed',
+            parsed_json = :parsed_json,
+            chunk_count = :chunk_count,
+            error_message = NULL,
+            updated_at = NOW()
+        WHERE id = :id
+    """), {
+        "id": parsed_id,
+        "parsed_json": json.dumps(final_parse, ensure_ascii=False, default=str),
+        "chunk_count": total_chunks,
+    })
 
-        final_parse["_parse_meta"] = {
-            "tender_id": tender.id,
-            "document_id": doc.id,
-            "document_hash": doc_hash,
-            "source_text_chars": len(source_text),
-            "source_text_words": len(re.findall(r"\w+", source_text)),
-            "chunk_count": len(chunks),
-            "parse_model": OPENAI_MODEL,
-        }
-
-        session.execute(text("""
-            UPDATE tender_document_parsed_cache
-            SET parse_status = 'parsed',
-                parsed_json = :parsed_json,
-                chunk_count = :chunk_count,
-                error_message = NULL,
-                updated_at = NOW()
-            WHERE id = :id
-        """), {
-            "id": parsed_id,
-            "parsed_json": json.dumps(final_parse, ensure_ascii=False, default=str),
-            "chunk_count": len(chunks),
-        })
-
-        return {
-            "ok": True,
-            "status": "parsed",
-            "tender_id": tender.id,
-            "document_id": doc.id,
-            "parsed_id": parsed_id,
-            "source_text_chars": len(source_text),
-            "chunk_count": len(chunks),
-        }
-
-    except Exception as exc:
-        session.execute(text("""
-            UPDATE tender_document_parsed_cache
-            SET parse_status = 'failed',
-                error_message = :error_message,
-                updated_at = NOW()
-            WHERE id = :id
-        """), {"id": parsed_id, "error_message": str(exc)[:5000]})
-        raise
+    return {
+        "ok": True,
+        "status": "parsed",
+        "tender_id": tender.id,
+        "document_id": doc.id,
+        "parsed_id": parsed_id,
+        "source_text_chars": len(source_text),
+        "chunk_count": total_chunks,
+        "next_action": "analysis_ready",
+    }
 
 
-def parse_live_tender_documents(session, limit: int = 5, force: bool = False) -> Dict[str, Any]:
+def parse_live_tender_documents(session, limit: int = 3, force: bool = False) -> Dict[str, Any]:
+    """
+    Processes ONE parse step per selected tender.
+    Safe for scheduler/Lambda/EventBridge because each tender only does one OpenAI call.
+    """
     ensure_parse_table(session)
 
     limit = max(1, min(int(limit), 25))
@@ -480,9 +589,11 @@ def parse_live_tender_documents(session, limit: int = 5, force: bool = False) ->
 
     return {
         "ok": True,
+        "mode": "stepwise_one_chunk_per_tender",
         "limit": limit,
         "processed": len(results),
-        "parsed": sum(1 for r in results if r.get("ok")),
+        "parsed": sum(1 for r in results if r.get("status") == "parsed"),
+        "running": sum(1 for r in results if r.get("status") == "running"),
         "failed": sum(1 for r in results if not r.get("ok")),
         "items": results,
     }
