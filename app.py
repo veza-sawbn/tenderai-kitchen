@@ -37,7 +37,7 @@ from models import (
     UserTenderDecision,
 )
 from services.document_fetcher import fetch_documents_for_tenders
-from services.tender_document_parser import parse_tender_document, parse_live_tender_documents, get_latest_parsed_document
+from services.tender_document_parser import parse_tender_document, parse_live_tender_documents, get_latest_parsed_document, process_parse_worker
 from services.tender_ai_analysis import analyze_tender_against_profile
 from services.etenders_ingest import ingest_tenders
 
@@ -949,6 +949,20 @@ def api_parse_documents():
 
         try:
             result = parse_live_tender_documents(session_db, limit=limit, force=force)
+            return jsonify(result)
+        except Exception as exc:
+            session_db.rollback()
+            return jsonify({"ok": False, "status": "failed", "error": str(exc)}), 500
+
+
+
+@app.get("/api/admin/parse-worker")
+@app.post("/api/admin/parse-worker")
+def api_parse_worker():
+    with get_db_session() as session_db:
+        limit = int(request.args.get("limit", 1))
+        try:
+            result = process_parse_worker(session_db, limit=limit)
             return jsonify(result)
         except Exception as exc:
             session_db.rollback()
