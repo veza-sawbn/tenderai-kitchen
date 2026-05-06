@@ -22,8 +22,8 @@ OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
 # Keep each request small enough for App Runner / browser-triggered calls.
 PARSE_CHUNK_CHARS = int(os.getenv("TENDER_PARSE_CHUNK_CHARS", "2500"))
 PARSE_MAX_CHUNKS = int(os.getenv("TENDER_PARSE_MAX_CHUNKS", "8"))
-PARSE_CHUNK_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CHUNK_MAX_TOKENS", "650"))
-PARSE_CONSOLIDATE_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CONSOLIDATE_MAX_TOKENS", "900"))
+PARSE_CHUNK_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CHUNK_MAX_TOKENS", "1000"))
+PARSE_CONSOLIDATE_MAX_TOKENS = int(os.getenv("TENDER_PARSE_CONSOLIDATE_MAX_TOKENS", "1300"))
 
 
 def utcnow():
@@ -96,18 +96,42 @@ def extract_json_object(value: str) -> Dict[str, Any]:
         raise
 
 
-def openai_json(client, system_prompt: str, payload: Dict[str, Any], max_tokens: int = 700) -> Dict[str, Any]:
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.1,
-        max_tokens=max_tokens,
-    )
-    return extract_json_object(response.choices[0].message.content or "")
+def openai_json(client, system_prompt: str, payload: Dict[str, Any], max_tokens: int = 900) -> Dict[str, Any]:
+    """
+    Calls OpenAI in JSON mode and retries once with more output tokens if the
+    first response is truncated or malformed. The previous version could fail
+    with: Expecting ',' delimiter... when max_tokens cut the JSON object short.
+    """
+    last_error = None
+
+    for attempt in range(2):
+        token_budget = max_tokens if attempt == 0 else min(max_tokens + 700, 2200)
+
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=token_budget,
+        )
+
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        finish_reason = getattr(choice, "finish_reason", None)
+
+        try:
+            return extract_json_object(content)
+        except Exception as exc:
+            last_error = exc
+            if finish_reason == "length" and attempt == 0:
+                continue
+            if attempt == 0:
+                continue
+
+    raise RuntimeError(f"OpenAI returned malformed JSON after retry: {last_error}")
 
 
 def latest_document(session, tender_id: int) -> Optional[TenderDocumentCache]:
@@ -267,7 +291,6 @@ Return valid JSON only:
  "contacts": {"emails": [string], "phones": [string], "names": [string]},
  "pricing_or_value_clues": [string],
  "quantities_or_volumes": [string],
- "location_clues": [string],
  "risks_or_disqualifiers": [string],
  "evidence_notes": [string]
 }
@@ -302,7 +325,6 @@ def combine_locally(parsed_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         "contact_names": [],
         "pricing_or_value_clues": [],
         "quantities_or_volumes": [],
-        "location_clues": [],
         "risks_or_disqualifiers": [],
         "evidence_notes": [],
     }
@@ -325,7 +347,6 @@ def combine_locally(parsed_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         combined["pricing_or_value_clues"] += as_list(item.get("pricing_or_value_clues"), 30)
         combined["quantities_or_volumes"] += as_list(item.get("quantities_or_volumes"), 30)
-        combined["location_clues"] += as_list(item.get("location_clues"), 30)
         combined["risks_or_disqualifiers"] += as_list(item.get("risks_or_disqualifiers"), 30)
         combined["evidence_notes"] += as_list(item.get("evidence_notes"), 40)
 
@@ -482,7 +503,21 @@ def parse_tender_document(session, tender: TenderCache, force: bool = False) -> 
 
     if current_index < total_chunks:
         client = get_openai_client()
-        chunk_result = parse_chunk(client, tender, chunks[current_index], current_index, total_chunks)
+        try:
+            chunk_result = parse_chunk(client, tender, chunks[current_index], current_index, total_chunks)
+        except Exception as exc:
+            session.execute(text("""
+                UPDATE tender_document_parsed_cache
+                SET parse_status = 'failed',
+                    error_message = :error_message,
+                    updated_at = NOW()
+                WHERE id = :id
+            """), {
+                "id": parsed_id,
+                "error_message": f"Chunk {current_index + 1}/{total_chunks} parse failed: {str(exc)}"[:5000],
+            })
+            raise
+
         parsed_chunks.append(chunk_result)
 
         current_index += 1
