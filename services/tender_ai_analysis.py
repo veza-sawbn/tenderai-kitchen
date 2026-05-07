@@ -212,4 +212,12 @@ Return only valid JSON:
     )
     result["evidence_notes"] = parsed.get("evidence_notes") or []
 
+    # Preserve parsed tender intelligence in the analysis payload so the report
+    # always has useful information even if the model's analysis is brief.
+    result["parsed_scope_summary"] = parsed.get("scope_summary")
+    result["parsed_deliverables"] = parsed.get("deliverables") or []
+    result["parsed_requirements_and_criteria"] = parsed.get("requirements_and_criteria") or {}
+    result["parsed_commercial_clues"] = parsed.get("commercial_clues") or {}
+    result["parsed_risks_or_disqualifiers"] = parsed.get("risks_or_disqualifiers") or []
+
     return result
