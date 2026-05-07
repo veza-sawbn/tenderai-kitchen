@@ -11,6 +11,7 @@ from flask import (
     jsonify,
     redirect,
     render_template,
+    render_template_string,
     request,
     session,
     url_for,
@@ -761,7 +762,7 @@ def analyze_tender_page(tender_id: int):
             job.error_message = None
 
             flash("Tender analysis completed from parsed document intelligence.", "success")
-            return redirect(url_for("tender_detail", tender_id=tender_id))
+            return redirect(url_for("analysis_report", tender_id=tender_id))
 
         except Exception as exc:
             job.status = "failed"
@@ -772,6 +773,408 @@ def analyze_tender_page(tender_id: int):
             }, ensure_ascii=False)
             flash(f"Analysis failed: {exc}", "error")
             return redirect(url_for("tender_detail", tender_id=tender_id))
+
+
+
+def money_value(value):
+    if value is None or value == "":
+        return "Not visible"
+    try:
+        return "R{:,.0f}".format(float(value))
+    except Exception:
+        return str(value)
+
+
+def list_or_missing(items, missing="Not extracted from the parsed tender record."):
+    if not items:
+        return [missing]
+    return items
+
+
+ANALYSIS_REPORT_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>TenderAI Analysis Report</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        :root {
+            --bg: #080b10;
+            --panel: #111827;
+            --panel2: #0f172a;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --line: rgba(148, 163, 184, 0.25);
+            --orange: #f97316;
+            --green: #22c55e;
+            --yellow: #eab308;
+            --red: #ef4444;
+            --blue: #38bdf8;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: radial-gradient(circle at top left, rgba(249,115,22,.18), transparent 38%), var(--bg);
+            color: var(--text);
+        }
+        .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 18px 60px; }
+        a { color: var(--orange); text-decoration: none; }
+        .topbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 22px; }
+        .btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            border: 1px solid var(--line); background: rgba(15,23,42,.7);
+            color: var(--text); padding: 10px 14px; border-radius: 12px; font-weight: 650;
+        }
+        .hero {
+            background: linear-gradient(135deg, rgba(17,24,39,.96), rgba(15,23,42,.92));
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0,0,0,.28);
+            margin-bottom: 18px;
+        }
+        .eyebrow { color: var(--orange); text-transform: uppercase; letter-spacing: .08em; font-size: 12px; font-weight: 800; }
+        h1 { margin: 8px 0 8px; font-size: clamp(26px, 4vw, 42px); line-height: 1.06; }
+        .subtitle { color: var(--muted); max-width: 850px; line-height: 1.55; font-size: 16px; }
+        .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+        .pill {
+            border: 1px solid var(--line); background: rgba(8,11,16,.55);
+            border-radius: 999px; padding: 8px 11px; color: #cbd5e1; font-size: 13px;
+        }
+        .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+        .card {
+            grid-column: span 12;
+            background: rgba(17,24,39,.88);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 18px;
+        }
+        @media (min-width: 800px) {
+            .span4 { grid-column: span 4; }
+            .span6 { grid-column: span 6; }
+            .span8 { grid-column: span 8; }
+            .span12 { grid-column: span 12; }
+        }
+        h2 { margin: 0 0 12px; font-size: 19px; }
+        h3 { margin: 16px 0 8px; font-size: 15px; color: #e2e8f0; }
+        p { color: #cbd5e1; line-height: 1.58; }
+        ul { margin: 8px 0 0; padding-left: 20px; }
+        li { color: #cbd5e1; margin: 8px 0; line-height: 1.45; }
+        .scorebox {
+            display: flex; gap: 14px; align-items: center; justify-content: space-between;
+        }
+        .number {
+            font-size: 46px; font-weight: 900; color: var(--orange); line-height: 1;
+        }
+        .label { color: var(--muted); font-size: 13px; margin-top: 4px; }
+        .decision {
+            font-size: 18px; font-weight: 900; padding: 10px 14px; border-radius: 14px;
+            background: rgba(249,115,22,.14); border: 1px solid rgba(249,115,22,.35);
+        }
+        .table { width: 100%; border-collapse: collapse; margin-top: 10px; overflow: hidden; }
+        .table th, .table td {
+            border-bottom: 1px solid var(--line);
+            padding: 10px 8px;
+            color: #cbd5e1;
+            text-align: left;
+            vertical-align: top;
+        }
+        .table th { color: #f8fafc; font-size: 13px; }
+        .muted { color: var(--muted); }
+        .warning { color: #fde68a; }
+        .good { color: #86efac; }
+        .bad { color: #fca5a5; }
+        .raw {
+            white-space: pre-wrap;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            background: #020617;
+            border: 1px solid var(--line);
+            padding: 14px;
+            border-radius: 14px;
+            color: #cbd5e1;
+            max-height: 420px;
+            overflow: auto;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="topbar">
+        <a class="btn" href="{{ url_for('tender_detail', tender_id=tender.id) }}">← Back to tender</a>
+        <a class="btn" href="{{ url_for('tenders') }}">Browse tenders</a>
+    </div>
+
+    <section class="hero">
+        <div class="eyebrow">TenderAI Bid Intelligence Report</div>
+        <h1>{{ tender.title or "Tender opportunity" }}</h1>
+        <div class="subtitle">
+            {{ analysis.executive_assessment or analysis.summary or "Analysis was completed, but the response did not include an executive assessment." }}
+        </div>
+        <div class="meta">
+            <span class="pill">Buyer: {{ tender.buyer_name or "Unknown" }}</span>
+            <span class="pill">Province: {{ tender.province or "Unknown" }}</span>
+            <span class="pill">Closing: {{ tender.closing_date or "Unknown" }}</span>
+            <span class="pill">Source: {{ analysis.analysis_source or "Unknown" }}</span>
+            <span class="pill">Parse confidence: {{ analysis.parse_confidence or "Unknown" }}</span>
+        </div>
+    </section>
+
+    <div class="grid">
+        <section class="card span4">
+            <h2>Bid Decision</h2>
+            <div class="scorebox">
+                <div>
+                    <div class="number">{{ analysis.score or 0 }}</div>
+                    <div class="label">Fit score / 100</div>
+                </div>
+                <div>
+                    <div class="decision">{{ analysis.bid_decision or "review_first" }}</div>
+                    <div class="label">Recommended action</div>
+                </div>
+            </div>
+            <p><strong>Probability of acquisition:</strong> {{ analysis.probability_of_acquisition or 0 }}%</p>
+            <p><strong>Fit band:</strong> {{ analysis.fit_band or "Not classified" }}</p>
+            <p><strong>Confidence:</strong> {{ analysis.confidence_level or "Not stated" }}</p>
+        </section>
+
+        <section class="card span8">
+            <h2>Scope of Work</h2>
+            <p>{{ analysis.scope_summary or "No scope summary was generated." }}</p>
+            <h3>Parsed tender evidence</h3>
+            <ul>
+            {% for item in list_or_missing(analysis.evidence_notes, "No evidence notes were returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+        </section>
+
+        <section class="card span6">
+            <h2>Mandatory Requirements</h2>
+            <ul>
+            {% for item in list_or_missing(analysis.mandatory_requirements) %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+
+            <h3>Compliance Documents</h3>
+            <ul>
+            {% for item in list_or_missing(analysis.compliance_documents) %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+        </section>
+
+        <section class="card span6">
+            <h2>Criteria, Dates and Contacts</h2>
+            <h3>Key dates</h3>
+            <ul>
+            {% for item in list_or_missing(analysis.key_dates, "No key dates were extracted besides the tender metadata.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+            <p><strong>Briefing date:</strong> {{ analysis.briefing_date or "Not extracted" }}</p>
+            <p><strong>Contact email:</strong> {{ analysis.contact_email or "Not extracted" }}</p>
+            <p><strong>Contact phone:</strong> {{ analysis.contact_phone or "Not extracted" }}</p>
+        </section>
+
+        <section class="card span6">
+            <h2>Profile Fit</h2>
+            {% set fit = analysis.profile_fit or {} %}
+            <h3>Matching capabilities</h3>
+            <ul>
+            {% for item in list_or_missing(fit.get('matching_capabilities') or analysis.strengths, "No strong matching capabilities were identified.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+
+            <h3>Weaknesses or gaps</h3>
+            <ul>
+            {% for item in list_or_missing(fit.get('weaknesses_or_gaps') or analysis.gaps, "No specific profile gaps were returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+            <p><strong>Geographic fit:</strong> {{ fit.get('geographic_fit') or "Unknown" }}</p>
+            <p><strong>Capacity fit:</strong> {{ fit.get('capacity_fit') or "Unknown" }}</p>
+            <p><strong>Track record fit:</strong> {{ fit.get('track_record_fit') or "Unknown" }}</p>
+        </section>
+
+        <section class="card span6">
+            <h2>Measures to Improve Chances</h2>
+            <ul>
+            {% for item in list_or_missing(analysis.measures_to_improve_chances, "No improvement measures were returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+
+            <h3>Recommended next steps</h3>
+            <ul>
+            {% for item in list_or_missing(analysis.recommendations, "No next steps were returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+        </section>
+
+        <section class="card span6">
+            <h2>Estimated Project Costs</h2>
+            {% set costs = analysis.estimated_project_costs or {} %}
+            <table class="table">
+                <tr><th>Low</th><td>{{ money_value(costs.get('low')) }}</td></tr>
+                <tr><th>Base</th><td>{{ money_value(costs.get('base')) }}</td></tr>
+                <tr><th>High</th><td>{{ money_value(costs.get('high')) }}</td></tr>
+            </table>
+            <h3>Cost breakdown</h3>
+            <table class="table">
+                <tr><th>Category</th><th>Estimate</th><th>Basis</th></tr>
+                {% for row in costs.get('cost_breakdown') or [] %}
+                    <tr>
+                        <td>{{ row.get('category') }}</td>
+                        <td>{{ money_value(row.get('estimate')) }}</td>
+                        <td>{{ row.get('basis') }}</td>
+                    </tr>
+                {% endfor %}
+                {% if not costs.get('cost_breakdown') %}
+                    <tr><td colspan="3">No cost breakdown was produced.</td></tr>
+                {% endif %}
+            </table>
+            <h3>Cost assumptions</h3>
+            <ul>
+            {% for item in list_or_missing(costs.get('cost_assumptions'), "No cost assumptions were returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+        </section>
+
+        <section class="card span6">
+            <h2>Estimated Revenue</h2>
+            {% set revenue = analysis.estimated_revenue or {} %}
+            <table class="table">
+                <tr><th>Low</th><td>{{ money_value(revenue.get('low')) }}</td></tr>
+                <tr><th>Base</th><td>{{ money_value(revenue.get('base')) }}</td></tr>
+                <tr><th>High</th><td>{{ money_value(revenue.get('high')) }}</td></tr>
+            </table>
+            <p><strong>Revenue basis:</strong> {{ revenue.get('revenue_basis') or "No basis returned." }}</p>
+            <p><strong>Gross margin view:</strong> {{ revenue.get('gross_margin_comment') or "No margin comment returned." }}</p>
+        </section>
+
+        <section class="card span6">
+            <h2>Commercial View</h2>
+            {% set commercial = analysis.commercial_view or {} %}
+            <p><strong>Pricing strategy:</strong> {{ commercial.get('pricing_strategy') or "No pricing strategy returned." }}</p>
+            <h3>Margin risks</h3>
+            <ul>
+            {% for item in list_or_missing(commercial.get('margin_risks'), "No margin risks returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+            <h3>Cash-flow risks</h3>
+            <ul>
+            {% for item in list_or_missing(commercial.get('cashflow_risks'), "No cash-flow risks returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+        </section>
+
+        <section class="card span6">
+            <h2>Risks and Clarification Questions</h2>
+            <h3>Risks</h3>
+            <ul>
+            {% for item in list_or_missing(analysis.risks, "No risks were returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+            <h3>Questions to clarify</h3>
+            <ul>
+            {% for item in list_or_missing(analysis.questions_to_clarify, "No clarification questions were returned.") %}
+                <li>{{ item }}</li>
+            {% endfor %}
+            </ul>
+        </section>
+
+        <section class="card span12">
+            <h2>Diagnostics</h2>
+            <p><strong>Document match:</strong> {{ analysis.document_match }}</p>
+            <p><strong>Document reason:</strong> {{ analysis.document_match_reason or "Not provided" }}</p>
+            <p><strong>Parsed document ID:</strong> {{ analysis.parsed_document_id or "Not linked" }}</p>
+            <details>
+                <summary class="muted">Raw analysis JSON</summary>
+                <div class="raw">{{ raw_json }}</div>
+            </details>
+        </section>
+    </div>
+</div>
+</body>
+</html>
+"""
+
+
+@app.get("/tender/<int:tender_id>/analysis-report")
+@login_required
+def analysis_report(tender_id: int):
+    with get_db_session() as session_db:
+        user = get_current_user(session_db)
+        tender = session_db.get(TenderCache, tender_id)
+        if not tender:
+            return render_template("404.html"), 404
+
+        job = session_db.execute(
+            select(AnalysisJob)
+            .where(AnalysisJob.user_id == user.id, AnalysisJob.tender_id == tender_id)
+            .order_by(desc(AnalysisJob.updated_at))
+            .limit(1)
+        ).scalars().first()
+
+        if not job:
+            flash("No analysis result found for this tender yet.", "warning")
+            return redirect(url_for("tender_detail", tender_id=tender_id))
+
+        analysis = safe_loads(job.raw_result_json, {})
+        if not analysis:
+            analysis = {
+                "summary": job.summary,
+                "score": job.score,
+                "analysis_source_error": job.error_message,
+            }
+
+        raw_json = json.dumps(analysis, indent=2, ensure_ascii=False, default=str)
+
+        return render_template_string(
+            ANALYSIS_REPORT_TEMPLATE,
+            tender=tender,
+            analysis=analysis,
+            raw_json=raw_json,
+            money_value=money_value,
+            list_or_missing=list_or_missing,
+        )
+
+
+@app.get("/api/tender/<int:tender_id>/analysis-result")
+@login_required
+def api_analysis_result(tender_id: int):
+    with get_db_session() as session_db:
+        user = get_current_user(session_db)
+        job = session_db.execute(
+            select(AnalysisJob)
+            .where(AnalysisJob.user_id == user.id, AnalysisJob.tender_id == tender_id)
+            .order_by(desc(AnalysisJob.updated_at))
+            .limit(1)
+        ).scalars().first()
+
+        if not job:
+            return jsonify({"ok": False, "error": "no_analysis_found"}), 404
+
+        return jsonify({
+            "ok": True,
+            "job_id": job.id,
+            "status": job.status,
+            "score": job.score,
+            "summary": job.summary,
+            "raw_result": safe_loads(job.raw_result_json, {}),
+            "error_message": job.error_message,
+        })
+
 
 
 @app.post("/tender/<int:tender_id>/decision")
