@@ -1447,3 +1447,41 @@ def internal_error(_):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+@app.get("/api/admin/db-inspect")
+def api_db_inspect():
+    from sqlalchemy import text
+
+    with get_db_session() as session_db:
+        current = session_db.execute(text("""
+            SELECT 
+                current_database() AS database_name,
+                current_schema() AS schema_name,
+                current_user AS db_user
+        """)).mappings().first()
+
+        tables = session_db.execute(text("""
+            SELECT 
+                table_schema,
+                table_name
+            FROM information_schema.tables
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY table_schema, table_name
+        """)).mappings().all()
+
+        indexes = session_db.execute(text("""
+            SELECT 
+                schemaname,
+                tablename,
+                indexname
+            FROM pg_indexes
+            WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY schemaname, tablename, indexname
+        """)).mappings().all()
+
+        return jsonify({
+            "ok": True,
+            "connection": dict(current),
+            "tables": [dict(row) for row in tables],
+            "indexes": [dict(row) for row in indexes],
+        })
