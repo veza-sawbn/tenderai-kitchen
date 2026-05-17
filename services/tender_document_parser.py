@@ -578,136 +578,166 @@ def local_consolidate(tender: TenderCache, combined: Dict[str, Any], error: str 
 
 def process_parse_worker(session, limit: int = 1) -> Dict[str, Any]:
     """
-    Worker only. This is the only function that calls OpenAI for parsing.
-    It processes one chunk/consolidation step per job, then returns.
+    Queue-safe parse worker.
+
+    Fixes DB deadlocks by claiming jobs atomically using FOR UPDATE SKIP LOCKED.
+    This allows multiple Lambda invocations to run without grabbing the same row.
     """
     ensure_parse_table(session)
-    limit = max(1, min(int(limit), 10))
+    limit = max(1, min(int(limit), 5))
 
-    rows = session.execute(text("""
-        SELECT *
-        FROM tender_document_parsed_cache
-        WHERE parse_status IN ('pending', 'running')
-        ORDER BY updated_at ASC, id ASC
-        LIMIT :limit
+    claimed_rows = session.execute(text("""
+        WITH claimed AS (
+            SELECT id
+            FROM tender_document_parsed_cache
+            WHERE parse_status IN ('pending', 'running')
+            ORDER BY updated_at ASC, id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT :limit
+        )
+        UPDATE tender_document_parsed_cache p
+        SET parse_status = 'running',
+            updated_at = NOW()
+        FROM claimed
+        WHERE p.id = claimed.id
+        RETURNING p.*
     """), {"limit": limit}).mappings().all()
 
+    session.flush()
+
     items = []
-    for row in rows:
+
+    for row in claimed_rows:
         parsed_id = row["id"]
-        tender = session.get(TenderCache, row["tender_id"])
-        doc = session.get(TenderDocumentCache, row["document_id"]) if row["document_id"] else None
 
-        if not tender or not doc:
-            session.execute(text("""
-                UPDATE tender_document_parsed_cache
-                SET parse_status = 'failed',
-                    error_message = :error_message,
-                    updated_at = NOW()
-                WHERE id = :id
-            """), {"id": parsed_id, "error_message": "Tender or document row is missing."})
-            items.append({"ok": False, "parsed_id": parsed_id, "status": "failed", "error": "missing tender or document"})
-            continue
+        try:
+            tender = session.get(TenderCache, row["tender_id"])
+            doc = session.get(TenderDocumentCache, row["document_id"]) if row["document_id"] else None
 
-        source_text = (doc.extracted_text or "").strip()
-        chunks = split_text(source_text)
-        state = safe_json_loads(row.get("parsed_json"), {})
-        progress = state.get("_parse_progress") or {}
-        parsed_chunks = progress.get("chunks") or []
-        current_index = int(progress.get("current_chunk_index") or 0)
-        total_chunks = len(chunks)
+            if not tender or not doc:
+                session.execute(text("""
+                    UPDATE tender_document_parsed_cache
+                    SET parse_status = 'failed',
+                        error_message = :error_message,
+                        updated_at = NOW()
+                    WHERE id = :id
+                """), {"id": parsed_id, "error_message": "Tender or document row is missing."})
+                items.append({"ok": False, "parsed_id": parsed_id, "status": "failed", "error": "missing tender or document"})
+                continue
 
-        session.execute(text("""
-            UPDATE tender_document_parsed_cache
-            SET parse_status = 'running',
-                updated_at = NOW()
-            WHERE id = :id
-        """), {"id": parsed_id})
-        session.flush()
+            source_text = (doc.extracted_text or "").strip()
+            chunks = split_text(source_text)
+            state = safe_json_loads(row.get("parsed_json"), {})
+            progress = state.get("_parse_progress") or {}
+            parsed_chunks = progress.get("chunks") or []
+            current_index = int(progress.get("current_chunk_index") or 0)
+            total_chunks = len(chunks)
 
-        if current_index < total_chunks:
+            if total_chunks == 0:
+                session.execute(text("""
+                    UPDATE tender_document_parsed_cache
+                    SET parse_status = 'failed',
+                        error_message = :error_message,
+                        updated_at = NOW()
+                    WHERE id = :id
+                """), {"id": parsed_id, "error_message": "No usable document text chunks available for parsing."})
+                items.append({"ok": False, "parsed_id": parsed_id, "tender_id": tender.id, "status": "failed", "error": "no usable chunks"})
+                continue
+
+            if current_index < total_chunks:
+                try:
+                    client = get_openai_client()
+                    chunk_result = parse_chunk(client, tender, chunks[current_index], current_index, total_chunks)
+                except Exception as exc:
+                    chunk_result = regex_fallback_parse_chunk(chunks[current_index])
+                    chunk_result["_openai_error"] = str(exc)[:1000]
+
+                parsed_chunks.append(chunk_result)
+                current_index += 1
+
+                progress = {
+                    "mode": "queued_worker_skip_locked",
+                    "current_chunk_index": current_index,
+                    "total_chunks": total_chunks,
+                    "chunks": parsed_chunks,
+                }
+
+                session.execute(text("""
+                    UPDATE tender_document_parsed_cache
+                    SET parsed_json = :parsed_json,
+                        chunk_count = :chunk_count,
+                        parse_status = 'running',
+                        updated_at = NOW(),
+                        error_message = NULL
+                    WHERE id = :id
+                """), {
+                    "id": parsed_id,
+                    "parsed_json": json.dumps({"_parse_progress": progress}, ensure_ascii=False, default=str),
+                    "chunk_count": total_chunks,
+                })
+
+                items.append({
+                    "ok": True,
+                    "parsed_id": parsed_id,
+                    "tender_id": tender.id,
+                    "status": "running",
+                    "chunk_parsed": current_index,
+                    "total_chunks": total_chunks,
+                    "remaining_chunks": max(total_chunks - current_index, 0),
+                })
+                continue
+
+            combined = combine_locally(parsed_chunks)
             try:
                 client = get_openai_client()
-                chunk_result = parse_chunk(client, tender, chunks[current_index], current_index, total_chunks)
+                final_parse = consolidate_parse(client, tender, combined)
             except Exception as exc:
-                chunk_result = regex_fallback_parse_chunk(chunks[current_index])
-                chunk_result["_openai_error"] = str(exc)[:1000]
+                final_parse = local_consolidate(tender, combined, error=str(exc)[:1000])
 
-            parsed_chunks.append(chunk_result)
-            current_index += 1
-
-            progress = {
-                "mode": "queued_worker",
-                "current_chunk_index": current_index,
-                "total_chunks": total_chunks,
-                "chunks": parsed_chunks,
+            final_parse["_parse_meta"] = {
+                "tender_id": tender.id,
+                "document_id": doc.id,
+                "document_hash": row["document_hash"],
+                "source_text_chars": len(source_text),
+                "source_text_words": len(re.findall(r"\w+", source_text)),
+                "chunk_count": total_chunks,
+                "parse_model": OPENAI_MODEL,
+                "parse_mode": "queued_worker_skip_locked",
             }
 
             session.execute(text("""
                 UPDATE tender_document_parsed_cache
-                SET parsed_json = :parsed_json,
+                SET parse_status = 'parsed',
+                    parsed_json = :parsed_json,
                     chunk_count = :chunk_count,
-                    updated_at = NOW(),
-                    error_message = NULL
+                    error_message = NULL,
+                    updated_at = NOW()
                 WHERE id = :id
             """), {
                 "id": parsed_id,
-                "parsed_json": json.dumps({"_parse_progress": progress}, ensure_ascii=False, default=str),
+                "parsed_json": json.dumps(final_parse, ensure_ascii=False, default=str),
                 "chunk_count": total_chunks,
             })
-            items.append({
-                "ok": True,
-                "parsed_id": parsed_id,
-                "tender_id": tender.id,
-                "status": "running",
-                "chunk_parsed": current_index,
-                "total_chunks": total_chunks,
-                "remaining_chunks": max(total_chunks - current_index, 0),
-            })
-            continue
 
-        combined = combine_locally(parsed_chunks)
-        try:
-            client = get_openai_client()
-            final_parse = consolidate_parse(client, tender, combined)
+            items.append({"ok": True, "parsed_id": parsed_id, "tender_id": tender.id, "status": "parsed", "chunk_count": total_chunks})
+
         except Exception as exc:
-            final_parse = local_consolidate(tender, combined, error=str(exc)[:1000])
+            try:
+                session.execute(text("""
+                    UPDATE tender_document_parsed_cache
+                    SET parse_status = 'failed',
+                        error_message = :error_message,
+                        updated_at = NOW()
+                    WHERE id = :id
+                """), {"id": parsed_id, "error_message": str(exc)[:5000]})
+            except Exception:
+                pass
 
-        final_parse["_parse_meta"] = {
-            "tender_id": tender.id,
-            "document_id": doc.id,
-            "document_hash": row["document_hash"],
-            "source_text_chars": len(source_text),
-            "source_text_words": len(re.findall(r"\w+", source_text)),
-            "chunk_count": total_chunks,
-            "parse_model": OPENAI_MODEL,
-            "parse_mode": "queued_worker",
-        }
-
-        session.execute(text("""
-            UPDATE tender_document_parsed_cache
-            SET parse_status = 'parsed',
-                parsed_json = :parsed_json,
-                chunk_count = :chunk_count,
-                error_message = NULL,
-                updated_at = NOW()
-            WHERE id = :id
-        """), {
-            "id": parsed_id,
-            "parsed_json": json.dumps(final_parse, ensure_ascii=False, default=str),
-            "chunk_count": total_chunks,
-        })
-        items.append({
-            "ok": True,
-            "parsed_id": parsed_id,
-            "tender_id": tender.id,
-            "status": "parsed",
-            "chunk_count": total_chunks,
-        })
+            items.append({"ok": False, "parsed_id": parsed_id, "status": "failed", "error": str(exc)})
 
     return {
         "ok": True,
-        "mode": "queued_parse_worker",
+        "mode": "queued_parse_worker_skip_locked",
         "limit": limit,
         "processed": len(items),
         "items": items,
